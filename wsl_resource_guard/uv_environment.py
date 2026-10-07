@@ -50,7 +50,9 @@ def download_uv(workspace: Path) -> Path:
     prefix = f'uv-{triple}'
     url = f'https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{prefix}.tar.gz'
     # No inherited proxy, user CA bundle, uv config, PATH lookup or shell installer.
-    context = ssl.create_default_context(cafile='/etc/ssl/certs/ca-certificates.crt')
+    # create_default_context also consumes SSLKEYLOGFILE from the caller.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(cafile='/etc/ssl/certs/ca-certificates.crt')
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                         urllib.request.HTTPSHandler(context=context))
     with opener.open(url, timeout=30) as response:

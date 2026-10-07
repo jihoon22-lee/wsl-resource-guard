@@ -46,6 +46,24 @@ class UvEnvironmentTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 module.extract_uv(data, target, 'uv-x86_64-unknown-linux-gnu', digest)
 
+    def test_download_never_opens_inherited_tls_key_log(self):
+        module = self.module()
+        data, digest = self.archive()
+        from unittest.mock import Mock
+        opener = Mock()
+        opener.open.return_value = io.BytesIO(data)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            keylog = workspace / 'must-not-exist.log'
+            with patch.dict(os.environ, {'SSLKEYLOGFILE': str(keylog)}), \
+                    patch.object(module.platform, 'system', return_value='Linux'), \
+                    patch.object(module.platform, 'machine', return_value='x86_64'), \
+                    patch.dict(module.UV_ARCHIVES, {'x86_64': ('x86_64-unknown-linux-gnu', digest)}), \
+                    patch.object(module.urllib.request, 'build_opener', return_value=opener):
+                executable = module.download_uv(workspace)
+            self.assertEqual(executable.read_bytes(), b'fixture executable')
+            self.assertFalse(keylog.exists(), 'root download must never open an inherited TLS key log path')
+
     def test_uv_does_not_inherit_user_configuration_or_execution_environment(self):
         module = self.module()
         with tempfile.TemporaryDirectory() as directory:
