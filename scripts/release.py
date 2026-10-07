@@ -18,6 +18,7 @@ from wsl_resource_guard.build_info import release_revision
 
 ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
               'AGENTS.md', 'workthrough/2026-10-07-public-release.md',
+              'workthrough/2026-10-08-uv-dependencies.md',
               'pyproject.toml', 'requirements-web.in', 'requirements-web.txt',
               'requirements-dev.in', 'requirements-dev.txt', 'install-user.sh',
               'install-root.sh', 'install-services.sh'}

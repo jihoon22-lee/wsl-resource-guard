@@ -95,6 +95,12 @@ class InstallerSafetyTests(unittest.TestCase):
 
 class ServiceRollbackTests(unittest.TestCase):
     def test_restart_failure_restores_files_and_states_without_changing_registry(self):
+        self.check_failure(dependency_failure=False)
+
+    def test_dependency_failure_preserves_runtime_without_service_commands(self):
+        self.check_failure(dependency_failure=True)
+
+    def check_failure(self, dependency_failure):
         from contextlib import ExitStack
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,19 +140,22 @@ class ServiceRollbackTests(unittest.TestCase):
                 stack.enter_context(patch('wsl_resource_guard.guard_install.validate_system_owner'))
                 stack.enter_context(patch.object(service_install, 'tailscale_preflight', return_value=(registry_data['origin'], 'alice@example.com', {}, None)))
                 stack.enter_context(patch.object(service_install, 'unit_state', return_value=original_state))
-                stack.enter_context(patch.object(service_install, 'prepare_venv', return_value=dest / '.venvs/new'))
+                stack.enter_context(patch.object(service_install, 'prepare_venv', return_value=dest / '.venvs/new',
+                                                side_effect=RuntimeError('injected dependency failure') if dependency_failure else None))
                 stack.enter_context(patch.object(service_install, 'prepare_shared_dir'))
                 stack.enter_context(patch.object(service_install.pwd, 'getpwnam', return_value=owner))
                 stack.enter_context(patch.object(service_install, 'run_as'))
                 stack.enter_context(patch.object(service_install, 'run', side_effect=run))
                 stack.enter_context(patch.object(service_install, 'restore_unit', side_effect=lambda name, state: restored.append((name, state))))
-                with self.assertRaisesRegex(RuntimeError, 'injected restart'):
+                with self.assertRaisesRegex(RuntimeError, 'injected dependency' if dependency_failure else 'injected restart'):
                     service_install.install(owner)
             self.assertEqual((dest / 'wsl_resource_guard/__init__.py').read_text(), '# old\n')
             self.assertFalse((dest / 'wsl_resource_guard/web/index.html').exists())
             self.assertEqual(json.loads(registry.read_text()), registry_data)
             self.assertTrue(all((units / name).read_text() == 'old unit\n' for name in service_install.UNITS))
-            self.assertEqual(restored, [(name, original_state) for name in service_install.UNITS])
+            self.assertEqual(restored, [] if dependency_failure else [(name, original_state) for name in service_install.UNITS])
+            if dependency_failure:
+                self.assertFalse(any(args[0] == 'systemctl' for args in calls))
             self.assertFalse(any(args[:2] == ('tailscale', 'serve') for args in calls))
 
 
