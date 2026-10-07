@@ -8,8 +8,6 @@ ALLOWED_HOME = {'demo', 'user', 'example', 'test', 'testuser', 'alice', 'bob', '
 issues = []
 paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
 for name in filter(None, paths):
-    if name.startswith(('docs/superpowers/', 'workthrough/')) and name != 'workthrough/2026-10-07-public-release.md':
-        continue  # legacy private history is not exported to the public repository
     path = ROOT / name
     if not path.is_file():
         continue
