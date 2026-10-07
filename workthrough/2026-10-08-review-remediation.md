@@ -49,10 +49,10 @@
 
 **파일:** 이 기록, 기존 `AGENTS.md`, 설치·검증 스크립트 읽기. 제품 수정 없음.
 
-- [ ] `git status --short`, 현재 브랜치·HEAD·origin/main·작업 지침을 확인하고 `fix/review-remediation` 브랜치를 만든다.
-- [ ] 실제 설치 스탬프, 코드 해시, 유닛 내용/환경, active/enabled/PID, guard state 갱신 시각, history 크기, 사용자 설정·registry·웹 접근 정책의 해시를 기록한다. 비밀값·개인 호스트명은 공개 기록에 넣지 않는다.
-- [ ] 무관한 서비스 PID·Docker 실행 목록을 임시 메모리 또는 권한 제한된 한 임시 디렉터리에 기록한다. 프로젝트 전체를 복사하지 않는다.
-- [ ] 기존 잠금 기반 테스트 환경을 검증한다. 운영 환경은 그대로 두고 이후 단위별 검사를 수행한다.
+- [x] `git status --short`, 현재 브랜치·HEAD·origin/main·작업 지침을 확인하고 `fix/review-remediation` 브랜치를 만든다.
+- [x] 실제 설치 스탬프, 코드 해시, 유닛 내용/환경, active/enabled/PID, guard state 갱신 시각, history 크기, 사용자 설정·registry·웹 접근 정책의 해시를 기록한다. 비밀값·개인 호스트명은 공개 기록에 넣지 않는다.
+- [x] 무관한 서비스 PID·Docker 실행 목록을 임시 메모리 또는 권한 제한된 한 임시 디렉터리에 기록한다. 프로젝트 전체를 복사하지 않는다.
+- [x] 기존 잠금 기반 테스트 환경을 검증한다. 운영 환경은 그대로 두고 이후 단위별 검사를 수행한다.
 
 ```bash
 git status --short
@@ -69,10 +69,10 @@ git switch -c fix/review-remediation
 **검사:** `tests/test_notifications.py`, `test_daemon.py`, `test_reporting.py`.
 **인터페이스:** `Notifier.send(...) -> list[NotificationResult]` 유지. 실패한 채널도 `sent=False`, `skipped=False` 결과를 남기고 다음 채널을 실행한다.
 
-- [ ] 잘못된 Gmail 헤더, webhook URL, 인코딩/메시지 생성 오류를 각각 넣고 두 연속 sample에서 다른 채널·state·history가 누락되는 기존 실패를 재현한다. 외부 전송은 전부 mock한다.
-- [ ] 메시지·Request 구성부터 전송까지 채널 경계 안으로 옮긴다. send의 채널별 방어 경계는 `Exception`을 실패 결과로 변환하되 종료 신호/KeyboardInterrupt 같은 `BaseException`은 삼키지 않는다. 상세 오류에 비밀 주소·토큰을 노출하지 않는다.
-- [ ] 실패/시도/성공/미설정 상태를 구분한다. 실패했다고 발송 성공으로 표시하지 않으며, 정상 수집은 계속 저장하고 매 샘플 중복 발송을 막는 기존 재시도 간격을 보존한다.
-- [ ] 회귀 검사 통과 후 `fix: Isolate notification failures from monitoring persistence`로 커밋한다.
+- [x] 잘못된 Gmail 헤더, webhook URL, 인코딩/메시지 생성 오류를 각각 넣고 두 연속 sample에서 다른 채널·state·history가 누락되는 기존 실패를 재현한다. 외부 전송은 전부 mock한다.
+- [x] 메시지·Request 구성부터 전송까지 채널 경계 안으로 옮긴다. send의 채널별 방어 경계는 `Exception`을 실패 결과로 변환하되 종료 신호/KeyboardInterrupt 같은 `BaseException`은 삼키지 않는다. 상세 오류에 비밀 주소·토큰을 노출하지 않는다.
+- [x] 실패/시도/성공/미설정 상태를 구분한다. 실패했다고 발송 성공으로 표시하지 않으며, 정상 수집은 계속 저장하고 매 샘플 중복 발송을 막는 기존 재시도 간격을 보존한다.
+- [x] 회귀 검사 통과 후 `fix: Isolate notification failures from monitoring persistence`로 커밋한다.
 
 핵심 검사 형태:
 ```python
@@ -273,3 +273,14 @@ git worktree list
 ## 실행 결과 기록
 
 현재는 계획 수립만 완료했다. 위 체크박스는 구현·검증·배포 완료를 뜻하지 않는다. 실행 시 각 단계 아래에 commit, 검사 명령/결과, 운영 영향, 정리 결과를 추가한다. 계획 검토를 위해 제품 코드나 운영 상태를 변경하지 않았다.
+
+### 실행 기록 — 준비와 R1
+
+- 기준선: 실행 서비스 24개와 Docker 컨테이너 6개, 설정/registry/접근 정책 해시, 실제 설치 코드와 BUILD stamp를 권한 제한된 단일 임시 검증 디렉터리에 기록했다. 운영 3개 유닛은 기존 PID와 재시작 0을 유지했다.
+- uv 0.12.23/Python 3.14.4로 기존 dev 해시 잠금 44개를 설치했고 의존성 호환 검사를 통과했다.
+- Ruling: 사용자 요구에 따라 추가 worktree/프로젝트 사본/스킬별 기록 디렉터리를 만들지 않는다. 이 문서를 진행 기록으로 사용한다. 편집은 단일 작업자가 수행하고 최종 독립 검토를 실행한다.
+- Pre-flight: R1→R4/R5는 저장된 실패/시도 상태를 보존해야 한다. R2→R12는 실제 state 경로를 동일하게 사용해야 한다. R6/R8은 서버 구독 상태 계약을 함께 바꾼다. R13→uv/CI 전환은 동일 커밋 검증을 유지한다. 충돌하는 외부 인터페이스는 발견하지 않았다.
+- R1 RED: 잘못된 Gmail 헤더/URL, UnicodeError/RuntimeError와 실제 sample 저장 시험이 기존 코드에서 예외로 실패했다.
+- R1 GREEN: 채널별 메시지 구성부터 전송까지 예외를 실패 결과로 격리했다. 오류 세부에는 비밀값을 포함하지 않으며 KeyboardInterrupt는 전파한다.
+- 실제 Notifier를 사용하는 sample 2회에서 상태 timestamp 100/115 및 이력 2건을 보존하고 Discord는 재알림 간격 안에서 한 번만 전송 시도했다. 외부 전송은 mock했다.
+- 관련 notification/daemon/reporting 54개 통과. 전체 CI 단위 profile 348개 통과, 예상 밖 skip 없음. 제품 운영 적용은 아직 하지 않았다.
