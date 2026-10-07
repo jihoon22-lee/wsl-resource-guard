@@ -135,6 +135,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  {channel:<16}최근 실패: {detail}")
     current_state = load_state(settings.state_path / "state.json")
     last_email_status = float(current_state.get("last_email_status", 0.0) or 0.0)
+    last_email_success = float(current_state.get("last_email_success", 0.0) or 0.0)
     last_email_hour_slot = str(current_state.get("last_email_hour_slot", "") or "")
     heartbeat_state = "enabled" if settings.email_heartbeat_enabled else "disabled"
     if settings.email_heartbeat_enabled:
@@ -143,9 +144,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  email heartbeat {heartbeat_state}")
     if last_email_status:
         sent_at = datetime.fromtimestamp(last_email_status).astimezone()
-        print(f"  last email       {sent_at:%Y-%m-%d %H:%M:%S %Z}")
+        print(f"  last email attempt {sent_at:%Y-%m-%d %H:%M:%S %Z}")
     else:
-        print("  last email       아직 기록 없음")
+        print("  last email attempt 아직 기록 없음")
+    if last_email_success:
+        sent_at = datetime.fromtimestamp(last_email_success).astimezone()
+        print(f"  last email sent    {sent_at:%Y-%m-%d %H:%M:%S %Z}")
+    else:
+        print("  last email sent    확인된 성공 기록 없음")
     next_email = next_email_heartbeat_at(metrics.timestamp, last_email_hour_slot, settings)
     if next_email is not None:
         print(f"  next heartbeat   {next_email:%Y-%m-%d %H:%M:%S %Z}")

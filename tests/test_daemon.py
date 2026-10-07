@@ -547,6 +547,7 @@ class SampleStateTests(unittest.TestCase):
                         "reasons": ["가용 RAM 3.5 GiB"],
                         "normal_since": 880,
                         "abnormal_since": 60,
+                        "metrics": metrics(12, timestamp=985).to_dict(),
                         "condition_since": {},
                     }
                 )
@@ -587,6 +588,7 @@ class SampleStateTests(unittest.TestCase):
                         "reasons": ["가용 RAM 3.5 GiB"],
                         "normal_since": 880,
                         "condition_since": {},
+                        "metrics": metrics(12, timestamp=985).to_dict(),
                     }
                 )
             )
