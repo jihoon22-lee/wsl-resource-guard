@@ -26,6 +26,43 @@ class GuardInstallTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'system guard'):
                 ensure_no_system_guard(unit)
 
+    def test_install_conflict_is_checked_after_owner_lock_acquisition(self):
+        from contextlib import contextmanager
+        from wsl_resource_guard import guard_install
+        events = []
+        @contextmanager
+        def lock(owner):
+            events.append('locked')
+            yield
+        def conflict():
+            self.assertEqual(events, ['locked'])
+            raise RuntimeError('system guard appeared while acquiring lock')
+        with patch.object(guard_install, 'owner_install_lock', side_effect=lock), \
+             patch.object(guard_install, 'ensure_no_system_guard', side_effect=conflict), \
+             patch.object(guard_install, '_install_preflighted') as apply:
+            with self.assertRaisesRegex(RuntimeError, 'appeared'):
+                guard_install.install(object(), False)
+            apply.assert_not_called()
+
+    def test_system_owner_is_revalidated_under_owner_lock(self):
+        from contextlib import contextmanager
+        from wsl_resource_guard import guard_install
+        events = []
+        @contextmanager
+        def lock(owner):
+            events.append('locked')
+            yield
+        def conflict(owner):
+            self.assertEqual(events, ['locked'])
+            raise RuntimeError('owner changed')
+        with patch.object(guard_install, 'owner_install_lock', side_effect=lock), \
+             patch.object(guard_install, 'validate_root_path'), \
+             patch.object(guard_install, 'validate_system_owner', side_effect=conflict), \
+             patch.object(guard_install, '_install_preflighted') as apply:
+            with self.assertRaisesRegex(RuntimeError, 'owner changed'):
+                guard_install.install(object(), True)
+            apply.assert_not_called()
+
     def test_owner_home_symlink_cannot_write_root_target(self):
         from wsl_resource_guard.installer import FileTransaction
         with tempfile.TemporaryDirectory() as tmp:

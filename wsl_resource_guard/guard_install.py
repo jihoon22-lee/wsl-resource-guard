@@ -106,12 +106,15 @@ def restore_state(backup: Path):
 
 
 def install(owner, system: bool):
-    if system:
-        validate_root_path(SYSTEM_UNIT)
-        validate_system_owner(owner)
-    else:
-        ensure_no_system_guard()
+    # Administrator entrypoints take the root lock first, then this shared
+    # owner lock. User installers take only the owner lock and never invert
+    # that order. Recheck identity/mode after acquiring it, before any apply.
     with owner_install_lock(owner):
+        if system:
+            validate_root_path(SYSTEM_UNIT)
+            validate_system_owner(owner)
+        else:
+            ensure_no_system_guard()
         return _install_preflighted(owner, system)
 
 
@@ -257,7 +260,6 @@ def main(argv=None):
         with install_lock():
             install(owner, True)
     else:
-        ensure_no_system_guard()
         install(owner, False)
     return 0
 

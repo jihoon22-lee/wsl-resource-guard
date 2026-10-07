@@ -93,6 +93,30 @@ class InstallerSafetyTests(unittest.TestCase):
                         pass
 
 
+    def test_owner_lock_contends_across_processes_and_releases_on_failure(self):
+        import subprocess
+        import sys
+        from types import SimpleNamespace
+        from wsl_resource_guard.installer import owner_install_lock
+        with tempfile.TemporaryDirectory() as directory:
+            owner = SimpleNamespace(pw_dir=directory, pw_uid=os.getuid(), pw_gid=os.getgid(),
+                                    pw_name=pwd.getpwuid(os.getuid()).pw_name)
+            script = ("from types import SimpleNamespace; from wsl_resource_guard.installer import owner_install_lock; "
+                      "import sys,os,pwd; owner=SimpleNamespace(pw_dir=sys.argv[1],pw_uid=os.getuid(),"
+                      "pw_gid=os.getgid(),pw_name=pwd.getpwuid(os.getuid()).pw_name); "
+                      "lock=owner_install_lock(owner); lock.__enter__(); lock.__exit__(None,None,None)")
+            with self.assertRaisesRegex(RuntimeError, 'fixture'):
+                with owner_install_lock(owner):
+                    result = subprocess.run([sys.executable, '-B', '-c', script, directory],
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('installation is in progress', result.stderr)
+                    raise RuntimeError('fixture')
+            result = subprocess.run([sys.executable, '-B', '-c', script, directory],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ServiceRollbackTests(unittest.TestCase):
     def test_restart_failure_restores_files_and_states_without_changing_registry(self):
         self.check_failure(dependency_failure=False)

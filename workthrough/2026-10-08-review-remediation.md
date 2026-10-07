@@ -168,7 +168,7 @@ updateBadges();
 **수정:** `guard_install.py`, `installer.py`, `packaging/wsl-resource-guard.service`, 필요한 owner 고정 연산 및 설정 검사.
 **검사:** `tests/test_guard_install.py`, `test_installer.py`, `test_owner_worker.py`와 새 격리 systemd 수명주기 시험.
 
-- [ ] owner 잠금 획득 후 owner/origin/설치 모드 충돌을 다시 검사한다. root/owner 잠금 획득 순서를 모든 설치 경로에서 통일하고 교착·대기 timeout을 검사한다.
+- [x] owner 잠금 획득 후 owner/origin/설치 모드 충돌을 다시 검사한다. root/owner 잠금 획득 순서를 모든 설치 경로에서 통일하고 교착·대기 timeout을 검사한다.
 - [ ] 사용자 권한에서 유효 설정의 state_dir를 읽고 기존 상대 경로 해석은 명확히 거부하거나 기존 HOME 기준 절대 경로로 정규화한다. 시스템 모드의 새 지원 범위는 소유자 HOME 안의 정규 디렉터리로 제한하고, HOME 밖·보호 경로·링크로 이탈하는 값은 서비스 변경 전에 명시적으로 거부한다. 사용자 guard의 기존 경로 동작은 보존한다.
 - [ ] 사용자 경로 생성/쓰기 검사도 소유자 UID·기본 GID로 수행한다. systemd unit의 경로 quoting/escaping을 중앙화하고 제어문자·개행·specifier 주입을 거부한다. root가 사용자 경로를 따라 chown/덮어쓰지 않는다.
 - [ ] 사용자 지정 상태 경로를 daemon lock, snapshot_state/restore_state, 첫 실행 확인 모두에 전달한다. 설치 중 설정 파일 변경을 감지하면 전환 전에 중단한다. guard의 실행 중 state_dir 변경은 자동 적용하지 않고 설치 재생성 필요 상태로 명시한다.
@@ -337,3 +337,10 @@ git worktree list
 - 보조 파일 부재·권한 거부·FIFO 및 worker timeout/출력 실패는 예외 종류만 표시하며 정상 journal을 보존한다. 기존 문자열 응답을 유지해 새 UI 계약은 필요하지 않다. UTF-8 응답도 최종 100,000바이트 이내로 제한한다.
 - 전체 CI 단위 profile 396개, 실제 root 권한 분리 fixture 1개, 전체 offline dashboard 검사 통과. PC/모바일 로그 1000줄 선택에서 정상 journal과 부분 실패 안내를 함께 확인했다.
 - 운영 설치본은 변경하지 않았다. R9 커밋은 3c6ed73이다.
+
+### 실행 기록 — R11
+
+- 잠금 진입 시 다른 설치가 끝난 조건에서 사용자 모드/시스템 owner 검사가 잠금보다 먼저 실행되는 두 실패를 재현했다. 검사를 owner 잠금 내부로 옮겨 apply 전에 거부하도록 수정했다.
+- 관리자 guard/웹 entrypoint는 root 잠금→owner 잠금, 사용자 entrypoint는 owner 잠금만 사용하며 역순 획득은 없다. 경합은 기다리지 않고 명시적으로 실패하는 기존 정책을 유지한다.
+- 별도 Python 프로세스로 동일 owner 잠금의 경합을 확인했고 예외 후 재획득도 성공했다. 전체 CI 단위 profile 399개 통과. 실제 systemd 설치/복구 수명주기는 R12와 함께 별도 검증할 예정이며 아직 완료가 아니다.
+- R10 커밋은 e000c00이다. 운영 설치본은 변경하지 않았다.
