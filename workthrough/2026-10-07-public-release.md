@@ -46,7 +46,7 @@ Tailscale 명령은 격리된 fixture이며 실제 Tailnet 연결 증거로 간�
 
 같은 커밋으로 두 번 만든 tar.gz가 byte-for-byte 일치하고 추출·파일 목록·해시·CLI 실행 검증이 통과했습니다.
 공개 대상 101개 파일의 Gitleaks 검사도 통과했습니다. 공개 RFC 8291의 정확한 시험값과 두 fixture 경로만 예외이며 운영 비밀값의 예외는 없습니다.
-새 공개 이력·GitHub CI·실제 Release 다운로드의 결과는 이어서 기록합니다.
+최종 GitHub 검증 결과는 아래에 기록합니다.
 
 ## GitHub 초기 실행 보완
 
@@ -56,3 +56,26 @@ Tailscale 명령은 격리된 fixture이며 실제 Tailnet 연결 증거로 간�
 원본 high/error SARIF가 수정된 판정기에서도 차단되는 것을 확인했으며 취약점 무시 목록은 추가하지 않았습니다.
 수정 후 전체 단위 337개 및 PC·모바일 브라우저 검사 통과, 추가 gate 경계 검사 7개 통과.
 잘못된 버전 태그는 실제 Release workflow에서 사전 차단됐고 Release 미생성을 확인한 뒤 시험 태그를 제거했습니다.
+
+## 최종 공개·릴리스 검증
+
+- 새 공개 저장소: [jihoon22-lee/wsl-resource-guard](https://github.com/jihoon22-lee/wsl-resource-guard). 최초 공개 이력은 이전 저장소와 연결되지 않습니다.
+- [전체 CI](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37639459886) 통과. Python 3.11·3.12·3.13·3.14에서 각각 339개 단위 검사, 별도 root 권한 fixture, PC·모바일 브라우저, 문서·비밀값·의존성·셸·워크플로 검사가 통과했습니다.
+- Python·JavaScript CodeQL SARIF 결과 각각 0건. 분석 성공 뒤 결과 판정기도 통과했습니다.
+- [릴리스 실행](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37639805472)이 태그 커밋 `dca23ffc3ca8e8a93d456676ae4623286cfc2436`에서 전체 검사를 다시 실행하고 동일 산출물을 게시했습니다.
+- [v0.1.0](https://github.com/jihoon22-lee/wsl-resource-guard/releases/tag/v0.1.0)에서 다시 다운로드한 압축본의 SHA-256은 `08c89ec7dd72500747d2e0d5d51d06e6dd3fa0e0e91972ce0443e8429ef732ca`입니다. 체크섬·파일 목록·manifest·커밋·CLI 버전 0.1.0을 확인했습니다.
+- 같은 커밋을 로컬에서 재빌드한 압축본과 게시된 파일이 byte-for-byte 일치했습니다.
+- 잘못된 버전의 시험 태그는 [릴리스 사전 검사](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37638678699)에서 차단됐습니다. Release가 없음을 확인하고 시험 태그를 삭제했습니다.
+- 비공개 취약점 제보, secret scanning·push protection을 활성화했습니다. main의 필수 승인·필수 CI 규칙은 설정하지 않았습니다.
+
+## 정리 및 운영 상태
+
+작업용 worktree 3개와 병합된 구현 브랜치, 폐기 WSL 배포판, 전용 Docker container/image,
+테스트 서버·프로세스와 로컬 테스트 산출물을 정리했습니다. 마지막 검증 기록 브랜치도 main 병합 후 제거합니다.
+기존 비공개 보관본, 운영 데이터·복구 백업·기존 가상환경, 이번 작업 이전의 사용자 산출물은 보존합니다.
+운영 웹·컨트롤러·guard는 이전 PID·시작 시각 그대로이며 재시작·새 버전 배포하지 않았습니다.
+폐기 WSL 제거 후 Windows 실행 등록을 다시 복구하고 PowerShell 실행을 확인했습니다.
+
+이후 개발은 새 공개 체크아웃에서 이어갑니다. 운영 적용은 이 릴리스의 별도 설치 작업입니다.
+실제 로그인된 Tailnet 접근과 외부 알림 수신은 이번 변경으로 다시 검증하지 않았으며,
+격리 WSL의 실제 systemd·파일 권한 검증 및 fixture 기반 인증 시험과 구분합니다.
