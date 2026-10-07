@@ -284,7 +284,26 @@ class Controller:
         gone = self._owner_read('gone-endpoints')
         return [s for s in subs if isinstance(s, dict) and s.get('endpoint') not in gone]
 
+    def push_status(self, subscription: object) -> dict:
+        """Check this device's exact subscription; never expose other endpoints."""
+        from . import webpush
+        try:
+            sub = webpush.validate_subscription(subscription)
+        except ValueError as exc:
+            raise ControlError(str(exc)) from None
+        with self.mutation(wait=5):
+            expired = sub['endpoint'] in self._owner_read('gone-endpoints')
+            saved = webpush.load_json(self.shared / webpush.SUBSCRIPTIONS_FILE, [])
+            registered = not expired and any(isinstance(row, dict)
+                and row.get('endpoint') == sub['endpoint'] and row.get('keys') == sub['keys']
+                for row in saved)
+            return {'registered': registered, 'expired': expired}
+
     def push_key(self) -> dict:
+        with self.mutation(wait=5):
+            return self._push_key_locked()
+
+    def _push_key_locked(self) -> dict:
         """VAPID public key for browser subscription; generated on first use."""
         from . import webpush
         ready, reason = webpush.available()
@@ -299,8 +318,12 @@ class Controller:
                 'subscriptions': len(self._push_subscriptions())}
 
     def push_subscribe(self, subscription: object, label: object = '') -> dict:
+        with self.mutation(wait=5):
+            return self._push_subscribe_locked(subscription, label)
+
+    def _push_subscribe_locked(self, subscription: object, label: object) -> dict:
         from . import webpush
-        if not self.push_key()['available']:
+        if not self._push_key_locked()['available']:
             raise ControlError('이 PC에서는 푸시 알림을 사용할 수 없습니다.')
         try:
             sub = webpush.validate_subscription(subscription)
@@ -311,9 +334,16 @@ class Controller:
         subs = [s for s in self._push_subscriptions() if s.get('endpoint') != sub['endpoint']]
         subs = (subs + [sub])[-webpush.MAX_SUBSCRIPTIONS:]
         self.write_shared(webpush.SUBSCRIPTIONS_FILE, subs)
-        return {'message': f'이 기기에서 경보 푸시를 받습니다. 등록된 기기 {len(subs)}대.'}
+        return {'message': f'이 기기의 푸시 등록을 완료했습니다. 등록된 기기 {len(subs)}대.'}
 
     def push_unsubscribe(self, endpoint: object) -> dict:
+        from . import webpush
+        if not webpush.endpoint_allowed(endpoint):
+            raise ControlError('해제할 브라우저 푸시 구독이 올바르지 않습니다.')
+        with self.mutation(wait=5):
+            return self._push_unsubscribe_locked(endpoint)
+
+    def _push_unsubscribe_locked(self, endpoint: str) -> dict:
         from . import webpush
         subs = [s for s in self._push_subscriptions() if s.get('endpoint') != endpoint]
         self.write_shared(webpush.SUBSCRIPTIONS_FILE, subs)
@@ -1091,6 +1121,8 @@ class Controller:
             return self.summary()
         if op == 'push-key':
             return self.push_key()
+        if op == 'push-status':
+            return self.push_status(request.get('subscription'))
         if op == 'audit':
             records = []
             for line in tail_lines(self.registry.parent / 'audit.jsonl', 50):

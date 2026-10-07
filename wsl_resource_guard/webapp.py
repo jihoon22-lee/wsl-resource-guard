@@ -216,6 +216,13 @@ def create_app(config: dict | None = None, control=request_control,
         return jsonify(control({'op': 'push-subscribe', 'subscription': body['subscription'],
                                 'label': str(body.get('label', ''))[:80], 'actor': session['login']}))
 
+    @app.post('/api/push/status')
+    def push_status():
+        body = request.get_json()
+        if not isinstance(body, dict) or not isinstance(body.get('subscription'), dict):
+            abort(400, description='확인할 푸시 구독 정보가 필요합니다.')
+        return jsonify(control({'op': 'push-status', 'subscription': body['subscription']}))
+
     @app.post('/api/push/unsubscribe')
     def push_unsubscribe():
         body = request.get_json()

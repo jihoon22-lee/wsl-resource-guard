@@ -131,13 +131,13 @@ assert not email_heartbeat_due(now_after_scheduled_minute, handled_slot, setting
 **수정:** `service_control.py`, `webpush.py`, `webapp.py`, `web/app.js`.
 **검사:** `tests/test_service_control.py`, `test_webpush.py`, `test_webapp.py`, `browser_offline.py`.
 
-- [ ] 키 생성·등록·해제 전체에 같은 root 공유 잠금을 적용한다. public 메서드가 잠금을 잡고 내부 `_locked` 헬퍼가 재획득 없이 실행하도록 하여 중첩 호출 교착을 피한다. 키를 요청마다 재생성하지 않는다.
-- [ ] barrier 기반 동시 최초 키 요청은 모두 같은 키, N개 동시 등록은 N개 보존, 등록/해제 경합과 실패 후 잠금 해제까지 검사한다.
-- [ ] 등록 시 `EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), p256dh)`로 유효성을 검사한다. 기존 저장 데이터에 잘못된 항목이 있어도 구독별 실패 결과를 남기고 뒤의 정상 구독 발송을 계속한다. 기존 정상 VAPID 키·구독은 보존한다.
-- [ ] 브라우저 로컬 구독만으로 수신 중이라 표시하지 않는다. 기존 allowlist와 CSRF를 유지한 고정 연산으로 해당 endpoint의 서버 등록 상태를 확인하고 다른 구독 목록/비밀은 반환하지 않는다. endpoint는 query string/접근 로그에 넣지 않는다.
-- [ ] 서버 등록 실패 시 '등록 미완료/다시 등록' 상태로 전환한다. 기존 로컬 구독을 재사용해 등록을 재시도하며 자동 외부 재등록/발송은 하지 않는다. 실제 Push 수신 성공과 등록됨 문구도 구분한다.
-- [ ] PC/모바일에서 서버 실패→새로고침→재등록, 서버만 삭제된 구독, 로컬만 삭제된 구독, 권한 거부·지원 불가·키 변경을 fixture로 검사한다.
-- [ ] `fix: Preserve push subscriptions and report registration truthfully`로 커밋한다.
+- [x] 키 생성·등록·해제 전체에 같은 root 공유 잠금을 적용한다. public 메서드가 잠금을 잡고 내부 `_locked` 헬퍼가 재획득 없이 실행하도록 하여 중첩 호출 교착을 피한다. 키를 요청마다 재생성하지 않는다.
+- [x] barrier 기반 동시 최초 키 요청은 모두 같은 키, N개 동시 등록은 N개 보존, 등록/해제 경합과 실패 후 잠금 해제까지 검사한다.
+- [x] 등록 시 `EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), p256dh)`로 유효성을 검사한다. 기존 저장 데이터에 잘못된 항목이 있어도 구독별 실패 결과를 남기고 뒤의 정상 구독 발송을 계속한다. 기존 정상 VAPID 키·구독은 보존한다.
+- [x] 브라우저 로컬 구독만으로 수신 중이라 표시하지 않는다. 기존 allowlist와 CSRF를 유지한 고정 연산으로 해당 endpoint의 서버 등록 상태를 확인하고 다른 구독 목록/비밀은 반환하지 않는다. endpoint는 query string/접근 로그에 넣지 않는다.
+- [x] 서버 등록 실패 시 '등록 미완료/다시 등록' 상태로 전환한다. 기존 로컬 구독을 재사용해 등록을 재시도하며 자동 외부 재등록/발송은 하지 않는다. 실제 Push 수신 성공과 등록됨 문구도 구분한다.
+- [x] PC/모바일에서 서버 실패→새로고침→재등록, 서버만 삭제된 구독, 로컬만 삭제된 구독, 권한 거부·지원 불가·키 변경을 fixture로 검사한다.
+- [x] `fix: Preserve push subscriptions and report registration truthfully`로 커밋한다.
 
 ```python
 ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_key_bytes)
@@ -313,3 +313,14 @@ git worktree list
 - R5 GREEN: 가장 최근 예정 시각의 epoch 슬롯만 처리한다. 기존 지역 시간 문자열을 읽고 새 기록은 epoch로 쓴다. 미래 슬롯은 관측 경고와 함께 재평가한다. 처리 슬롯, 실제 시도 last_email_status, 확인된 성공 last_email_success를 분리하고 CLI에서도 구분한다. 같은 sample의 Gmail 경보와 heartbeat를 합친다.
 - 5/15/60/120/600초 주기, 실패 후 재시작·동일 슬롯·미래 기록·미설정 채널, 미국 DST 반복/누락과 호주 30분 반복을 검증했다. SMTP 실제 발송 없이 채널 경계 fixture만 사용했다.
 - 전체 CI 단위 profile 386개 통과. R2 커밋은 a275cd3이며 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R6/R7/R8
+
+- R6 RED: 서로 다른 컨트롤러 인스턴스의 barrier 동시 최초 요청에서 키 4개가 달랐고, 동시 등록 4건 중 일부가 덮어써졌다. R7 RED: 곡선상 유효하지 않은 EC 점이 등록 검증을 통과했으며 malformed endpoint가 전송 루프 전에 예외를 냈다.
+- R6/R7 GREEN: 기존 root registry의 operation.lock을 키 생성·등록·해제에 공유하고, 내부 locked helper로 중복 획득을 피한다. 검증 실패/쓰기 실패 후 잠금도 해제한다. 등록 시 실제 P-256 파싱, 발송 시 구독별 검증·예외 격리를 적용했다. 기존 정상 VAPID 키는 유지한다.
+- R8 RED: 실제 Chromium에서 서버 등록 실패 후 등록 미완료/재등록 표시가 없었고, 고정 상태 조회 API도 존재하지 않았다.
+- R8 GREEN: 인증/CSRF가 적용되는 POST /api/push/status로 현재 기기의 endpoint+키만 비교한다. 다른 구독 목록은 반환하지 않고 URL query에 endpoint를 넣지 않는다. 화면은 서버 등록과 실제 수신을 구분하며 등록 실패 시 기존 로컬 구독을 재사용한다. 키 변경/만료 시 사용자의 등록 버튼 동작에서만 재생성한다.
+- PC/모바일에서 실패→새로고침→재등록, 서버만 삭제, 로컬만 삭제, 상태 조회 실패, 키 변경·만료, 권한 거부·서비스워커 준비 실패·지원 불가를 검증했다. 조회 실패만으로 자동 등록하거나 알림을 발송하지 않는다.
+- Ruling: 저장소의 고정 Python Playwright 회귀 파일을 확장한다. 별도 JS 테스트 프로젝트/CLI 설치/상시 브라우저 산출물 디렉터리는 만들지 않는다. 네트워크는 fixture origin에서만 처리한다.
+- 전체 CI 단위 profile 393개 통과, node --check 통과, 전체 offline dashboard 검사 통과. 실제 외부 Push/SMTP 수신 시험은 수행하지 않았다.
+- 운영 3개 유닛은 active, 최초 기준선 PID 및 NRestarts=0을 유지한다. R4/R5 커밋은 6f9a4fe다.

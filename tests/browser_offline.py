@@ -1153,9 +1153,108 @@ def check_psi_availability(browser) -> None:
             ctx.close()
 
 
+def check_push_registration(browser) -> None:
+    """Actual rendering, storage and clicks; transport stays entirely local."""
+    for mobile in (False, True):
+        context = browser.new_context(viewport={'width':390 if mobile else 1280,'height':900},
+                                      is_mobile=mobile,has_touch=mobile)
+        key = fixtures()['/api/push/key']['public_key']
+        context.add_init_script("""(() => {
+          const key = KEY_PLACEHOLDER;
+          const bytes = () => Uint8Array.from(atob(key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+          const f = window.__pushFixture = {permission:'granted', local:sessionStorage.getItem('push-local')==='1',
+                                           changed:false, workerFailure:false};
+          const sub = () => ({endpoint:'https://fcm.googleapis.com/fcm/send/fixture',
+            options:{applicationServerKey:f.changed ? new Uint8Array([1,2]) : bytes()},
+            toJSON(){return {endpoint:this.endpoint,keys:{p256dh:key,auth:'fixture'}}},
+            async unsubscribe(){f.local=false;sessionStorage.removeItem('push-local');return true;}});
+          const reg = {pushManager:{async getSubscription(){return f.local ? sub() : null},
+            async subscribe(){f.local=true;f.changed=false;sessionStorage.setItem('push-local','1');
+              sessionStorage.setItem('push-created',String(Number(sessionStorage.getItem('push-created')||0)+1));
+              return sub();}}};
+          Object.defineProperty(navigator,'serviceWorker',{configurable:true,value:{async register(){
+            if(f.workerFailure)throw Error('fixture unavailable');return reg;}}});
+          Object.defineProperty(window,'PushManager',{configurable:true,value:function(){}});
+          Object.defineProperty(window,'Notification',{configurable:true,value:class {
+            static get permission(){return f.permission} static async requestPermission(){return f.permission}
+          }});
+        })();""".replace('KEY_PLACEHOLDER',json.dumps(key)))
+        page=context.new_page(); errors=[]; page.on('pageerror',lambda error:errors.append(str(error)))
+        posts=[]; gets=[]; server={'registered':False,'fail':True,'expired':False,'status_fail':False}
+        def route_push(route):
+            path=route.request.url.removeprefix(ORIGIN).split('?',1)[0]
+            if path in ('/api/push/status','/api/push/subscribe','/api/push/unsubscribe'):
+                assert route.request.method=='POST' and '?' not in route.request.url
+                assert route.request.headers.get('x-csrf-token')=='offline'
+                posts.append((path,json.loads(route.request.post_data)))
+                if path=='/api/push/status':
+                    if server['status_fail']:
+                        return route.fulfill(status=503,json={'error':'fixture status failed'})
+                    body={'registered':server['registered'],'expired':server['expired']}
+                elif path=='/api/push/subscribe':
+                    if server['fail']:
+                        return route.fulfill(status=503,json={'error':'fixture registration failed'})
+                    server['registered']=True; server['expired']=False; body={'message':'등록 완료'}
+                else:
+                    server['registered']=False; body={'message':'해제 완료'}
+                return route.fulfill(json=body)
+            return serve(route,posts,gets,{})
+        page.route(ORIGIN+'/**',route_push)
+        try:
+            page.goto(ORIGIN+'/#settings')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('등록 미완료')
+            expect(page.locator('#push-on')).to_have_text('다시 등록')
+            page.reload()
+            expect(page.locator('#push-device')).to_contain_text('등록 미완료')
+            server['fail']=False
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='1'
+            expect(page.locator('#push-test')).to_have_count(1)
+            assert '경보를 받고 있습니다' not in page.locator('#push-device').inner_text()
+            server['status_fail']=True
+            subscriptions_before=sum(path=='/api/push/subscribe' for path,_ in posts)
+            page.evaluate('renderPushDevice()')
+            expect(page.locator('#push-device')).to_contain_text('등록 여부를 확인하지 못했습니다')
+            expect(page.locator('#push-on')).to_have_text('다시 등록')
+            assert sum(path=='/api/push/subscribe' for path,_ in posts)==subscriptions_before
+            server['status_fail']=False
+            server['registered']=False
+            page.reload()
+            expect(page.locator('#push-on')).to_have_text('다시 등록')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='1'
+            page.evaluate("async () => {__pushFixture.changed=true; await renderPushDevice()}")
+            expect(page.locator('#push-device')).to_contain_text('키가 변경')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='2'
+            server['expired']=True; server['registered']=False
+            page.evaluate('renderPushDevice()')
+            expect(page.locator('#push-device')).to_contain_text('구독이 만료')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='3'
+            page.evaluate("async () => {__pushFixture.local=false;sessionStorage.removeItem('push-local');await renderPushDevice()}")
+            expect(page.locator('#push-on')).to_have_text('이 기기에서 받기')
+            page.evaluate("async () => {__pushFixture.permission='denied';await renderPushDevice()}")
+            expect(page.locator('#push-on')).to_be_disabled()
+            expect(page.locator('#push-device')).to_contain_text('차단')
+            page.evaluate("async () => {__pushFixture.permission='granted';__pushFixture.workerFailure=true;swRegistration=null;await renderPushDevice()}")
+            expect(page.locator('#push-on')).to_be_disabled()
+            page.evaluate("async () => {delete window.PushManager;await renderPushDevice()}")
+            expect(page.locator('#push-device')).to_contain_text('지원하지 않습니다')
+            assert not errors,errors
+        finally:
+            context.close()
+
+
 def main() -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch()
+        check_push_registration(browser)
         check_psi_availability(browser)
         page = browser.new_page()
         errors: list[str] = []

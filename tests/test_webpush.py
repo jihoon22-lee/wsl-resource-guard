@@ -82,6 +82,32 @@ class CryptoTests(unittest.TestCase):
         public.verify(encode_dss_signature(int.from_bytes(raw[:32], 'big'), int.from_bytes(raw[32:], 'big')),
                       signing_input.encode(), ec.ECDSA(hashes.SHA256()))
 
+    def test_invalid_curve_point_rejected_before_registration(self):
+        invalid = {'endpoint': 'https://fcm.googleapis.com/fcm/send/invalid',
+                   'keys': {'p256dh': b64url(b'\x04' + bytes(64)), 'auth': AUTH}}
+        with self.assertRaises(ValueError):
+            webpush.validate_subscription(invalid)
+
+    def test_invalid_stored_subscription_does_not_block_later_valid_delivery(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            shared = Path(directory)
+            (shared / webpush.VAPID_FILE).write_text(json.dumps(webpush.generate_vapid()))
+            good = {'endpoint': 'https://fcm.googleapis.com/fcm/send/good',
+                    'keys': {'p256dh': UA_PUBLIC, 'auth': AUTH}}
+            invalid = {**good, 'keys': {'p256dh': b64url(b'\x04' + bytes(64)), 'auth': AUTH}}
+            (shared / webpush.SUBSCRIPTIONS_FILE).write_text(json.dumps([invalid, {'endpoint': []}, good]))
+            response = MagicMock()
+            response.__enter__.return_value.status = 201
+            opener = MagicMock(return_value=response)
+            sent, attempted, detail = webpush.send_all(shared,None,None,{'title':'fixture'},opener=opener)
+            self.assertEqual((sent,attempted),(1,3))
+            opener.assert_called_once()
+            self.assertIn('ValueError',detail)
+            self.assertNotIn(good['endpoint'],detail)
+
     def test_send_all_marks_gone_endpoints(self):
         import tempfile
         import urllib.error

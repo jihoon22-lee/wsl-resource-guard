@@ -1756,7 +1756,9 @@ function keyBytes(base64) {
   const raw = atob((base64 + "=".repeat((4 - (base64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
+let pushRenderVersion = 0;
 async function renderPushDevice() {
+  const version = ++pushRenderVersion;
   const host = $("push-device");
   if (!host) return;
   if (!pushSupported()) {
@@ -1772,13 +1774,51 @@ async function renderPushDevice() {
     return;
   }
   const reg = swRegistration || (await registerServiceWorker());
-  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  let sub = null, registered = false, replaceSubscription = false, statusError = "";
+  try {
+    sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (sub) {
+      const localKey = sub.options?.applicationServerKey;
+      const expected = keyBytes(pushKeyData.public_key);
+      if (localKey) {
+        const actual = new Uint8Array(localKey);
+        replaceSubscription = actual.length !== expected.length || actual.some((b, i) => b !== expected[i]);
+      }
+      if (!replaceSubscription) {
+        const status = await api("/api/push/status", { subscription: sub.toJSON() });
+        registered = status.registered === true;
+        replaceSubscription = status.expired === true;
+      }
+    }
+  } catch {
+    statusError = "서버 등록 여부를 확인하지 못했습니다. 다시 등록할 수 있습니다.";
+  }
+  if (version !== pushRenderVersion || $("push-device") !== host) return;
   const denied = Notification.permission === "denied";
-  host.innerHTML = `<div class="push-row"><div><strong>이 기기 푸시 알림</strong><span class="subline">${sub ? "이 기기에서 경보를 받고 있습니다" : denied ? "브라우저 설정에서 이 사이트의 알림이 차단되어 있습니다" : "경보·회복 알림을 이 기기로 받습니다"} · 등록된 기기 ${num(pushKeyData.subscriptions)}대</span></div><div class="row-actions">${sub ? '<button class="button compact secondary" id="push-test">테스트 보내기</button><button class="button compact secondary" id="push-off">해제</button>' : `<button class="button compact primary" id="push-on" ${denied ? "disabled" : ""}>이 기기에서 받기</button>`}</div></div>`;
-  $("push-on")?.addEventListener("click", async () => {
+  const ready = registered && !denied && !replaceSubscription && !statusError;
+  const description = denied ? "브라우저 설정에서 이 사이트의 알림이 차단되어 있습니다"
+    : !reg ? "브라우저 알림 서비스를 준비하지 못했습니다. 새로고침 후 다시 시도하세요"
+    : replaceSubscription ? "푸시 키가 변경됐거나 구독이 만료됐습니다. 다시 등록하세요"
+    : statusError || (ready ? "서버 등록 완료 · 실제 수신은 테스트 알림으로 확인하세요"
+      : sub ? "서버 등록 미완료 · 기존 브라우저 구독으로 다시 등록할 수 있습니다"
+      : "경보·회복 알림을 이 기기로 받습니다");
+  const on = `<button class="button compact primary" id="push-on" ${denied || !reg ? "disabled" : ""}>${sub ? "다시 등록" : "이 기기에서 받기"}</button>`;
+  host.innerHTML = `<div class="push-row"><div><strong>이 기기 푸시 알림</strong><span class="subline">${esc(description)} · 등록된 기기 ${num(pushKeyData.subscriptions)}대</span></div><div class="row-actions">${ready ? '<button class="button compact secondary" id="push-test">테스트 보내기</button>' : on}${sub ? '<button class="button compact secondary" id="push-off">해제</button>' : ""}</div></div>`;
+  $("push-on")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
     try {
-      if ((await Notification.requestPermission()) !== "granted") return notify("알림 권한이 허용되지 않았습니다.");
-      const subscription = await reg.pushManager.subscribe({
+      if (!reg) throw new Error("브라우저 알림 서비스를 준비하지 못했습니다.");
+      if ((await Notification.requestPermission()) !== "granted") {
+        notify("알림 권한이 허용되지 않았습니다.");
+        return;
+      }
+      let subscription = sub;
+      if (subscription && replaceSubscription) {
+        await api("/api/push/unsubscribe", { endpoint: subscription.endpoint });
+        if (!(await subscription.unsubscribe())) throw new Error("이전 구독을 해제하지 못했습니다.");
+        subscription = null;
+      }
+      subscription ||= await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: keyBytes(pushKeyData.public_key),
       });
@@ -1788,16 +1828,20 @@ async function renderPushDevice() {
       await refresh(true);
     } catch (error) {
       notify(error.message || "푸시 등록에 실패했습니다.");
+    } finally {
+      await renderPushDevice();
     }
   });
   $("push-off")?.addEventListener("click", async () => {
     try {
       const data = await api("/api/push/unsubscribe", { endpoint: sub.endpoint });
-      await sub.unsubscribe();
+      if (!(await sub.unsubscribe())) throw new Error("서버 등록은 해제됐지만 브라우저 구독을 해제하지 못했습니다.");
       notify(data.message, true);
       await refresh(true);
     } catch (error) {
       notify(error.message);
+    } finally {
+      await renderPushDevice();
     }
   });
   $("push-test")?.addEventListener("click", async () => {
@@ -1808,6 +1852,7 @@ async function renderPushDevice() {
     }
   });
 }
+
 function renderAudit() {
   if (!loaded.audit) {
     $("audit-table").innerHTML = '<div class="empty">불러오는 중…</div>';
