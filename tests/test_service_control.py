@@ -608,12 +608,35 @@ class ControllerTests(unittest.TestCase):
         self.data['services'] = [entry]
         atomic_json(self.path, self.data)
         self.controller.logs('compose-demo', lines=999999)
-        self.assertEqual(self.commands()[-1], ('journalctl', '-u', 'demo.service', '-n', '999999', '--no-pager', '-o', 'short-iso'))
+        self.assertEqual(self.commands()[-1], ('journalctl', '-u', 'demo.service', '-n', '2000', '--no-pager', '-o', 'short-iso'))
         # dispatch는 1..2000으로 클램프
         self.controller.dispatch({'op': 'logs', 'id': 'compose-demo', 'lines': 50000}, uid=1, web_uid=999)
         self.assertEqual(self.commands()[-1][3:5], ('-n', '2000'))
         self.controller.dispatch({'op': 'logs', 'id': 'compose-demo', 'lines': -5}, uid=1, web_uid=999)
         self.assertEqual(self.commands()[-1][3:5], ('-n', '1'))
+
+    def test_auxiliary_log_failure_preserves_journal_and_reports_partial_failure(self):
+        self.data['services'] = [dict(self.entry, kind='systemd', target='opencode-web.service')]
+        atomic_json(self.path, self.data)
+        self.run.return_value = 'journal fixture'
+        for failure in (PermissionError('private marker'), TimeoutError('private marker'),
+                        ValueError('private marker'), ControlError('private marker')):
+            self.controller._owner_read = Mock(side_effect=failure)
+            result = self.controller.logs('compose-demo', lines=1000)
+            self.assertIn('journal fixture', result['text'])
+            self.assertIn('보조 로그 읽기 실패', result['text'])
+            self.assertNotIn('private marker', result['text'])
+        self.controller._owner_read = Mock(return_value='auxiliary fixture')
+        for count in (500, 501, 1000, 2000):
+            result = self.controller.logs('compose-demo', lines=count)
+            self.controller._owner_read.assert_called_with('logs', {'target': 'opencode-web.service', 'lines': count})
+            self.assertIn('journal fixture', result['text'])
+            self.assertIn('auxiliary fixture', result['text'])
+        self.run.return_value = '가'*100000
+        self.assertLessEqual(len(self.controller.logs('compose-demo')['text'].encode()), 100000)
+        for value in (True, None, 2.5, 'invalid'):
+            self.controller.dispatch({'op': 'logs', 'id': 'compose-demo', 'lines': value}, uid=1, web_uid=999)
+            self.assertEqual(self.commands()[-1][3:5], ('-n', '80'))
 
     def test_ssh_disable_stops_socket_as_well(self):
         self.data['services'] = [dict(self.entry, id='ssh', target='ssh.service', kind='systemd',

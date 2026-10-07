@@ -18,6 +18,7 @@ from .safe_read import read_text
 MAX_OUTPUT = 16 * 1024 * 1024
 TIMEOUT = 20
 LOG_TAILS = {'opencode-web.service': [('[OpenCode stdout]', '.local/state/opencode-web.log')]}
+MAX_LOG_LINES = 2000
 
 
 def weekly_status(value):
@@ -260,14 +261,15 @@ def dispatch(operation: str, args: dict, reader=None):
         from .webpush import gone_endpoints
         return sorted(gone_endpoints(reader._state_path()))
     target, lines = args.get('target'), args.get('lines', 80)
-    if target not in LOG_TAILS or type(lines) is not int or not 1 <= lines <= 500:
+    if target not in LOG_TAILS or type(lines) is not int or not 1 <= lines <= MAX_LOG_LINES:
         raise ValueError('Invalid log target')
     chunks = []
     for label, relative in LOG_TAILS[target]:
         try:
             text = read_text(reader.home / relative, max_bytes=64000, errors='replace', tail=True)
-        except OSError:
-            text = ''
+        except OSError as exc:
+            chunks.append(f'{label}\n[보조 로그 읽기 실패: {type(exc).__name__}]')
+            continue
         chunks.append(label + '\n' + '\n'.join(text.splitlines()[-lines:]))
     return '\n\n'.join(chunks)
 

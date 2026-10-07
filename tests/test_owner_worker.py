@@ -41,6 +41,39 @@ class SafeReadTests(unittest.TestCase):
 
 
 class OwnerDataTests(unittest.TestCase):
+    def test_log_tail_supports_controller_limits_and_rejects_invalid_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            path = home / '.local/state/opencode-web.log'
+            path.parent.mkdir(parents=True)
+            path.write_text(''.join(f'line-{i}\n' for i in range(2100)))
+            reader = owner_worker.OwnerData(home)
+            for count in (500, 501, 1000, 2000):
+                result = owner_worker.dispatch('logs', {'target': 'opencode-web.service', 'lines': count}, reader)
+                self.assertEqual(result.splitlines()[1:], [f'line-{i}' for i in range(2100-count, 2100)])
+            for count in (0, 2001, True, 1.5, '1000'):
+                with self.subTest(count=count), self.assertRaises(ValueError):
+                    owner_worker.dispatch('logs', {'target': 'opencode-web.service', 'lines': count}, reader)
+
+    def test_auxiliary_log_failures_are_visible_and_do_not_expose_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reader = owner_worker.OwnerData(Path(directory))
+            args = {'target': 'opencode-web.service', 'lines': 1000}
+            for failure in (FileNotFoundError('/private/marker'), PermissionError('/private/marker'),
+                            TimeoutError('/private/marker')):
+                with patch.object(owner_worker, 'read_text', side_effect=failure):
+                    result = owner_worker.dispatch('logs', args, reader)
+                self.assertIn('보조 로그 읽기 실패', result)
+                self.assertNotIn('/private/marker', result)
+            path = reader.home / '.local/state/opencode-web.log'
+            path.parent.mkdir(parents=True)
+            os.mkfifo(path)
+            self.assertIn('보조 로그 읽기 실패', owner_worker.dispatch('logs', args, reader))
+            path.unlink()
+            path.write_text('가'*100000)
+            result = owner_worker.dispatch('logs', args, reader)
+            self.assertLessEqual(len(result.encode()), 64100)
+
     def test_permission_denied_secret_is_handled_without_exists_probe(self):
         from wsl_resource_guard.config import Settings
         settings = Settings(secrets_path=Path('/fixture/denied-secret.json'))

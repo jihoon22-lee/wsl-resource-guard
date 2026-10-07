@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 import urllib.error
 import urllib.request
 
-from .owner_worker import LOG_TAILS
+from .owner_worker import LOG_TAILS, MAX_LOG_LINES
 
 REGISTRY = Path('/var/lib/wrg-services/registry.json')
 # Root-written, owner-group-readable hand-off to the guard daemon (which runs
@@ -668,13 +668,25 @@ class Controller:
             return {'message': '등록을 삭제했습니다. 프로그램·DB·볼륨·로그는 보존됩니다.' if action == 'remove' else '설정을 적용했습니다.'}
 
     def logs(self, identifier: str, lines: int = 80) -> dict:
+        # Keep direct callers and socket requests on the same bounded contract.
+        try:
+            lines = int(lines) if type(lines) in (int, str) else 80
+        except ValueError:
+            lines = 80
+        lines = min(max(lines, 1), MAX_LOG_LINES)
         entry = next((s for s in self.load()['services'] if s['id'] == identifier), None)
         if entry is None:
             raise ControlError('등록된 서비스를 찾을 수 없습니다.')
         if entry['kind'] == 'systemd':
             output = self.run('journalctl', '-u', entry['target'], '-n', str(lines), '--no-pager', '-o', 'short-iso')
             if entry['target'] in LOG_TAILS:
-                output += '\n\n' + self._owner_read('logs', {'target': entry['target'], 'lines': lines})
+                try:
+                    auxiliary = self._owner_read('logs', {'target': entry['target'], 'lines': lines})
+                    if not isinstance(auxiliary, str):
+                        raise ValueError('Invalid auxiliary log response')
+                except (OSError, ValueError, ControlError, subprocess.TimeoutExpired) as exc:
+                    auxiliary = f'[보조 로그 읽기 실패: {type(exc).__name__}]'
+                output += '\n\n' + auxiliary
         else:
             chunks = []
             for container in self.containers(entry['target'])[:12]:
@@ -687,7 +699,7 @@ class Controller:
                     text = self.run('docker', 'logs', '--tail', str(lines), container['id'])
                 chunks.append(f"[{container['name']}]\n{text[-12000:]}")
             output = '\n'.join(chunks)
-        return {'text': output[-100000:]}
+        return {'text': output.encode('utf-8')[-100000:].decode('utf-8', errors='ignore')}
 
     def restore(self, dry_run: bool = False) -> dict:
         """Boot recovery affects only explicitly registered Compose projects."""
@@ -1132,11 +1144,7 @@ class Controller:
                     continue
             return records
         if op == 'logs':
-            try:
-                lines = int(request.get('lines', 80))
-            except (TypeError, ValueError):
-                lines = 80
-            return self.logs(str(request.get('id', '')), min(max(lines, 1), 2000))
+            return self.logs(str(request.get('id', '')), request.get('lines', 80))
         try:
             if op == 'register':
                 result = self.register(str(request.get('key', '')), request.get('name'), request.get('url'))

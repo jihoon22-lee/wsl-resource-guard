@@ -817,17 +817,21 @@ def check_skip_link_contrast(page) -> None:
     assert ratio >= 4.5, f'light-theme skip-link contrast {ratio:.2f} ({fg} on {bg})'
 
 
-def check_log_viewer(page, gets: list) -> None:
+def check_log_viewer(page, gets: list, overrides: dict) -> None:
     page.goto(ORIGIN + '/#services')
     page.locator('#services-list [data-manage="demo"]').first.click()
     page.locator('#show-logs').click()
     expect(page.locator('#log-lines')).to_have_count(1)
-    page.locator('#log-lines').select_option('500')
+    overrides['/api/services/demo/logs'] = {'text': 'journal fixture\n[보조 로그 읽기 실패: PermissionError]'}
+    page.locator('#log-lines').select_option('1000')
+    expect(page.locator('#log-content')).to_contain_text('journal fixture')
+    expect(page.locator('#log-content')).to_contain_text('보조 로그 읽기 실패')
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not any(
             p == '/api/services/demo/logs' for p in gets):
         page.wait_for_timeout(100)
     assert any(p == '/api/services/demo/logs' for p in gets), gets
+    overrides.pop('/api/services/demo/logs')
     page.locator('#dialog-close').click()
 
 
@@ -1357,7 +1361,7 @@ def main() -> None:
         check_quick_service_action(page, posts)
         check_oneshot_status(page)
         check_service_limits_health_and_dialog(page)
-        check_log_viewer(page, gets)
+        check_log_viewer(page, gets, overrides)
         posts.clear()
         check_settings_view(page)
         assert ('/api/settings/change', {'key': 'warning_available_gib', 'value': 6.5}) in posts, posts
@@ -1388,6 +1392,7 @@ def main() -> None:
         # stays sticky, and touch targets reach 44px.
         check_mobile_layout(mobile, overrides, gets)
         check_oneshot_status(mobile)
+        check_log_viewer(mobile, gets, overrides)
         check_disk_chart_hover(mobile, overrides, max_viewbox=420)
         assert not mobile_errors, mobile_errors
         mobile.close()
