@@ -140,6 +140,8 @@ def install(owner):
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 8765))
     with owner_install_lock(owner):
+        preflight_identity(owner.pw_name, origin, login, REGISTRY, WEB_CONFIG)
+        validate_system_owner(owner)
         return _install_preflighted(owner, origin, login, serve, old_handler)
 
 

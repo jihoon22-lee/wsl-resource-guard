@@ -114,6 +114,36 @@ class OwnerDataTests(unittest.TestCase):
 @unittest.skipUnless(os.geteuid() == 0, 'Requires isolated root credential test')
 class RootIsolationTests(unittest.TestCase):
     """Run as root only; no accounts, service state, or installed files change."""
+    def test_installer_queries_drop_supplementary_groups_and_cannot_read_root_files(self):
+        import pwd
+        from types import SimpleNamespace
+        from wsl_resource_guard.installer import owner_query
+        account = pwd.getpwnam('nobody')
+        with tempfile.TemporaryDirectory(prefix='wrg-owner-query-', dir='/run') as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            private = root / 'private.json'
+            private.write_text('root-only fixture')
+            private.chmod(0o600)
+            home = root / 'home'
+            home.mkdir()
+            os.chown(home, account.pw_uid, account.pw_gid)
+            (home / 'linked.json').symlink_to(private)
+            owner = SimpleNamespace(pw_uid=account.pw_uid, pw_gid=account.pw_gid,
+                                    pw_name=account.pw_name, pw_dir=str(home))
+            def inspect():
+                try:
+                    (home / 'linked.json').read_text()
+                    readable = True
+                except PermissionError:
+                    readable = False
+                return {'uid': os.geteuid(), 'gid': os.getegid(), 'groups': os.getgroups(),
+                        'home': os.environ['HOME'], 'readable': readable}
+            result = owner_query(owner, inspect)
+            self.assertEqual(result, dict(uid=account.pw_uid, gid=account.pw_gid, groups=[],
+                                          home=str(home), readable=False))
+            self.assertEqual(private.read_text(), 'root-only fixture')
+
     def test_actual_dropped_worker_cannot_follow_root_only_symlinks(self):
         import importlib
         import pwd

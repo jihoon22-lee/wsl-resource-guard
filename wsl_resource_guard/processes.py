@@ -316,7 +316,7 @@ SERVICE_KILL_BLOCK = "systemd 관리 서비스는 여기서 종료하지 않습�
 def kill_block_reason(root: ProcessInfo | None) -> str:
     """Non-empty when this tree root must not be signalled from session controls."""
     # The nearest owning unit also covers sub-cgroups inside a service, while
-    # an interactive scope under user@UID.service remains an interactive scope.
+    # an interactive scope under a per-user manager remains interactive.
     for component in reversed(((root.cgroup if root else "") or "").split('/')):
         if component.endswith('.scope'):
             return ''

@@ -113,6 +113,17 @@ jobs:
         run: sudo env PYTHONPATH=tests /usr/bin/python3 -m unittest test_owner_worker.RootIsolationTests -q
       - name: Prepare isolated final-path environments and reject invalid locks
         run: sudo env PYTHONPATH=. /usr/bin/python3 tests/uv_install_smoke.py
+  guard-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise guard installation and recovery on this disposable VM
+        env:
+          RUNNER_ENVIRONMENT: '${{ runner.environment }}'
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT /usr/bin/python3 -B tests/guard_install_smoke.py
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

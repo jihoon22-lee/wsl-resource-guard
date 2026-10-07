@@ -93,6 +93,19 @@ class InstallerSafetyTests(unittest.TestCase):
                         pass
 
 
+    def test_owner_query_bounds_output_and_releases_pipe_after_error(self):
+        from wsl_resource_guard.installer import owner_query
+        owner = pwd.getpwuid(os.getuid())
+        self.assertEqual(owner_query(owner, lambda: {'state': '/fixture'}), {'state': '/fixture'})
+        before = len(list(Path('/proc/self/fd').iterdir()))
+        with self.assertRaisesRegex(RuntimeError, 'Owner-UID'):
+            owner_query(owner, lambda: {'value': 'x'*4096})
+        self.assertEqual(len(list(Path('/proc/self/fd').iterdir())), before)
+        import time
+        with self.assertRaises(TimeoutError):
+            owner_query(owner, lambda: time.sleep(10), timeout=.05)
+        self.assertEqual(len(list(Path('/proc/self/fd').iterdir())), before)
+
     def test_owner_lock_contends_across_processes_and_releases_on_failure(self):
         import subprocess
         import sys

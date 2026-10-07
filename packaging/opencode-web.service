@@ -10,7 +10,7 @@ User=@OWNER@
 Group=@GROUP@
 Environment="HOME=@HOME@"
 WorkingDirectory=@HOME_PATH@/projects
-ExecStart="@HOME@/.opencode/bin/opencode" web --hostname 127.0.0.1 --port 4096
+ExecStart=:"@HOME@/.opencode/bin/opencode" web --hostname 127.0.0.1 --port 4096
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30

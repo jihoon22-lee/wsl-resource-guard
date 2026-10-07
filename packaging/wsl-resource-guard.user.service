@@ -4,7 +4,9 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/wrg run
+Environment="HOME=@HOME@"
+WorkingDirectory=@HOME_PATH@
+ExecStart=:"@HOME@/.local/bin/wrg" run
 Restart=always
 RestartSec=5
 TimeoutStopSec=20

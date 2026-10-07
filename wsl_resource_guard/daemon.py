@@ -21,7 +21,7 @@ from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations
 from .disks import disk_severity, read_disks
 from .metrics import KIB_PER_GIB, SystemMetrics, read_host_memory, read_system_metrics
 from .notifications import SKIPPED_DETAILS, Notifier, NotificationResult
-from .processes import ProcessSnapshot, SessionUsage, apply_cpu_rates, build_snapshot
+from .processes import ProcessSnapshot, SessionUsage, apply_cpu_rates, build_snapshot, process_start_ticks
 from .reporting import build_html_report, build_text_report, collect_resource_rows
 
 
@@ -859,6 +859,8 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
 
     next_state: dict[str, object] = {
         "updated_at": now,
+        "writer_pid": os.getpid(),
+        "writer_start_ticks": process_start_ticks(os.getpid()),
         "severity": evaluation.severity,
         "notified_severity": old_notified_severity,
         "notified_reasons": notified_reasons,
@@ -1017,12 +1019,16 @@ def state_writer_lock(state_path: Path):
 
 def _reload_settings(active: Settings, proposed: Settings) -> Settings:
     if proposed.state_path.resolve() != active.state_path.resolve():
-        print("config warning state_dir change requires restart; keeping locked directory", flush=True)
+        print("config warning state_dir change requires reinstall/restart; keeping locked directory", flush=True)
         return replace(proposed, state_dir=active.state_dir)
     return proposed
 
 
 def run_forever(settings: Settings) -> None:
+    expected = os.environ.get('WRG_SYSTEM_STATE_DIR')
+    if expected and settings.state_path.resolve() != Path(expected).resolve():
+        print('config warning state_dir change requires reinstall; keeping installed directory', flush=True)
+        settings = replace(settings, state_dir=expected)
     with state_writer_lock(settings.state_path):
         _run_locked(settings)
 

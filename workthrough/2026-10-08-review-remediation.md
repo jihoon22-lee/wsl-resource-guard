@@ -169,10 +169,10 @@ updateBadges();
 **검사:** `tests/test_guard_install.py`, `test_installer.py`, `test_owner_worker.py`와 새 격리 systemd 수명주기 시험.
 
 - [x] owner 잠금 획득 후 owner/origin/설치 모드 충돌을 다시 검사한다. root/owner 잠금 획득 순서를 모든 설치 경로에서 통일하고 교착·대기 timeout을 검사한다.
-- [ ] 사용자 권한에서 유효 설정의 state_dir를 읽고 기존 상대 경로 해석은 명확히 거부하거나 기존 HOME 기준 절대 경로로 정규화한다. 시스템 모드의 새 지원 범위는 소유자 HOME 안의 정규 디렉터리로 제한하고, HOME 밖·보호 경로·링크로 이탈하는 값은 서비스 변경 전에 명시적으로 거부한다. 사용자 guard의 기존 경로 동작은 보존한다.
-- [ ] 사용자 경로 생성/쓰기 검사도 소유자 UID·기본 GID로 수행한다. systemd unit의 경로 quoting/escaping을 중앙화하고 제어문자·개행·specifier 주입을 거부한다. root가 사용자 경로를 따라 chown/덮어쓰지 않는다.
-- [ ] 사용자 지정 상태 경로를 daemon lock, snapshot_state/restore_state, 첫 실행 확인 모두에 전달한다. 설치 중 설정 파일 변경을 감지하면 전환 전에 중단한다. guard의 실행 중 state_dir 변경은 자동 적용하지 않고 설치 재생성 필요 상태로 명시한다.
-- [ ] 단순 is-active 뒤 성공을 반환하지 않는다. 새 프로세스 시작 이후 올바른 state 경로의 첫 성공 수집을 최대 180초 내 확인하고, 실패 시 이번 작업의 코드·유닛·active/enabled·데이터만 복구한다. 경보 severity가 normal이어야 한다는 조건은 두지 않는다.
+- [x] 사용자 권한에서 유효 설정의 state_dir를 읽고 기존 상대 경로 해석은 명확히 거부하거나 기존 HOME 기준 절대 경로로 정규화한다. 시스템 모드의 새 지원 범위는 소유자 HOME 안의 정규 디렉터리로 제한하고, HOME 밖·보호 경로·링크로 이탈하는 값은 서비스 변경 전에 명시적으로 거부한다. 사용자 guard의 기존 경로 동작은 보존한다.
+- [x] 사용자 경로 생성/쓰기 검사도 소유자 UID·기본 GID로 수행한다. systemd unit의 경로 quoting/escaping을 중앙화하고 제어문자·개행·specifier 주입을 거부한다. root가 사용자 경로를 따라 chown/덮어쓰지 않는다.
+- [x] 사용자 지정 상태 경로를 daemon lock, snapshot_state/restore_state, 첫 실행 확인 모두에 전달한다. 설치 중 설정 파일 변경을 감지하면 전환 전에 중단한다. guard의 실행 중 state_dir 변경은 자동 적용하지 않고 설치 재생성 필요 상태로 명시한다.
+- [x] 단순 is-active 뒤 성공을 반환하지 않는다. 새 프로세스 시작 이후 올바른 state 경로의 첫 성공 수집을 최대 180초 내 확인하고, 실패 시 이번 작업의 코드·유닛·active/enabled·데이터만 복구한다. 경보 severity가 normal이어야 한다는 조건은 두지 않는다.
 - [ ] 격리된 systemd 환경에서 기본/사용자 지정 경로 신규 설치, 사용자→시스템 전환, 반대 순서 거부, 설치 경쟁, 권한 오류, 최초 수집 실패, 롤백 후 기존 guard 수집을 시험한다. 운영 WSL에 fixture 유닛을 설치하거나 별도 WSL 배포판을 기동하지 않는다. GitHub-hosted disposable VM 등 독립된 환경에서 실제 namespace 시험을 수행한다.
 - [ ] `fix: Serialize guard installation and validate writable state paths`로 커밋한다.
 
@@ -344,3 +344,13 @@ git worktree list
 - 관리자 guard/웹 entrypoint는 root 잠금→owner 잠금, 사용자 entrypoint는 owner 잠금만 사용하며 역순 획득은 없다. 경합은 기다리지 않고 명시적으로 실패하는 기존 정책을 유지한다.
 - 별도 Python 프로세스로 동일 owner 잠금의 경합을 확인했고 예외 후 재획득도 성공했다. 전체 CI 단위 profile 399개 통과. 실제 systemd 설치/복구 수명주기는 R12와 함께 별도 검증할 예정이며 아직 완료가 아니다.
 - R10 커밋은 e000c00이다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R12 구현과 로컬 검증
+
+- 소유자 권한의 제한된 query로 state 경로·설정 해시만 돌려받는다. 최대 4096바이트/10초, root 호출의 보조 그룹 제거를 적용했고 timeout 후 자식 회수와 FD 해제를 시험했다. 웹 설치도 owner 잠금 안에서 identity를 재검사한다.
+- 시스템 state는 HOME 아래 절대/~/ 정규 디렉터리만 허용하며 상대 경로·HOME 밖·링크·비디렉터리·제어문자를 사전 거부한다. 쓰기 probe는 owner로만 수행하고 준비 중 설정 변경이면 서비스 전환 전에 실패한다. 사용자 guard의 HOME 기준 상대 경로와 외부 경로는 보존한다.
+- systemd 지시문은 같은 따옴표 규칙을 사용하지 않는다. 실제 systemd 259 parser에서 WorkingDirectory 인용 실패를 확인한 뒤 단일 경로와 인용 목록/명령을 구분했다. ExecStart는 환경 확장을 끄고 %, $를 리터럴로 처리한다. systemd 자체가 허용하지 않는 따옴표/역슬래시 HOME은 사전 거부한다. 공백/%/$ HOME과 따옴표를 가진 상태 경로의 세 템플릿은 systemd-analyze verify를 통과했다. 검증용 파일만 사용했고 서비스에 등록하지 않았다.
+- 유닛의 설치 경로를 guard에 전달해 재시작/복구 후에도 해당 경로를 유지하며 변경은 재설치 필요 경고로 남긴다. state에 writer PID/start token을 기록하고 설치기는 새 프로세스의 첫 상태 기록을 최대 180초 내 확인한다. active만으로 성공하지 않는다.
+- 사용자 지정 경로의 snapshot/복구, 새 실패 기록 보존, 준비 중 설정 변경 시 서비스 명령 0, 새 PID/토큰/시각 불일치 거부, 실제 sample 저장→readiness 연결을 검사했다. 전체 CI 단위 profile 411개와 실제 root fixture 2개가 통과했다.
+- tests/guard_install_smoke.py와 guard-lifecycle CI job을 추가했다. 일회용 GitHub-hosted systemd VM만 허용하며 WSL/기존 설치에서는 거부한다. 사용자 신규 설치·전환 실패 복구·시스템 전환·역순 거부·잠금 경합·사용자 지정 mount 쓰기·업데이트 실패 복구를 실제 유닛으로 시험한다. **이 CI 수명주기 실행은 아직 미검증**이며 단계 6 완료 조건은 남아 있다.
+- 운영 설치본은 변경하지 않았다. R11 커밋은 ba8e954이다.
