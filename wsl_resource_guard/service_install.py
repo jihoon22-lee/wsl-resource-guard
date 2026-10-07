@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 
 from .build_info import write_stamp
+from .uv_environment import install_environment
 from .installer import (FileTransaction, install_lock, owner_call, owner_install_lock, resolve_owner, restore_unit,
                         run, run_as, unit_state, validate_root_path)
 from .service_control import Controller, REGISTRY, SHARED
@@ -88,11 +89,8 @@ def preflight_identity(owner: str, origin: str, login: str,
 def prepare_venv(dest: Path, requirements: Path, web, environment: Path | None = None) -> Path:
     """Create at its permanent path: venv script shebangs cannot survive a rename."""
     environment = environment or dest / '.venvs' / uuid.uuid4().hex
-    environment.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-    run('/usr/bin/python3', '-m', 'venv', str(environment))
+    install_environment(environment, requirements)
     python = str(environment / 'bin/python')
-    run(python, '-m', 'pip', 'install', '--disable-pip-version-check', '--require-hashes', '-r', str(requirements))
-    run(python, '-m', 'pip', 'check')
     run_as(web, python, '-c', 'import flask, gunicorn', cwd='/')
     run_as(web, str(environment / 'bin/gunicorn'), '--version', cwd='/')
     return environment
@@ -129,7 +127,7 @@ def wait_for_health():
 
 
 def install(owner):
-    # All identity checks precede writes, chmod/chown, account creation and pip.
+    # All identity checks precede writes, chmod/chown, account creation and dependency preparation.
     paths = [DEST, REGISTRY, SHARED, WEB_CONFIG, BACKUP_ROOT,
              *(UNIT_DIR / name for name in UNITS)]
     for path in paths:

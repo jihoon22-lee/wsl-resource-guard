@@ -12,28 +12,48 @@ jobs:
       matrix:
         python: ['3.11', '3.12', '3.13', '3.14']
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '${{ matrix.python }}'
-      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.23'
+          checksum: '9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6'
+          enable-cache: false
+      - name: Create and verify the locked environment
+        run: |
+          uv venv --python "$(command -v python)" --no-python-downloads .venv
+          uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
+          uv pip check --python .venv/bin/python
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - run: python scripts/ci_unit.py
   browser-static:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.23'
+          checksum: '9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6'
+          enable-cache: false
+      - name: Create and verify the locked environment
+        run: |
+          uv venv --python "$(command -v python)" --no-python-downloads .venv
+          uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
+          uv pip check --python .venv/bin/python
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - run: python -m playwright install --with-deps chromium
       - run: |
           node --check wsl_resource_guard/web/app.js
@@ -42,6 +62,7 @@ jobs:
           shellcheck install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
           bash -n install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
           python tests/browser_offline.py
+          python tests/gunicorn_transport.py -q
       - name: Validate workflow syntax
         run: |
           curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
@@ -53,28 +74,68 @@ jobs:
           python scripts/release.py build dist-again
           cmp dist/*.tar.gz dist-again/*.tar.gz
           python scripts/release.py verify dist/*.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: checked-release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+  artifact-roundtrip:
+    needs: browser-static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: checked-release-assets
+          path: received
+          digest-mismatch: error
+      - name: Verify transported release without publishing
+        run: |
+          cd received
+          sha256sum -c SHA256SUMS
+          cd ..
+          python3 scripts/release.py verify received/*.tar.gz
+          python3 scripts/release.py build expected
+          cmp received/SHA256SUMS expected/SHA256SUMS
+          cmp received/*.tar.gz expected/*.tar.gz
   privilege-boundary:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Exercise real dropped credentials against disposable root fixtures
         run: sudo env PYTHONPATH=tests /usr/bin/python3 -m unittest test_owner_worker.RootIsolationTests -q
+      - name: Prepare isolated final-path environments and reject invalid locks
+        run: sudo env PYTHONPATH=. /usr/bin/python3 tests/uv_install_smoke.py
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - run: python -m pip install --require-hashes -r requirements-dev.txt
-      - run: python -m pip_audit --require-hashes -r requirements-web.txt
-      - run: python -m pip_audit --require-hashes -r requirements-dev.txt
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.23'
+          checksum: '9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6'
+          enable-cache: false
+      - name: Create and verify the locked environment
+        run: |
+          uv venv --python "$(command -v python)" --no-python-downloads .venv
+          uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
+          uv pip check --python .venv/bin/python
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - run: python -m pip_audit --require-hashes --disable-pip -r requirements-web.txt
+      - run: python -m pip_audit --require-hashes --disable-pip -r requirements-dev.txt
   codeql:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -86,7 +147,7 @@ jobs:
       matrix:
         language: [python, javascript-typescript]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
@@ -99,7 +160,7 @@ jobs:
           upload: never
           upload-database: false
       - run: python3 scripts/security_gate.py sarif
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: codeql-${{ matrix.language }}

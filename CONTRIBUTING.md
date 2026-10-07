@@ -3,12 +3,15 @@
 Python 3.11–3.14, Node.js, Playwright Chromium을 사용합니다. 운영 서비스와 분리된 체크아웃에서 작업하세요.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
+# uv 0.12.23을 사용합니다. Python은 기존 3.11–3.14 설치를 지정하세요.
+uv venv --python python3 --no-python-downloads .venv
+uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
+uv pip check --python .venv/bin/python
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/python scripts/ci_unit.py
 node --check wsl_resource_guard/web/app.js
 .venv/bin/python tests/browser_offline.py
+.venv/bin/python tests/gunicorn_transport.py -q
 ```
 
 전체 CI profile은 Flask·cryptography가 필요하며 예상하지 못한 skip을 실패로 처리합니다.
@@ -18,7 +21,22 @@ node --check wsl_resource_guard/web/app.js
 PR과 CI는 권장하며 작은 수정의 승인된 직접 push를 허용합니다. required PR/CI를 강제하지 않습니다.
 비밀값·운영 데이터·실제 계정 경로를 커밋하지 마세요. 새 작업은 공개 이력에서 시작하고 이전 비공개 브랜치를 병합하지 않습니다.
 
-의존성 업데이트는 입력 명세를 수정하고 `uv pip compile <input> --generate-hashes -o <lock>`으로 다시 잠급니다.
+의존성 업데이트는 입력 명세를 수정하고 uv 0.12.23으로 다시 잠급니다.
+기존 출력 잠금의 버전은 기본 보존되며 의도한 패키지만 `--upgrade-package`로 올립니다.
+
+```bash
+uv pip compile requirements-web.in --generate-hashes --python-version 3.11 --universal -o requirements-web.txt
+uv pip compile requirements-dev.in --generate-hashes --python-version 3.11 --universal -o requirements-dev.txt
+.venv/bin/python -m pip_audit --require-hashes --disable-pip -r requirements-web.txt
+.venv/bin/python -m pip_audit --require-hashes --disable-pip -r requirements-dev.txt
+```
+
+`requirements-*.in`과 해시가 있는 `.txt`가 명세와 잠금의 기준입니다. `uv sync`/`uv run`이나
+`uv.lock`은 사용하지 않습니다. Dependabot은 이 파일 형식에 맞는 `pip` ecosystem을 유지합니다.
+`pip` 패키지는 개발 검사 도구 `pip-audit → pip-api`의 간접 의존성입니다. 설치 명령에는 사용하지 않습니다.
+새 환경에서 `uv pip check`를 실행해 Dependabot 갱신 중 간접 의존성이 빠지지 않았는지 확인합니다.
+[uv 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)를 따르되 버전을 고정하세요.
+uv는 pip.conf/PIP_INDEX_URL 설정을 읽지 않으므로 사설 인덱스를 쓰는 개발자는 uv 설정을 별도로 검토해야 합니다.
 워크플로 Action은 전체 SHA와 버전 주석을 함께 갱신합니다. CI 도구의 검사 예외를 포괄적으로 추가하지 않습니다.
 
 ## 릴리스
