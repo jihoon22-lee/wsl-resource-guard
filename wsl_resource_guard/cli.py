@@ -480,13 +480,21 @@ def cmd_test_alert(args: argparse.Namespace) -> int:
 
 
 def cmd_history(args: argparse.Namespace) -> int:
+    try:
+        return _cmd_history(args)
+    except (OSError, ValueError) as exc:
+        print(f"이력을 읽지 못했습니다: {exc}", file=sys.stderr)
+        return 2
+
+
+def _cmd_history(args: argparse.Namespace) -> int:
     settings = _load_settings(args)
     if getattr(args, "episodes", False):
-        from .history import alert_episodes, read_history
+        from .history import alert_episodes, iter_history
         since = (time.time() - args.hours * 3600 if getattr(args, "hours", None)
                  else time.time() - settings.retention_days * 86400)
         episodes = alert_episodes(
-            read_history(settings.state_path, since,
+            iter_history(settings.state_path, since,
                          fields=("timestamp", "severity", "reasons")))
         if getattr(args, "json", False):
             print(json.dumps(episodes, ensure_ascii=False, indent=2))
@@ -501,37 +509,14 @@ def cmd_history(args: argparse.Namespace) -> int:
             reasons = ", ".join(episode["reasons_top5"]) or "-"
             print(f"{start:%Y-%m-%d %H:%M} → {end} · {episode['worst_severity']:<8} · {duration} · {reasons}")
         return 0
-    cutoff = time.time() - args.hours * 3600 if getattr(args, "hours", None) else None
-    records: list[dict[str, object]] = []
-    scanned = 0
-    for path in sorted(settings.state_path.glob("history-*.jsonl"), reverse=True):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in reversed(lines):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            scanned += 1
-            try:
-                stamp = float(record.get("timestamp", 0))
-            except (TypeError, ValueError):
-                stamp = 0.0
-            if cutoff is not None and stamp < cutoff:
-                continue
-            if getattr(args, "severity", None) and record.get("severity") != args.severity:
-                continue
-            records.append(record)
-            if len(records) >= args.limit:
-                break
-        if len(records) >= args.limit or scanned >= 20000:
-            break
+    from .history import read_history
+    cutoff = time.time() - args.hours * 3600 if getattr(args, "hours", None) else 0
+    records = read_history(settings.state_path, cutoff, fields=None, limit=args.limit,
+                           severity=getattr(args, 'severity', None))
     if getattr(args, "json", False):
-        print(json.dumps(list(reversed(records)), ensure_ascii=False, indent=2))
+        print(json.dumps(records, ensure_ascii=False, indent=2))
         return 0
-    for record in reversed(records):
+    for record in records:
         metrics = record.get("metrics", {})
         timestamp = datetime.fromtimestamp(float(record.get("timestamp", 0))).astimezone()
         available = float(metrics.get("mem_available_kib", 0)) / KIB_PER_GIB

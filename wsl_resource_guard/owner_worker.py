@@ -97,7 +97,7 @@ class OwnerData:
         if bucket:
             result = read_history_downsampled(self._state_path(), since, bucket)
         else:
-            result = read_history(self._state_path(), since)[-1800:]
+            result = read_history(self._state_path(), since, limit=1800)
         with self._history_lock:
             self._history_cache[range_key] = (time.monotonic(), result)
         return result
@@ -133,10 +133,10 @@ class OwnerData:
         with self._history_lock:
             if self._alerts_cache is not None and time.monotonic() - self._alerts_at < 300:
                 return self._alerts_cache
-        from .history import alert_episodes, read_history, reason_summary_7d
+        from .history import alert_episodes, iter_history, reason_summary_7d
         settings = self._owner_settings()
         since = time.time() - settings.retention_days * 86400
-        records = read_history(settings.state_path, since,
+        records = iter_history(settings.state_path, since,
                                fields=('timestamp', 'severity', 'reasons'))
         episodes = alert_episodes(records, gap_seconds)
         result = {'episodes': episodes,

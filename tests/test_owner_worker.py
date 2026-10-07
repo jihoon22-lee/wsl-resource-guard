@@ -133,6 +133,12 @@ class RootIsolationTests(unittest.TestCase):
                                     ('logs', {'target': 'opencode-web.service', 'lines': 10}),
                                     ('disks', {})):
                 with self.subTest(operation=operation):
+                    if operation in ('history', 'attribution', 'session-history', 'alerts'):
+                        # Unreadable history is now an explicit failed read,
+                        # never a healthy-looking empty history response.
+                        with self.assertRaises(OSError):
+                            worker.call_owner(owner, operation, args)
+                        continue
                     result = worker.call_owner(owner, operation, args)
                     self.assertNotIn(marker, json.dumps(result))
             (config / 'config.toml').unlink()
@@ -174,3 +180,15 @@ class WorkerLaunchTests(unittest.TestCase):
             self.assertEqual(result['settings']['config_path'], directory + '/.config/wsl-resource-guard/config.toml')
             self.assertEqual(result['settings']['project_roots'], [directory + '/projects'])
             self.assertEqual(result['state'], {})
+
+    def test_real_worker_timeout_and_output_limit_are_explicit_failures(self):
+        from types import SimpleNamespace
+        import pwd
+        account = pwd.getpwuid(os.geteuid())
+        with tempfile.TemporaryDirectory() as directory:
+            owner = SimpleNamespace(pw_uid=account.pw_uid, pw_gid=account.pw_gid,
+                                    pw_name=account.pw_name, pw_dir=directory)
+            with patch.object(owner_worker, 'TIMEOUT', 0), self.assertRaises(TimeoutError):
+                owner_worker.call_owner(owner, 'context')
+            with patch.object(owner_worker, 'MAX_OUTPUT', 8), self.assertRaises(ValueError):
+                owner_worker.call_owner(owner, 'context')

@@ -309,7 +309,7 @@ class HistoryFilterTests(unittest.TestCase):
                 {"timestamp": now - 60, "severity": "critical", "metrics": {}},
                 {"timestamp": now - 30, "severity": "warning", "metrics": {}},
             ]
-            path = Path(directory) / "history-2026-09-15.jsonl"
+            path = Path(directory) / f"history-{time.strftime('%Y-%m-%d')}.jsonl"
             path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
             args = SimpleNamespace(config=None, limit=20, severity="critical", hours=None, json=True)
             out = io.StringIO()

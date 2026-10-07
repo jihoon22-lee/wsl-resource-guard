@@ -556,14 +556,16 @@ class ControllerTests(unittest.TestCase):
             return []
 
         with (patch('wsl_resource_guard.config.Settings.load', return_value=settings),
-              patch('wsl_resource_guard.history.read_history', side_effect=fake_read) as read):
+              patch('wsl_resource_guard.history.read_history', side_effect=fake_read) as read,
+              patch('wsl_resource_guard.history.iter_history', side_effect=fake_read) as stream):
             self.controller.dispatch({'op': 'history', 'range': '3h'}, uid=1, web_uid=999)
             self.controller.dispatch({'op': 'alerts'}, uid=1, web_uid=999)
             # Cached answers within the TTL must not re-read the files.
             self.controller.dispatch({'op': 'history', 'range': '3h'}, uid=1, web_uid=999)
             self.controller.dispatch({'op': 'alerts'}, uid=1, web_uid=999)
         self.assertEqual(seen, [True, True])
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(stream.call_count, 1)
 
     def test_history_ranges_cache_independently(self):
         from wsl_resource_guard.config import Settings
