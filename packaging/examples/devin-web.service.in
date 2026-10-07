@@ -1,0 +1,39 @@
+[Unit]
+Description=Devin Web
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsDirectory=@HOME@/projects/devin-web
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@OWNER@
+Group=@GROUP@
+Environment=HOME=@HOME@
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=@HOME@/projects/devin-web
+# devin-web-ctl detaches three process groups: devin-web (port 7100), the
+# web-watch supervisor, and devin-acpd (which owns the `devin acp` agent).
+# Resource Guard stop/restart is a full teardown, including agent turns and PTYs.
+# Web-only deployments can still use devin-web-ctl restart directly.
+ExecStart=@HOME@/projects/devin-web/bin/devin-web-ctl start
+# ctl start may return success for an existing pid without checking HTTP.
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:7100/api/health
+ExecStop=@HOME@/projects/devin-web/bin/devin-web-ctl stop --all
+# ExecStop is skipped on failed startup; also clean external pidfile-owned groups.
+ExecStopPost=@HOME@/projects/devin-web/bin/devin-web-ctl stop --all
+# Sweep detached descendants too, including children left by dead PTY shells.
+KillMode=control-group
+TimeoutStartSec=90
+TimeoutStopSec=60
+OOMPolicy=stop
+MemoryAccounting=yes
+MemoryHigh=6G
+MemoryMax=8G
+MemorySwapMax=2G
+TasksMax=1024
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

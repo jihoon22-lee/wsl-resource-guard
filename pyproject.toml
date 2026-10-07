@@ -1,0 +1,14 @@
+[project]
+name = "wsl-resource-guard"
+version = "0.1.0"
+description = "Lightweight WSL memory, swap, LLM session, and MCP monitor"
+requires-python = ">=3.11"
+dependencies = []
+license = "MIT"
+
+[project.urls]
+Repository = "https://github.com/jihoon22-lee/wsl-resource-guard"
+Issues = "https://github.com/jihoon22-lee/wsl-resource-guard/issues"
+
+[tool.unittest]
+start-directory = "tests"

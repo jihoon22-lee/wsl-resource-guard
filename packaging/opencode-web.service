@@ -1,0 +1,28 @@
+[Unit]
+Description=OpenCode Web
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsDirectory=@HOME_PATH@/projects
+
+[Service]
+Type=simple
+User=@OWNER@
+Group=@GROUP@
+Environment="HOME=@HOME@"
+WorkingDirectory=@HOME_PATH@/projects
+ExecStart="@HOME@/.opencode/bin/opencode" web --hostname 127.0.0.1 --port 4096
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+OOMPolicy=stop
+MemoryAccounting=yes
+MemoryHigh=2G
+MemoryMax=3G
+MemorySwapMax=1G
+TasksMax=384
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

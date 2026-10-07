@@ -1,0 +1,26 @@
+[Unit]
+Description=WSL memory, swap, LLM session, and MCP resource guard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@OWNER@
+Group=@GROUP@
+Environment="HOME=@HOME@"
+WorkingDirectory=@HOME_PATH@
+ExecStart="@HOME@/.local/bin/wrg" run
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="@HOME@/.local/state/wsl-resource-guard" "@HOME@/.config/wsl-resource-guard"
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

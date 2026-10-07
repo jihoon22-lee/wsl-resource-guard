@@ -1,0 +1,94 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and main ancestry
+        env:
+          RELEASE_TAG: '${{ github.ref_name }}'
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          python3 - <<'PY'
+          import os, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'tag/version mismatch'
+          PY
+  public:
+    needs: validate
+    uses: ./.github/workflows/public-checks.yml
+    permissions:
+      contents: read
+  checks:
+    needs: validate
+    uses: ./.github/workflows/checks.yml
+  package:
+    needs: [public, checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: |
+          python scripts/release.py build dist
+          python scripts/release.py verify dist/*.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-assets
+          path: dist
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: '${{ github.token }}'
+          GH_REPO: '${{ github.repository }}'
+          RELEASE_TAG: '${{ github.ref_name }}'
+          RELEASE_SHA: '${{ github.sha }}'
+        run: |
+          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_SHA"
+          cd dist
+          sha256sum -c SHA256SUMS
+          python3 - <<'PY'
+          import glob, json, os, tarfile
+          with tarfile.open(glob.glob('*.tar.gz')[0]) as archive:
+              manifests = [m for m in archive.getmembers() if m.name.endswith('/SOURCE.json')]
+              assert len(manifests) == 1
+              metadata = json.load(archive.extractfile(manifests[0]))
+              assert metadata['commit'] == os.environ['RELEASE_SHA']
+              assert 'v' + metadata['version'] == os.environ['RELEASE_TAG']
+          PY
+          gh release create "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --verify-tag --generate-notes
+          mkdir "$RUNNER_TEMP/download-check"
+          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/download-check" --pattern '*.tar.gz' --pattern SHA256SUMS
+          cd "$RUNNER_TEMP/download-check"
+          sha256sum -c SHA256SUMS
+          cmp SHA256SUMS "$GITHUB_WORKSPACE/dist/SHA256SUMS"
+          cmp ./*.tar.gz "$GITHUB_WORKSPACE"/dist/*.tar.gz

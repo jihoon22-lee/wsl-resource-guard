@@ -1,0 +1,106 @@
+name: Checks
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - run: python scripts/ci_unit.py
+  browser-static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: |
+          node --check wsl_resource_guard/web/app.js
+          node --check wsl_resource_guard/web/theme.js
+          node --check wsl_resource_guard/web/sw.js
+          shellcheck install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
+          bash -n install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
+          python tests/browser_offline.py
+      - name: Validate workflow syntax
+        run: |
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+      - run: |
+          python scripts/release.py build dist
+          python scripts/release.py build dist-again
+          cmp dist/*.tar.gz dist-again/*.tar.gz
+          python scripts/release.py verify dist/*.tar.gz
+  privilege-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Exercise real dropped credentials against disposable root fixtures
+        run: sudo env PYTHONPATH=tests /usr/bin/python3 -m unittest test_owner_worker.RootIsolationTests -q
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - run: python -m pip_audit --require-hashes -r requirements-web.txt
+      - run: python -m pip_audit --require-hashes -r requirements-dev.txt
+  codeql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          languages: '${{ matrix.language }}'
+          build-mode: none
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          output: sarif
+          upload: false
+      - run: python3 scripts/security_gate.py sarif
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: codeql-${{ matrix.language }}
+          path: sarif/*.sarif
+          if-no-files-found: error
+          retention-days: 7

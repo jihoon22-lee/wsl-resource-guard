@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+# Public RFC 8291 Appendix A test vector, never an operational credential.
+# https://www.rfc-editor.org/rfc/rfc8291#appendix-A
+[[allowlists]]
+description = "Exact RFC 8291 auth vector in two encryption fixtures"
+condition = "AND"
+paths = ['''(^|/)tests/test_(webpush|service_control)\.py$''']
+regexTarget = "secret"
+regexes = ['''^BTBZMqHH6r4Tts7J_aSIgg$''']

@@ -1,0 +1,28 @@
+[Unit]
+Description=WSL registered service controller
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wsl-resource-guard
+ExecStart=/usr/bin/python3 -m wsl_resource_guard.service_control serve
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=wrg-services
+RuntimeDirectoryMode=0755
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/wrg-services -/var/lib/wrg-shared /etc/systemd/system
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryHigh=192M
+MemoryMax=384M
+TasksMax=96
+
+[Install]
+WantedBy=multi-user.target

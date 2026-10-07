@@ -1,0 +1,46 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: '${{ steps.files.outputs.full }}'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: files
+        env:
+          BEFORE: '${{ github.event.before }}'
+          PR_BASE: '${{ github.event.pull_request.base.sha }}'
+          EVENT: '${{ github.event_name }}'
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          base = os.environ['PR_BASE'] or os.environ['BEFORE']
+          full = True
+          if base and set(base) != {'0'}:
+              names = subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
+              full = not names or any(not (n.endswith('.md') or n == 'LICENSE') for n in names)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+              output.write(f'full={str(full).lower()}\n')
+          PY
+  public:
+    uses: ./.github/workflows/public-checks.yml
+    permissions:
+      contents: read
+  checks:
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    uses: ./.github/workflows/checks.yml

@@ -1,0 +1,13 @@
+[Unit]
+Description=WSL memory, swap, LLM session, and MCP resource guard
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/wrg run
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

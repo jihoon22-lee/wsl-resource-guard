@@ -1,0 +1,35 @@
+[Unit]
+Description=Pi Web
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsDirectory=@HOME@/projects
+
+[Service]
+Type=simple
+User=@OWNER@
+Group=@GROUP@
+Environment=HOME=@HOME@
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PI_WEB_NO_OPEN=1
+Environment=PI_WEB_HOSTNAME=127.0.0.1
+# Tailscale Serve forwards the tailnet name as Host; pi-web rejects unknown hosts.
+Environment=PI_WEB_ALLOWED_HOSTS=YOUR-NODE.YOUR-TAILNET.ts.net:30141
+# Model API keys only; readable by the service owner alone. Never commit this file.
+EnvironmentFile=@HOME@/.config/pi-web/env
+WorkingDirectory=@HOME@/projects
+ExecStart=@HOME@/.local/bin/node @HOME@/.local/bin/pi-web --no-open --hostname 127.0.0.1 --port 30141
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+OOMPolicy=stop
+MemoryAccounting=yes
+MemoryHigh=3G
+MemoryMax=4G
+MemorySwapMax=1G
+TasksMax=512
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

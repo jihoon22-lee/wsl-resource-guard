@@ -1,0 +1,19 @@
+{
+  "name": "WSL Resource Guard",
+  "short_name": "Resource Guard",
+  "description": "내 PC의 WSL 자원과 서비스를 감시하는 대시보드",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#101923",
+  "theme_color": "#101923",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

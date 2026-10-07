@@ -1,0 +1,5 @@
+-r requirements-web.in
+playwright==1.62.0
+cryptography>=50.0.2,<51
+pip-audit>=2.9,<3
+PyYAML>=6,<7

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Compatibility entrypoint for the Windows recovery command.
+# Per-app autostart settings are owned by the shared service registry.
+set -euo pipefail
+cd /opt/wsl-resource-guard
+exec /usr/bin/python3 -m wsl_resource_guard.service_control restore

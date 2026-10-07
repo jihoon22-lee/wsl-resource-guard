@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore registered personal WSL apps (Windows compatibility entrypoint)
+After=docker.service
+ConditionPathExists=/var/lib/wrg-services/registry.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/devbox-wsl-service-recovery
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

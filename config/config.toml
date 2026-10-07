@@ -1,0 +1,50 @@
+interval_seconds = 15
+history_interval_seconds = 60
+retention_days = 14
+reminder_cooldown_seconds = 21600
+critical_reminder_seconds = 900
+email_heartbeat_enabled = false
+# Send the routine Gmail status during this minute of every local clock hour.
+email_heartbeat_minute = 0
+# Deprecated compatibility setting; wall-clock scheduling now uses the minute above.
+email_heartbeat_interval_seconds = 3600
+recovery_notifications = true
+recovery_sustain_seconds = 120
+project_roots = ["~/projects"]
+
+# Global pressure thresholds. Swap occupancy alone is deliberately not an alert.
+warning_available_gib = 4.0
+critical_available_gib = 2.0
+warning_available_sustain_seconds = 30
+warning_psi_some_avg60 = 2.0
+critical_psi_full_avg60 = 20.0
+critical_psi_full_low_ram_avg60 = 1.0
+critical_psi_full_low_ram_available_gib = 4.0
+warning_psi_sustain_seconds = 300
+critical_psi_sustain_seconds = 30
+warning_swap_out_mib_per_minute = 256.0
+warning_swap_out_max_available_gib = 6.0
+warning_swap_out_sustain_seconds = 30
+
+# Process-tree thresholds.
+process_warning_sustain_seconds = 120
+session_observe_rss_gib = 4.0
+session_warning_rss_gib = 6.0
+mcp_observe_rss_gib = 3.0
+mcp_warning_rss_gib = 5.0
+stale_session_hours = 48.0
+
+# Windows volume alerts use available / total, strictly below these percentages.
+disk_drives = ["C", "D", "E"]
+disk_refresh_seconds = 60
+warning_disk_free_percent = 20.0
+critical_disk_free_percent = 10.0
+# Optional WSL path to the distro's VHDX file (display only).
+wsl_vhd_path = ""
+
+windows_toast_enabled = true
+gmail_enabled = true
+discord_enabled = true
+toast_app_id = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"
+
+state_dir = "~/.local/state/wsl-resource-guard"

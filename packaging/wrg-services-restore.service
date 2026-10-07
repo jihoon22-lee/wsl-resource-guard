@@ -1,0 +1,16 @@
+[Unit]
+Description=Restore registered WSL apps that have autostart enabled
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/wsl-resource-guard
+ExecStart=/usr/bin/python3 -m wsl_resource_guard.service_control restore
+TimeoutStartSec=300
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/wrg-services
+
+[Install]
+WantedBy=multi-user.target

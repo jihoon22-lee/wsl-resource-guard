@@ -1,0 +1,33 @@
+[Unit]
+Description=Personal WSL resource and service dashboard
+Requires=wrg-service-control.service
+After=wrg-service-control.service network.target
+
+[Service]
+Type=simple
+User=wrg-web
+Group=wrg-web
+WorkingDirectory=/opt/wsl-resource-guard
+ExecStart=@WEB_VENV@/bin/gunicorn --no-control-socket --workers 1 --threads 4 --timeout 120 --umask 0077 --bind 127.0.0.1:8765 --bind unix:/run/wrg-web/http.sock wsl_resource_guard.webapp:create_app()
+RuntimeDirectory=wrg-web
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0077
+MemoryHigh=128M
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
