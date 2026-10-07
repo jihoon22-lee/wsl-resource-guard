@@ -674,7 +674,7 @@ class ControllerTests(unittest.TestCase):
     def _kill_snapshot(self, cgroup='/user.slice/wrg-demo.scope'):
         from wsl_resource_guard.processes import ProcessInfo, ProcessSnapshot, SessionUsage
         uid = os.getuid()
-        fields = dict(uid=uid, state='S', rss_kib=1, swap_kib=0, age_seconds=10, cwd='/x')
+        fields = dict(uid=uid, state='S', rss_kib=1, swap_kib=0, age_seconds=10, cwd='/x', start_ticks=100)
         root = ProcessInfo(pid=100, ppid=1, name='codex', cgroup=cgroup, command='codex', **fields)
         child = ProcessInfo(pid=101, ppid=100, name='node', cgroup=cgroup, command='node', **fields)
         session = SessionUsage(root_pid=100, provider='codex', root_name='codex', project='demo',
@@ -686,13 +686,31 @@ class ControllerTests(unittest.TestCase):
         return Settings(state_dir=self.temp.name)
 
     def test_kill_tree_signals_session_tree_with_sigterm(self):
-        with patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()):
-            with patch('wsl_resource_guard.processes.build_snapshot', return_value=self._kill_snapshot()):
-                with patch('wsl_resource_guard.service_control.os.kill') as kill:
-                    result = self.controller.kill_tree(100)
-        self.assertEqual(sorted(call.args[0] for call in kill.call_args_list), [100, 101])
+        snap = self._kill_snapshot()
+        with (patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()),
+              patch('wsl_resource_guard.processes.build_snapshot', return_value=snap),
+              patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_: snap.processes[pid]),
+              patch('os.pidfd_open', side_effect=lambda pid: pid+1000), patch('os.close'),
+              patch('signal.pidfd_send_signal') as kill, patch('os.kill') as numeric):
+            result = self.controller.kill_tree(100)
+        self.assertEqual(sorted(call.args[0] for call in kill.call_args_list), [1100, 1101])
         self.assertTrue(all(call.args[1] == signal.SIGTERM for call in kill.call_args_list))
+        numeric.assert_not_called()
         self.assertIn('SIGTERM', result['message'])
+
+    def test_kill_tree_rejects_identity_changed_after_snapshot(self):
+        from dataclasses import replace
+        snap = self._kill_snapshot()
+        replacement = replace(snap.processes[100], uid=0, cgroup='/system.slice/protected.service')
+        with (patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()),
+              patch('wsl_resource_guard.processes.build_snapshot', return_value=snap),
+              patch('wsl_resource_guard.processes._read_process', return_value=replacement),
+              patch('os.pidfd_open', return_value=987), patch('os.close'),
+              patch('signal.pidfd_send_signal') as bound_signal, patch('os.kill') as numeric_signal):
+            with self.assertRaises(ControlError):
+                self.controller.kill_tree(100)
+        bound_signal.assert_not_called()
+        numeric_signal.assert_not_called()
 
     def test_kill_tree_rejects_unknown_pid_and_systemd_units(self):
         with patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()):
@@ -718,7 +736,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(audit['ok'])
         with patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()):
             with patch('wsl_resource_guard.processes.build_snapshot', return_value=self._kill_snapshot()):
-                with patch('wsl_resource_guard.service_control.os.kill'):
+                with patch('wsl_resource_guard.processes.signal_verified_process', return_value=True):
                     result = self.controller.dispatch(
                         {'op': 'kill', 'pid': 100, 'confirmed': True}, uid=999, web_uid=999)
         self.assertIn('SIGTERM', result['message'])

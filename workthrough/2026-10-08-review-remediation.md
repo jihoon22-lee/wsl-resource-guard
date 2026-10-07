@@ -88,12 +88,12 @@ assert any(r.channel == "discord" and r.sent for r in results)
 **검사:** `tests/test_processes.py`, `test_service_control.py`, `test_cli.py`.
 **인터페이스:** `ProcessInfo`에 호환 기본값을 가진 시작 시각 식별자를 추가한다. 종료 공통 헬퍼 `signal_verified_process(process, expected_uid, sig) -> bool`을 `processes.py`에 두고 사라진 대상은 False, 불일치/미지원은 명확한 오류로 구분한다.
 
-- [ ] snapshot 뒤 PID·UID·시작 시각·cgroup이 바뀌는 경우, 자식 교체, 이미 종료, 자기 자신/보호 서비스, CLI 강제 종료를 각각 검사한다. syscall은 mock한다.
-- [ ] snapshot 생성에서 `/proc` 시작 시각을 보존하고 읽는 사이 프로세스가 바뀐 불일치 항목은 제외한다.
-- [ ] pidfd를 먼저 열고 현재 시작 시각·UID·보호 분류를 재검증한 후 `signal.pidfd_send_signal`로 보낸다. fd는 모든 종료 경로에서 닫는다. 지원하지 않는 환경에서 숫자 PID 신호로 조용히 후퇴하지 않고 종료 기능만 명확히 거부한다.
-- [ ] 단일 세션/MCP, 오래된 세션 일괄 종료, CLI `stop`, `stop-mcp`, `--kill`의 TERM/KILL 모두 같은 경계를 적용한다. 화면/CLI의 안전성 설명을 실제 보장과 맞춘다.
-- [ ] 실제 신호 검증은 자신이 생성한 폐기 가능한 프로세스에만 적용한다. 자원 감시 및 무관한 프로세스 PID는 그대로인지 확인한다.
-- [ ] `fix: Bind process termination to verified process identities`로 커밋한다.
+- [x] snapshot 뒤 PID·UID·시작 시각·cgroup이 바뀌는 경우, 자식 교체, 이미 종료, 자기 자신/보호 서비스, CLI 강제 종료를 각각 검사한다. syscall은 mock한다.
+- [x] snapshot 생성에서 `/proc` 시작 시각을 보존하고 읽는 사이 프로세스가 바뀐 불일치 항목은 제외한다.
+- [x] pidfd를 먼저 열고 현재 시작 시각·UID·보호 분류를 재검증한 후 `signal.pidfd_send_signal`로 보낸다. fd는 모든 종료 경로에서 닫는다. 지원하지 않는 환경에서 숫자 PID 신호로 조용히 후퇴하지 않고 종료 기능만 명확히 거부한다.
+- [x] 단일 세션/MCP, 오래된 세션 일괄 종료, CLI `stop`, `stop-mcp`, `--kill`의 TERM/KILL 모두 같은 경계를 적용한다. 화면/CLI의 안전성 설명을 실제 보장과 맞춘다.
+- [x] 실제 신호 검증은 자신이 생성한 폐기 가능한 프로세스에만 적용한다. 자원 감시 및 무관한 프로세스 PID는 그대로인지 확인한다.
+- [x] `fix: Bind process termination to verified process identities`로 커밋한다.
 
 핵심 호출 형태:
 ```python
@@ -284,3 +284,12 @@ git worktree list
 - R1 GREEN: 채널별 메시지 구성부터 전송까지 예외를 실패 결과로 격리했다. 오류 세부에는 비밀값을 포함하지 않으며 KeyboardInterrupt는 전파한다.
 - 실제 Notifier를 사용하는 sample 2회에서 상태 timestamp 100/115 및 이력 2건을 보존하고 Discord는 재알림 간격 안에서 한 번만 전송 시도했다. 외부 전송은 mock했다.
 - 관련 notification/daemon/reporting 54개 통과. 전체 CI 단위 profile 348개 통과, 예상 밖 skip 없음. 제품 운영 적용은 아직 하지 않았다.
+
+### 실행 기록 — R3
+
+- R3 RED: snapshot 후 PID의 시작 시각/UID/서비스가 교체된 재현에서 기존 컨트롤러가 종료를 허용했다. 새 helper 시험은 토큰/함수 부재로 실패했고, 추가 CLI 시험은 timeout=0에서 잘못된 성공 및 이미 종료된 MCP에 신호 전송을 주장하는 실패를 확인했다.
+- R3 GREEN: snapshot에 시작 토큰을 보존하고 일관되지 않은 /proc 읽기를 제외한다. 웹/CLI TERM/KILL은 pidfd를 연 뒤 현재 신원과 서비스 분류를 재검증한다. 미지원 환경은 숫자 PID 방식으로 후퇴하지 않는다.
+- Ruling: root는 고정된 표준 라이브러리 subprocess에 열린 pidfd를 전달하고 owner UID/기본 GID/빈 보조 그룹으로 신호를 보낸다. pidfd만으로는 검사 이후 setuid exec의 권한 변경을 막지 못하므로 실제 신호 시점의 커널 권한 검사도 owner로 제한한다. 추가 프로세스 생성 비용이 발생한다.
+- 서비스 하위 cgroup도 보호하고, 대기 시간 0에도 생존 여부를 확인한다. 이미 사라진 MCP에는 전송 성공 대신 종료된 상태를 알린다.
+- 실제 커널 시험에서는 직접 생성한 /bin/sleep 자식만 pidfd로 종료했다. 시스템 서비스나 사용자 세션에는 신호를 보내지 않았다.
+- 전체 CI 단위 profile 359개 통과, 예상 밖 skip 없음. 기존 dispatch 확인 시험은 새 공통 신호 경계로 mock을 갱신했으며 신원 검사는 별도 실제 helper 시험이 담당한다. 운영 설치본은 변경하지 않았다.

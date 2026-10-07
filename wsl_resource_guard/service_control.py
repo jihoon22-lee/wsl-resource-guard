@@ -702,7 +702,7 @@ class Controller:
         """SIGTERM an LLM session or MCP tree root, re-validated at execution time."""
         if pid <= 1:
             raise ControlError('유효하지 않은 PID입니다.')
-        from .processes import build_snapshot, descendants_of, kill_block_reason
+        from .processes import build_snapshot, descendants_of, kill_block_reason, signal_verified_process
         owner = pwd.getpwnam(self.load()['owner'])
         settings = self._owner_settings()
         snapshot = build_snapshot(settings.project_roots, uid=owner.pw_uid)
@@ -721,10 +721,9 @@ class Controller:
             if process.uid != owner.pw_uid:
                 continue  # The snapshot is uid-filtered already; belt and suspenders.
             try:
-                os.kill(process.pid, signal.SIGTERM)
-                signalled += 1
-            except (ProcessLookupError, PermissionError):
-                pass
+                signalled += int(signal_verified_process(process, owner.pw_uid, signal.SIGTERM))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise ControlError(f'PID {process.pid} 종료를 중단했습니다: {exc}') from None
         if not signalled:
             raise ControlError('신호를 보낼 프로세스가 없습니다. 이미 종료됐을 수 있습니다.')
         name = session.root_name if session else group.root_name

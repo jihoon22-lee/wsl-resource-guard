@@ -34,6 +34,7 @@ from .processes import (
     descendants_of,
     is_stale_session,
     process_start_ticks,
+    signal_verified_process,
 )
 from .services import ACTIONS, cmd_services, cmd_web
 from .disks import (
@@ -338,12 +339,17 @@ def cmd_stop_mcp(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(f"종료하려면 `wrg stop-mcp {args.pid} --confirm`을 실행하세요.")
         return 2
+    sent = 0
     for process in processes:
         try:
-            os.kill(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-    print("MCP 트리에 SIGTERM을 보냈습니다. 부모 LLM이 필요하면 다시 시작할 수 있습니다.")
+            sent += int(signal_verified_process(process, os.getuid(), signal.SIGTERM))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"PID {process.pid} 종료를 중단했습니다: {exc}", file=sys.stderr)
+            return 2
+    if sent:
+        print(f"MCP 트리의 {sent}개 프로세스에 SIGTERM을 보냈습니다. 부모 LLM이 필요하면 다시 시작할 수 있습니다.")
+    else:
+        print("대상 MCP 프로세스가 이미 종료되었습니다.")
     return 0
 
 
@@ -365,40 +371,35 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(f"종료하려면 별도 터미널에서 `wrg stop {args.pid} --confirm`을 실행하세요.")
         return 2
-    # Record each pid's start-time token before signalling it. A pid entry only
-    # counts as a survivor while that token still matches; a pid that exited
-    # and was reused is a different process and must never be signalled. A
-    # token read after SIGTERM could already belong to such a reused pid.
-    start_ticks: dict[int, int | None] = {}
+    # Preserve the original snapshot identity for both TERM and KILL. Re-reading
+    # a token and accepting it here could adopt an already reused PID.
+    signalled = {}
     for process in processes:
-        token = start_ticks[process.pid] = process_start_ticks(process.pid)
-        if token is None:
-            continue
         try:
-            os.kill(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+            if signal_verified_process(process, os.getuid(), signal.SIGTERM):
+                signalled[process.pid] = process
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"PID {process.pid} 종료를 중단했습니다: {exc}", file=sys.stderr)
+            return 2
     deadline = time.monotonic() + args.timeout
     survivors: list[int] = []
-    while time.monotonic() < deadline:
+    while True:
         survivors = [
             pid
-            for pid, token in start_ticks.items()
-            if token is not None and process_start_ticks(pid) == token
+            for pid, process in signalled.items()
+            if process_start_ticks(pid) == process.start_ticks
         ]
-        if not survivors:
+        if not survivors or time.monotonic() >= deadline:
             break
         time.sleep(0.25)
     if survivors and args.kill:
         killed = 0
         for pid in survivors:
-            if process_start_ticks(pid) != start_ticks[pid]:
-                continue
             try:
-                os.kill(pid, signal.SIGKILL)
-                killed += 1
-            except (ProcessLookupError, PermissionError):
-                pass
+                killed += int(signal_verified_process(signalled[pid], os.getuid(), signal.SIGKILL))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                print(f"PID {pid} 강제 종료를 중단했습니다: {exc}", file=sys.stderr)
+                return 2
         print(f"SIGTERM 후 남은 프로세스 {killed}개에 SIGKILL을 보냈습니다.")
         return 0
     if survivors:

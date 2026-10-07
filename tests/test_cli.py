@@ -221,98 +221,82 @@ class ConfigCommandTests(unittest.TestCase):
 
 
 class StopCommandTests(unittest.TestCase):
-    def test_kill_skips_pid_reused_after_sigterm(self) -> None:
-        from wsl_resource_guard.processes import (
-            ProcessInfo,
-            ProcessSnapshot,
-            SessionUsage,
-        )
+    def make_snapshot(self):
+        import os
+        from wsl_resource_guard.processes import ProcessInfo, ProcessSnapshot, SessionUsage, McpUsage
+        processes = {pid: ProcessInfo(
+            pid=pid, ppid=1 if pid == 10 else 10, uid=os.getuid(), name="proc", state="S",
+            rss_kib=1, swap_kib=0, age_seconds=10, cwd="/", cgroup="/user.slice/x.scope",
+            command="x", start_ticks=pid*10) for pid in (10, 11)}
+        return ProcessSnapshot(processes,
+            [SessionUsage(root_pid=10, provider="claude", root_name="claude", project="demo", age_seconds=100)],
+            [], {}, {10:"claude"},
+            [McpUsage(root_pid=10, session_root_pid=10, provider="claude", project="demo", root_name="mcp", age_seconds=100)])
 
-        def proc(pid: int, ppid: int):
-            return ProcessInfo(
-                pid=pid, ppid=ppid, uid=1000, name="proc", state="S",
-                rss_kib=1, swap_kib=0, age_seconds=10, cwd="/",
-                cgroup="/user.slice/x.scope", command="x",
-            )
-
-        snap = ProcessSnapshot(
-            {10: proc(10, 1), 11: proc(11, 10)},
-            [SessionUsage(root_pid=10, provider="claude", root_name="claude",
-                          project="demo", age_seconds=100.0)],
-            [], {}, {10: "claude"}, [],
-        )
-        # PID 11 reports a different start-time token after the SIGTERM wait:
-        # the pid was reused and must never receive SIGKILL.
-        reads = {10: iter([100] * 20), 11: iter([200] + [999] * 20)}
-        args = SimpleNamespace(config=None, pid=10, confirm=True, kill=True, timeout=0.3)
-        with tempfile.TemporaryDirectory() as directory:
-            settings = Settings(state_dir=directory)
-            with (
-                patch.object(cli, "_load_settings", return_value=settings),
-                patch.object(cli, "build_snapshot", return_value=snap),
-                patch.object(cli, "descendants_of",
-                             return_value=[snap.processes[10], snap.processes[11]]),
-                patch.object(cli, "process_start_ticks",
-                             side_effect=lambda pid: next(reads[pid], 999)),
-                patch("os.kill") as killed,
-                redirect_stdout(io.StringIO()),
-            ):
-                code = cli.cmd_stop(args)
+    def test_kill_skips_pid_reused_after_sigterm(self):
+        snap = self.make_snapshot()
+        args = SimpleNamespace(config=None, pid=10, confirm=True, kill=True, timeout=0.01)
+        with (patch.object(cli, "_load_settings", return_value=Settings()),
+              patch.object(cli, "build_snapshot", return_value=snap),
+              patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_: snap.processes[pid]),
+              patch('os.pidfd_open', side_effect=lambda pid: pid+1000), patch('os.close'),
+              patch.object(cli, 'process_start_ticks', side_effect=lambda pid:100 if pid == 10 else 999),
+              patch('signal.pidfd_send_signal') as send, patch('os.kill') as numeric,
+              redirect_stdout(io.StringIO())):
+            code = cli.cmd_stop(args)
         self.assertEqual(code, 0)
-        sigkilled = [call.args[0] for call in killed.call_args_list
-                     if call.args[1] == signal.SIGKILL]
-        self.assertEqual(sigkilled, [10])
+        self.assertEqual([call.args[0] for call in send.call_args_list if call.args[1]==signal.SIGKILL],[1010])
+        numeric.assert_not_called()
 
-    def test_tokens_are_taken_before_sigterm(self) -> None:
-        from wsl_resource_guard.processes import (
-            ProcessInfo,
-            ProcessSnapshot,
-            SessionUsage,
-        )
-
-        def proc(pid: int, ppid: int):
-            return ProcessInfo(
-                pid=pid, ppid=ppid, uid=1000, name="proc", state="S",
-                rss_kib=1, swap_kib=0, age_seconds=10, cwd="/",
-                cgroup="/user.slice/x.scope", command="x",
-            )
-
-        snap = ProcessSnapshot(
-            {10: proc(10, 1), 11: proc(11, 10)},
-            [SessionUsage(root_pid=10, provider="claude", root_name="claude",
-                          project="demo", age_seconds=100.0)],
-            [], {}, {10: "claude"}, [],
-        )
-        events: list[tuple[str, int]] = []
-
-        def ticks(pid: int):
-            events.append(("token", pid))
-            # PID 11 already exited after the snapshot: it gets no signal at all.
-            return None if pid == 11 else 100
-
-        def kill(pid: int, sig: int) -> None:
-            events.append(("kill", pid))
-            if sig == signal.SIGTERM:
-                ticks_by_pid[pid] = None
-
-        ticks_by_pid: dict[int, int | None] = {}
-        args = SimpleNamespace(config=None, pid=10, confirm=True, kill=True, timeout=0.3)
-        with tempfile.TemporaryDirectory() as directory:
-            settings = Settings(state_dir=directory)
-            with (
-                patch.object(cli, "_load_settings", return_value=settings),
-                patch.object(cli, "build_snapshot", return_value=snap),
-                patch.object(cli, "descendants_of",
-                             return_value=[snap.processes[10], snap.processes[11]]),
-                patch.object(cli, "process_start_ticks",
-                             side_effect=lambda pid: ticks(pid) if pid not in ticks_by_pid
-                             else ticks_by_pid[pid]),
-                patch("os.kill", side_effect=kill),
-                redirect_stdout(io.StringIO()),
-            ):
-                code = cli.cmd_stop(args)
+    def test_exited_child_is_not_signalled_and_term_uses_snapshot_identity(self):
+        snap = self.make_snapshot()
+        args = SimpleNamespace(config=None, pid=10, confirm=True, kill=True, timeout=0.01)
+        with (patch.object(cli, "_load_settings", return_value=Settings()),
+              patch.object(cli, "build_snapshot", return_value=snap),
+              patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_:snap.processes[pid] if pid==10 else None),
+              patch('os.pidfd_open', side_effect=lambda pid:pid+1000), patch('os.close'),
+              patch.object(cli, 'process_start_ticks', return_value=None),
+              patch('signal.pidfd_send_signal') as send,
+              redirect_stdout(io.StringIO())):
+            code = cli.cmd_stop(args)
         self.assertEqual(code, 0)
-        self.assertEqual(events, [("token", 10), ("kill", 10), ("token", 11)])
+        send.assert_called_once_with(1010, signal.SIGTERM)
+
+    def test_zero_timeout_still_checks_survivors_before_reporting_success(self):
+        snap = self.make_snapshot()
+        args = SimpleNamespace(config=None, pid=10, confirm=True, kill=False, timeout=0)
+        with (patch.object(cli, '_load_settings', return_value=Settings()),
+              patch.object(cli, 'build_snapshot', return_value=snap),
+              patch.object(cli, 'signal_verified_process', return_value=True),
+              patch.object(cli, 'process_start_ticks', side_effect=lambda pid:pid*10),
+              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO())):
+            self.assertEqual(cli.cmd_stop(args), 1)
+
+    def test_mcp_already_exited_does_not_claim_signal_sent(self):
+        args = SimpleNamespace(config=None, pid=10, confirm=True)
+        output = io.StringIO()
+        with (patch.object(cli, '_load_settings', return_value=Settings()),
+              patch.object(cli, 'build_snapshot', return_value=self.make_snapshot()),
+              patch.object(cli, 'signal_verified_process', return_value=False),
+              redirect_stdout(output)):
+            self.assertEqual(cli.cmd_stop_mcp(args), 0)
+        self.assertNotIn('SIGTERM을 보냈습니다', output.getvalue())
+
+    def test_session_and_mcp_refuse_replacement_before_first_signal(self):
+        from dataclasses import replace
+        snap = self.make_snapshot()
+        args = SimpleNamespace(config=None, pid=10, confirm=True, kill=True, timeout=0.01)
+        for command in (cli.cmd_stop, cli.cmd_stop_mcp):
+            with self.subTest(command=command.__name__):
+                with (patch.object(cli, "_load_settings", return_value=Settings()),
+                      patch.object(cli, "build_snapshot", return_value=snap),
+                      patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_:replace(snap.processes[pid],start_ticks=999)),
+                      patch('os.pidfd_open', return_value=987), patch('os.close'),
+                      patch('signal.pidfd_send_signal') as send, patch('os.kill') as numeric,
+                      redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO())):
+                    self.assertEqual(command(args),2)
+                send.assert_not_called()
+                numeric.assert_not_called()
 
 
 class HistoryFilterTests(unittest.TestCase):
