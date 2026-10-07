@@ -1,5 +1,11 @@
 # 변경 기록
 
+## Unreleased
+
+- 개발·CI·웹 설치기의 패키지 관리에 고정 uv와 해시 잠금을 적용했습니다.
+- Playwright 1.63, Gunicorn 26.2와 GitHub Actions 의존성을 갱신했습니다.
+- 실제 Gunicorn 접근 제어·스트리밍과 artifact 전달·설치 실패 검사를 추가했습니다.
+
 ## 0.1.0 — 최초 공개 준비
 
 - 개인 배포 설정을 일반화하고 새로운 공개 Git 이력 사용

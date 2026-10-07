@@ -4,7 +4,7 @@
 
 - Ubuntu on WSL2, systemd 및 cgroup v2 활성화, Python 3.11 이상
 - 사용자 guard: 사용자 systemd 세션과 `~/.local/bin` PATH
-- 관리 웹: sudo, `python3-venv`, 로그인된 Tailscale, HTTPS Serve 사용 가능
+- 관리 웹: sudo, 시스템 Python 3.11–3.14, 로그인된 Tailscale, HTTPS Serve 사용 가능
 - Windows 관측: WSL Windows interop·PowerShell. Docker는 선택 사항
 - Web Push: **시스템 Python**의 cryptography (`sudo apt install python3-cryptography`). 웹 가상환경에만 설치해서는 충분하지 않음
 
@@ -47,6 +47,14 @@ loopback은 관리 API에 접근할 수 없습니다.
 같은 공개 커밋 또는 릴리스에서 웹·컨트롤러와 CLI reader를 먼저 업데이트하고 guard를 마지막에 재시작합니다.
 웹이 설치된 경우 `install-services.sh` → 시스템 guard의 `install-root.sh` 순서입니다.
 사용자 guard만 있다면 `install-user.sh`를 다시 실행합니다.
+
+웹 설치기는 uv 0.12.23 공식 Linux glibc 바이너리(x86_64/aarch64)를 다운로드하고
+코드에 고정된 SHA-256을 검증한 뒤 root 소유의 임시 디렉터리에서만 실행합니다.
+GitHub Releases와 PyPI에 직접 HTTPS 접근할 수 있어야 하며 Ubuntu의 시스템 CA 번들을 사용합니다.
+사용자 PATH·홈의 uv, 프록시·사설 인덱스·uv 설정을 상속하지 않습니다. Python 자동 다운로드도 하지 않습니다.
+지원 아키텍처, 다운로드, 해시 또는 의존성 검증이 실패하면 서비스 전환 전에 중단합니다.
+설치용 uv와 캐시는 작업 후 제거하며 서비스 실행 자체에는 uv가 필요하지 않습니다.
+가상환경에는 잠금 파일의 wheel만 설치하고 소스 빌드는 허용하지 않습니다.
 
 새 의존성 환경은 고정 경로 `.venvs/<install-id>`에 준비하고 서비스 유닛을 전환합니다.
 기존 `.venv`와 복구 백업을 이동하거나 임의 삭제하지 마세요.

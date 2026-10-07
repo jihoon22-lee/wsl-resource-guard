@@ -74,11 +74,12 @@ class InstallerSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
             web = pwd.getpwuid(os.getuid())
-            with patch('wsl_resource_guard.service_install.run', side_effect=lambda *a, **k: calls.append(a) or ''), \
+            with patch('wsl_resource_guard.service_install.install_environment') as install, \
+                 patch('wsl_resource_guard.service_install.run', side_effect=lambda *a, **k: calls.append(a) or ''), \
                  patch('wsl_resource_guard.service_install.run_as', side_effect=lambda user, *a, **k: calls.append(('user', user.pw_uid, *a)) or ''):
                 result = stage(dest, dest / 'requirements.txt', web)
             self.assertEqual(result.parent, dest / '.venvs')
-            self.assertIn((str(result / 'bin/python'), '-m', 'pip', 'check'), calls)
+            install.assert_called_once_with(result, dest / 'requirements.txt')
             self.assertIn(('user', web.pw_uid, str(result / 'bin/gunicorn'), '--version'), calls)
             self.assertFalse((dest / '.venv').exists())
 
