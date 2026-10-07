@@ -32,3 +32,31 @@ class SecurityGateTests(unittest.TestCase):
     def test_unknown_rule_cannot_hide_security_score(self):
         with self.assertRaises(ValueError):
             self.check(known=False)
+
+    def test_extension_rule_security_score_is_enforced(self):
+        run = {'tool': {'driver': {'rules': []}, 'extensions': [
+            {'rules': [{'id': 'example/rule', 'properties': {'security-severity': '7.5'}}]}]},
+            'results': [{'ruleId': 'example/rule', 'rule': {
+                'id': 'example/rule', 'index': 0, 'toolComponent': {'index': 0}}}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'result.sarif'
+            path.write_text(json.dumps({'version': '2.1.0', 'runs': [run]}))
+            with self.assertRaisesRegex(ValueError, 'Blocked SARIF finding'):
+                check_sarif(path)
+            run['tool']['extensions'][0]['rules'][0]['properties']['security-severity'] = '3.0'
+            path.write_text(json.dumps({'version': '2.1.0', 'runs': [run]}))
+            check_sarif(path)
+
+    def test_nonfinite_severity_cannot_bypass_gate(self):
+        with self.assertRaises(ValueError):
+            self.check(score='NaN')
+
+    def test_missing_results_and_failed_analysis_block(self):
+        for run in ({'tool': {'driver': {}}},
+                    {'tool': {'driver': {}}, 'results': [],
+                     'invocations': [{'executionSuccessful': False}]}):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'bad.sarif'
+                path.write_text(json.dumps({'version': '2.1.0', 'runs': [run]}))
+                with self.assertRaises(ValueError):
+                    check_sarif(path)

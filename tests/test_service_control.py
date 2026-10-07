@@ -480,10 +480,10 @@ class ControllerTests(unittest.TestCase):
         home = Path(self.temp.name) / 'owner-home'
         config_dir = home / '.config/wsl-resource-guard'
         config_dir.mkdir(parents=True)
-        secret = 'test-only-gmail-app-password'
+        fixture_value = 'test-only-gmail-app-password'
         (config_dir / 'config.toml').write_text('email_heartbeat_minute = 30\n')
         (config_dir / 'secrets.json').write_text(json.dumps(
-            {'gmail_user': 'sender@example.test', 'gmail_app_password': secret,
+            {'gmail_user': 'sender@example.test', 'gmail_app_password': fixture_value,
              'gmail_to': 'receiver@example.test'}))
         self.owner_home = home
         result = self.controller.dispatch({'op': 'settings'}, uid=1, web_uid=999)
@@ -495,7 +495,7 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(rules['gmail_enabled']['min'])
         self.assertIsNone(rules['alert_quiet_hours']['max'])
         payload = json.dumps(result)
-        self.assertNotIn(secret, payload)
+        self.assertNotIn(fixture_value, payload)
         self.assertNotIn('sender@example.test', payload)
 
     def test_settings_info_carries_group_and_defaults(self):
