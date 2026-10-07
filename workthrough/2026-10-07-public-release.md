@@ -47,3 +47,12 @@ Tailscale 명령은 격리된 fixture이며 실제 Tailnet 연결 증거로 간�
 같은 커밋으로 두 번 만든 tar.gz가 byte-for-byte 일치하고 추출·파일 목록·해시·CLI 실행 검증이 통과했습니다.
 공개 대상 101개 파일의 Gitleaks 검사도 통과했습니다. 공개 RFC 8291의 정확한 시험값과 두 fixture 경로만 예외이며 운영 비밀값의 예외는 없습니다.
 새 공개 이력·GitHub CI·실제 Release 다운로드의 결과는 이어서 기록합니다.
+
+## GitHub 초기 실행 보완
+
+새 공개 이력의 첫 CI에서 Python 3.11–3.14·root 경계·브라우저·의존성·공개정보 검사가 통과했습니다.
+실제 CodeQL SARIF는 확장 component에 규칙을 담아 최초 gate가 차단했습니다. component/index/id를 검증하는 reader를 보완했습니다.
+웹 화면의 동적 함수 선택은 고정 switch로 바꿨고 비밀이 아닌 fixture 변수명도 실제 역할에 맞췄습니다.
+원본 high/error SARIF가 수정된 판정기에서도 차단되는 것을 확인했으며 취약점 무시 목록은 추가하지 않았습니다.
+수정 후 전체 단위 337개 및 PC·모바일 브라우저 검사 통과, 추가 gate 경계 검사 7개 통과.
+잘못된 버전 태그는 실제 Release workflow에서 사전 차단됐고 Release 미생성을 확인한 뒤 시험 태그를 제거했습니다.

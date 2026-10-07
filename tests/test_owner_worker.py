@@ -107,19 +107,19 @@ class RootIsolationTests(unittest.TestCase):
                 path.mkdir(parents=True, exist_ok=True)
             protected = root / 'root-only'
             protected.mkdir(mode=0o700)
-            secret = protected / 'secret.json'
+            fixture_file = protected / 'fixture_file.json'
             marker = 'ROOT_ONLY_MARKER_7f120b'
-            secret.write_text(json.dumps({'slot': marker, 'commit': marker, 'metrics': {'marker': marker}}))
-            secret.chmod(0o600)
+            fixture_file.write_text(json.dumps({'slot': marker, 'commit': marker, 'metrics': {'marker': marker}}))
+            fixture_file.chmod(0o600)
             for path in (state / 'state.json', state / 'weekly-report.json',
                          state / 'config-request-result.json', state / 'push-expired.json', cli / 'BUILD.json',
                          config / 'secrets.json', home / '.local/state/opencode-web.log'):
-                path.symlink_to(secret)
-            (config / 'config.toml').write_text('wsl_vhd_path = ' + json.dumps(str(secret)) + '\n')
+                path.symlink_to(fixture_file)
+            (config / 'config.toml').write_text('wsl_vhd_path = ' + json.dumps(str(fixture_file)) + '\n')
             from datetime import datetime
             day = datetime.now().strftime('%Y-%m-%d')
             for filename in (f'history-{day}.jsonl', f'disk-history-{day}.jsonl'):
-                (state / filename).symlink_to(secret)
+                (state / filename).symlink_to(fixture_file)
             owner = SimpleNamespace(pw_uid=account.pw_uid, pw_gid=account.pw_gid,
                                     pw_name=account.pw_name, pw_dir=str(home))
             # Import the copied trusted module without changing package imports.
@@ -136,11 +136,11 @@ class RootIsolationTests(unittest.TestCase):
                     result = worker.call_owner(owner, operation, args)
                     self.assertNotIn(marker, json.dumps(result))
             (config / 'config.toml').unlink()
-            (config / 'config.toml').symlink_to(secret)
+            (config / 'config.toml').symlink_to(fixture_file)
             self.assertNotIn(marker, json.dumps(worker.call_owner(owner, 'context')))
             # The root-only target was readable by the test parent, making this
             # a real privilege-boundary assertion rather than a missing fixture.
-            self.assertIn(marker, secret.read_text())
+            self.assertIn(marker, fixture_file.read_text())
 
 
 class WorkerLaunchTests(unittest.TestCase):

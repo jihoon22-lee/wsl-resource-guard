@@ -1834,18 +1834,18 @@ function renderAudit() {
   );
 }
 function render() {
-  ({
-    overview: renderOverview,
-    services: renderServices,
-    disks: renderDisks,
-    top: renderTop,
-    sessions: renderSessions,
-    mcp: renderMcp,
-    history: renderHistory,
-    alerts: renderAlerts,
-    settings: renderSettings,
-    audit: renderAudit,
-  })[currentView]();
+  switch (currentView) {
+    case "services": return renderServices();
+    case "disks": return renderDisks();
+    case "top": return renderTop();
+    case "sessions": return renderSessions();
+    case "mcp": return renderMcp();
+    case "history": return renderHistory();
+    case "alerts": return renderAlerts();
+    case "settings": return renderSettings();
+    case "audit": return renderAudit();
+    default: return renderOverview();
+  }
 }
 // Menu badges: where attention is needed, without opening each view. Fed
 // by whatever data is loaded plus the live summary stream (see liveSummary).
