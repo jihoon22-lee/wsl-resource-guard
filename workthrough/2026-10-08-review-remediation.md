@@ -150,8 +150,8 @@ assert normal_endpoint_attempts == 1  # 앞선 잘못된 구독이 막지 못함
 **수정:** `web/app.js`, `owner_worker.py`, `service_control.py`, 필요 시 `webapp.py`.
 **검사:** `tests/browser_offline.py`, `test_owner_worker.py`, `test_service_control.py`, `test_webapp.py`.
 
-- [ ] SSE 오류/종료/탭 숨김 때 기존 liveSummary를 무효화한다. 모든 연결 상태에서 수신 순서만 믿지 않고 관측 시각으로 polling/SSE의 최신성을 판단한다. 연결 실패 시 새 polling 값으로 제목·favicon·배지가 회복되어야 한다.
-- [ ] critical→연결 실패→normal과 반대 순서, polling/SSE 응답 역전, 재연결, 오래된 데이터, 숨김 탭 복귀를 검사한다. 오래된 정상값을 현재 정상으로 표시하지 않는다.
+- [x] SSE 오류/종료/탭 숨김 때 기존 liveSummary를 무효화한다. 모든 연결 상태에서 수신 순서만 믿지 않고 관측 시각으로 polling/SSE의 최신성을 판단한다. 연결 실패 시 새 polling 값으로 제목·favicon·배지가 회복되어야 한다.
+- [x] critical→연결 실패→normal과 반대 순서, polling/SSE 응답 역전, 재연결, 오래된 데이터, 숨김 탭 복귀를 검사한다. 오래된 정상값을 현재 정상으로 표시하지 않는다.
 - [ ] 로그 최대 줄 수를 2000으로 통일한다. 컨트롤러의 고정 연산과 worker가 같은 상수를 사용하며 정규 파일·byte/output/time 상한은 유지한다. UI의 50/200/500/1000 옵션은 그대로 동작한다.
 - [ ] OpenCode의 500/501/1000/2000, API 상한 초과·비정수, 보조 로그 부재/권한 거부와 journal 정상 결과 조합을 검사한다. 보조 로그 실패를 숨기지 않고 부분 실패 표시와 정상 journal 내용을 함께 전달한다.
 - [ ] 독립된 두 커밋으로 정리한다: `fix: Prefer fresh observations after stream failures`, `fix: Align service and owner log limits`.
@@ -324,3 +324,9 @@ git worktree list
 - Ruling: 저장소의 고정 Python Playwright 회귀 파일을 확장한다. 별도 JS 테스트 프로젝트/CLI 설치/상시 브라우저 산출물 디렉터리는 만들지 않는다. 네트워크는 fixture origin에서만 처리한다.
 - 전체 CI 단위 profile 393개 통과, node --check 통과, 전체 offline dashboard 검사 통과. 실제 외부 Push/SMTP 수신 시험은 수행하지 않았다.
 - 운영 3개 유닛은 active, 최초 기준선 PID 및 NRestarts=0을 유지한다. R4/R5 커밋은 6f9a4fe다.
+
+### 실행 기록 — R9
+
+- SSE 오류가 CONNECTING 상태여도 liveSummary를 즉시 무효화하고, polling과 SSE의 관측 시각을 비교해 자원 경보·제목·favicon을 선택한다. 오래된 관측은 상태 미확인으로 표시한다.
+- PC/모바일에서 critical→연결 실패→normal과 역방향, 늦게 도착한 SSE/polling, 재연결, 오래된 정상값, 숨김 탭 복귀를 검증했다. 실제 EventSource가 유한 fixture 스트림 종료 시 live 표시를 해제하는 것도 확인했다.
+- 전체 offline dashboard 검사와 node --check 통과. 네이티브 스트림 시험은 CSP가 허용하는 함수형 wait predicate로 수정했다. 운영 서비스는 변경하지 않았다.

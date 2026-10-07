@@ -480,8 +480,7 @@ function renderOverview() {
     m = d.metrics,
     available = m.mem_available_kib,
     swap = m.swap_total_kib - m.swap_free_kib,
-    stale =
-      !d.daemon_updated_at || Date.now() / 1000 - d.daemon_updated_at > 90;
+    stale = observationIsStale(d.daemon_updated_at);
   const staleMin =
     stale && d.daemon_updated_at
       ? Math.max(1, Math.floor((Date.now() / 1000 - d.daemon_updated_at) / 60))
@@ -1895,6 +1894,17 @@ function render() {
 // Menu badges: where attention is needed, without opening each view. Fed
 // by whatever data is loaded plus the live summary stream (see liveSummary).
 let liveSummary = null;
+function observationIsStale(timestamp) {
+  const stamp = Number(timestamp), now = Date.now() / 1000;
+  return !Number.isFinite(stamp) || stamp <= 0 || stamp > now + 5 || now - stamp > 90;
+}
+function currentResourceSeverity() {
+  const liveAt = Number(liveSummary?.updated_at) || 0;
+  const pollAt = Number(monitorData?.daemon_updated_at) || 0;
+  const source = liveAt > pollAt ? liveSummary : monitorData;
+  if (!source || observationIsStale(Math.max(liveAt, pollAt))) return "unknown";
+  return source.severity || "unknown";
+}
 function appProblems() {
   return serviceData.services.filter(
     (s) =>
@@ -1927,7 +1937,7 @@ function updateBadges() {
   const diskCount = disks ? disks.length : (sum.disk_alerts || []).length;
   const diskBad = disks ? disks.some((d) => d.severity === "critical") : sum.disk_critical;
   setBadge("disks", diskCount, diskBad ? "bad" : "");
-  const severity = sum.severity || monitorData?.severity;
+  const severity = currentResourceSeverity();
   setBadge("alerts", ["warning", "critical"].includes(severity) || false, severity === "critical" ? "bad" : "");
   const stale = monitorData ? (monitorData.sessions || []).filter((r) => r.stale).length : sum.stale_sessions || 0;
   setBadge("sessions", stale);
@@ -1945,9 +1955,9 @@ const SEVERITY_COLORS = {
   critical: "#c95661",
 };
 function updateAlertBadge() {
-  const severity = liveSummary?.severity || (monitorData ? monitorData.severity : "unknown");
+  const severity = currentResourceSeverity();
   const icon = { critical: "🔴", warning: "🟠" }[severity] || "";
-  document.title = (icon ? `${icon} ` : "") + BASE_TITLE;
+  document.title = (icon ? `${icon} ` : severity === "unknown" ? "상태 미확인 · " : "") + BASE_TITLE;
   const favicon = $("favicon");
   if (!favicon) return;
   const color = SEVERITY_COLORS[severity] || "#9aa6b2";
@@ -2004,7 +2014,10 @@ async function refresh(force = false) {
       attribution: (v) => (attributionData = v),
       sessionHistory: (v) => (sessionHistoryData = v),
       pushKey: (v) => (pushKeyData = v),
-      monitor: (v) => (monitorData = v),
+      monitor: (v) => {
+        const stamp = Number(v.daemon_updated_at || 0);
+        if (!monitorData || !stamp || stamp >= Number(monitorData.daemon_updated_at || 0)) monitorData = v;
+      },
       services: (v) => (serviceData = v),
       serviceMemory: (v) => (serviceMemoryData = v),
       history: (v) => (historyData = v),
@@ -2530,17 +2543,30 @@ window.addEventListener("hashchange", () => {
 // regular polling stays as the fallback (the server caps live streams).
 let stream = null,
   liveSignature = "";
+function invalidateLiveSummary() {
+  liveSummary = null;
+  liveSignature = "";
+  document.body.classList.remove("live");
+  updateBadges();
+  updateAlertBadge();
+}
 function connectStream() {
   if (stream || !window.EventSource || document.hidden) return;
-  stream = new EventSource("/api/stream");
-  stream.addEventListener("summary", (e) => {
+  const source = stream = new EventSource("/api/stream");
+  source.addEventListener("summary", (e) => {
+    if (source !== stream) return;
     let data;
     try {
       data = JSON.parse(e.data);
     } catch {
+      invalidateLiveSummary();
       return;
     }
-    if (data.error) return;
+    if (!data || typeof data !== "object" || Array.isArray(data) || data.error) {
+      invalidateLiveSummary();
+      return;
+    }
+    if (liveSummary && Number(data.updated_at || 0) < Number(liveSummary.updated_at || 0)) return;
     liveSummary = data;
     document.body.classList.add("live");
     const signature = `${data.severity}|${(data.reasons || []).join("|")}|${data.service_problems}|${(data.disk_alerts || []).join()}`;
@@ -2550,19 +2576,18 @@ function connectStream() {
     updateAlertBadge();
     if (changed && !busyAction) refresh();
   });
-  stream.addEventListener("error", () => {
+  source.addEventListener("error", () => {
+    if (source !== stream) return;
     // Each 50 s window ends with an error event and an automatic reconnect;
     // only a refused stream (503) closes for good, and polling carries on.
-    if (stream && stream.readyState === EventSource.CLOSED) {
-      stream = null;
-      document.body.classList.remove("live");
-    }
+    invalidateLiveSummary();
+    if (source.readyState === EventSource.CLOSED) stream = null;
   });
 }
 function disconnectStream() {
   stream?.close();
   stream = null;
-  document.body.classList.remove("live");
+  invalidateLiveSummary();
 }
 document.addEventListener("visibilitychange", () => (document.hidden ? disconnectStream() : connectStream()));
 // Keyboard: g+<key> jumps to a view, / focuses the view's search, r
