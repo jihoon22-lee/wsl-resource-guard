@@ -740,11 +740,11 @@ class Controller:
                 return {'message': f'변경 없이 계획만 표시합니다.\n{detail}', 'actions': planned}
             return {'message': '등록된 프로젝트의 자동 실행 설정을 적용했습니다.'}
 
-    def kill_tree(self, pid: int) -> dict:
+    def kill_tree(self, pid: int, *, expected_start_ticks: int | None = None, stale_only: bool = False) -> dict:
         """SIGTERM an LLM session or MCP tree root, re-validated at execution time."""
         if pid <= 1:
             raise ControlError('유효하지 않은 PID입니다.')
-        from .processes import build_snapshot, descendants_of, kill_block_reason, signal_verified_process
+        from .processes import build_snapshot, descendants_of, is_stale_session, kill_block_reason, signal_verified_process
         owner = pwd.getpwnam(self.load()['owner'])
         settings = self._owner_settings()
         snapshot = build_snapshot(settings.project_roots, uid=owner.pw_uid)
@@ -752,6 +752,11 @@ class Controller:
         group = next((item for item in snapshot.mcp_groups if item.root_pid == pid), None)
         if session is None and group is None:
             raise ControlError(f'PID {pid}는 현재 감지된 LLM 세션·MCP 루트가 아닙니다.')
+        root = snapshot.processes.get(pid)
+        if expected_start_ticks is not None and (root is None or root.start_ticks != expected_start_ticks):
+            raise ControlError('대상 프로세스가 바뀌어 종료하지 않았습니다.')
+        if stale_only and (session is None or not is_stale_session(session, settings.stale_session_hours)):
+            raise ControlError('현재 오래된 세션이 아니어서 종료하지 않았습니다.')
         reason = kill_block_reason(snapshot.processes.get(pid))
         if reason:
             raise ControlError(reason)
@@ -785,16 +790,17 @@ class Controller:
         owner = pwd.getpwnam(self.load()['owner'])
         settings = self._owner_settings()
         snapshot = build_snapshot(settings.project_roots, uid=owner.pw_uid)
-        eligible = {s.root_pid for s in snapshot.sessions
+        eligible = {s.root_pid: snapshot.processes[s.root_pid].start_ticks for s in snapshot.sessions
                     if is_stale_session(s, settings.stale_session_hours)
-                    and not kill_block_reason(snapshot.processes.get(s.root_pid))}
+                    and not kill_block_reason(snapshot.processes.get(s.root_pid))
+                    and snapshot.processes[s.root_pid].start_ticks is not None}
         done, skipped = [], []
         for pid in pids:
             if pid not in eligible:
                 skipped.append(pid)
                 continue
             try:
-                self.kill_tree(pid)
+                self.kill_tree(pid, expected_start_ticks=eligible[pid], stale_only=True)
                 done.append(pid)
             except ControlError:
                 skipped.append(pid)

@@ -1898,11 +1898,19 @@ function observationIsStale(timestamp) {
   const stamp = Number(timestamp), now = Date.now() / 1000;
   return !Number.isFinite(stamp) || stamp <= 0 || stamp > now + 5 || now - stamp > 90;
 }
+function observationCanReplace(incoming, previous) {
+  const next = Number(incoming) || 0, cached = Number(previous) || 0;
+  const now = Date.now() / 1000;
+  // After a backward clock adjustment the cached timestamp belongs to an
+  // obsolete clock epoch. A delayed future response must not pin it again.
+  if (next > now + 5 && cached > 0 && cached <= now + 5) return false;
+  return !next || !cached || cached > now + 5 || next >= cached;
+}
 function currentResourceSeverity() {
-  const liveAt = Number(liveSummary?.updated_at) || 0;
-  const pollAt = Number(monitorData?.daemon_updated_at) || 0;
+  const liveAt = observationIsStale(liveSummary?.updated_at) ? 0 : Number(liveSummary.updated_at);
+  const pollAt = observationIsStale(monitorData?.daemon_updated_at) ? 0 : Number(monitorData.daemon_updated_at);
   const source = liveAt > pollAt ? liveSummary : monitorData;
-  if (!source || observationIsStale(Math.max(liveAt, pollAt))) return "unknown";
+  if (!source || !(liveAt || pollAt)) return "unknown";
   return source.severity || "unknown";
 }
 function appProblems() {
@@ -2015,8 +2023,7 @@ async function refresh(force = false) {
       sessionHistory: (v) => (sessionHistoryData = v),
       pushKey: (v) => (pushKeyData = v),
       monitor: (v) => {
-        const stamp = Number(v.daemon_updated_at || 0);
-        if (!monitorData || !stamp || stamp >= Number(monitorData.daemon_updated_at || 0)) monitorData = v;
+        if (!monitorData || observationCanReplace(v.daemon_updated_at, monitorData.daemon_updated_at)) monitorData = v;
       },
       services: (v) => (serviceData = v),
       serviceMemory: (v) => (serviceMemoryData = v),
@@ -2566,7 +2573,7 @@ function connectStream() {
       invalidateLiveSummary();
       return;
     }
-    if (liveSummary && Number(data.updated_at || 0) < Number(liveSummary.updated_at || 0)) return;
+    if (liveSummary && !observationCanReplace(data.updated_at, liveSummary.updated_at)) return;
     liveSummary = data;
     document.body.classList.add("live");
     const signature = `${data.severity}|${(data.reasons || []).join("|")}|${data.service_problems}|${(data.disk_alerts || []).join()}`;

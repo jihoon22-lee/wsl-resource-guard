@@ -220,6 +220,16 @@ class LanguageOutputTests(unittest.TestCase):
         workflow = yaml.safe_load((root/'.github/workflows/release.yml').read_text())
         events = workflow.get('on', workflow.get(True))
         self.assertIn('workflow_dispatch', events)
+        self.assertIn('with', workflow['jobs']['checks'])
+        flag = workflow['jobs']['checks']['with']['rehearsal_check_failure']
+        self.assertIn("github.event_name == 'workflow_dispatch'", flag)
+        self.assertIn("inputs.scenario == 'check-failure'", flag)
+        checks = yaml.safe_load((root/'.github/workflows/checks.yml').read_text())['jobs']
+        injected = [step for step in checks['dependencies']['steps']
+                    if step.get('if') == 'inputs.rehearsal_check_failure']
+        self.assertEqual(len(injected), 1)
+        self.assertEqual(injected[0]['run'], 'exit 1')
+        self.assertNotIn('continue-on-error', injected[0])
         package = workflow['jobs']['package']['steps']
         self.assertTrue(any('security_gate.py' in step.get('run','') for step in package))
         publish = workflow['jobs']['publish']['steps']

@@ -641,6 +641,32 @@ def check_stream_freshness(browser) -> None:
             # A delayed polling response cannot overwrite a newer stream value.
             page.evaluate('refresh(true)')
             expect(page).to_have_title(re.compile('^내 PC'))
+            # A backward wall-clock adjustment must not let the old future
+            # observations pin either transport until the clock catches up.
+            shifted = base - 3600
+            page.evaluate("stamp => {window.__realNow=Date.now;Date.now=()=>stamp*1000}", shifted)
+            monitor.update(severity='critical', daemon_updated_at=shifted)
+            page.evaluate('refresh(true)')
+            expect(page).to_have_title(re.compile('^🔴'))
+            assert page.evaluate('monitorData.severity') == 'critical'
+            page.evaluate('() => {Date.now=window.__realNow}')
+            monitor.update(severity='normal', daemon_updated_at=base+25)
+            page.evaluate('refresh(true)')
+            emit('normal', base+25)
+            expect(page).to_have_title(re.compile('^내 PC'))
+            page.evaluate('stamp => {Date.now=()=>stamp*1000}', shifted)
+            emit('critical', shifted)
+            expect(page).to_have_title(re.compile('^🔴'))
+            # A delayed pre-adjustment future response must not poison the cache again.
+            emit('normal', base+25)
+            expect(page).to_have_title(re.compile('^🔴'))
+            monitor.update(severity='critical', daemon_updated_at=shifted)
+            page.evaluate('refresh(true)')
+            expect(page.locator('#refresh')).to_be_enabled()
+            monitor.update(severity='normal', daemon_updated_at=base+25)
+            page.evaluate('refresh(true)')
+            expect(page.locator('#refresh')).to_be_enabled()
+            assert page.evaluate('monitorData.severity') == 'critical'
             assert not errors,errors
         finally:
             context.close()

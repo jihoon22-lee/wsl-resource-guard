@@ -54,7 +54,8 @@ Dependabot은 `uv` ecosystem으로 pyproject/uv.lock을 갱신하며 Actions 갱
 
 Release 워크플로의 수동 실행은 게시 없는 리허설입니다. main에 포함된 커밋에서 프로젝트 버전에 맞는 `tag` 값을 넣고
 `scenario=none`으로 실행하면 같은 분석·압축본 검증 경로를 통과하지만 실제 태그나 Release는 만들지 않습니다.
-`check-failure`, `analysis-missing`, `security-high`는 해당 실행이 받은 SARIF 사본에만 실패를 주입하며 게시 job이 차단되는지 확인할 때 사용합니다.
+`check-failure`는 재사용 검사 workflow의 의존성 job을 실패시켜 package와 publish가 건너뛰어지는지 확인합니다.
+`analysis-missing`, `security-high`는 해당 실행이 받은 SARIF 사본에만 실패를 주입해 게시 차단을 확인합니다.
 잘못된 tag 값은 최초 검증에서 거부됩니다. 실제 게시는 `v*` 태그 push 이벤트에서만 수행합니다.
 
 ```bash

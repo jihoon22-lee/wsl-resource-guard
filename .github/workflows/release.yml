@@ -48,6 +48,8 @@ jobs:
   checks:
     needs: validate
     uses: ./.github/workflows/checks.yml
+    with:
+      rehearsal_check_failure: "${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'check-failure' }}"
   package:
     needs: [public, checks]
     runs-on: ubuntu-24.04

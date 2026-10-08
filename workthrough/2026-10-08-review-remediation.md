@@ -244,10 +244,10 @@ uv run --locked --no-sync python scripts/ci_unit.py
 
 - [x] VHD 경로 빈 값은 자동 탐색이 아니라 not-configured라고 정정한다. 이번 범위에서 자동 탐색 기능을 새로 만들지 않는다.
 - [x] pidfd 미지원 시 종료 제한, 수집 공백/heartbeat 의미, 큰 이력 오류, 푸시 등록/수신 차이, 시스템 state_dir 지원 범위·재설치 조건, uv 사용법과 복구 절차를 구현과 맞춘다.
-- [ ] 기존 실패 재현을 모두 회귀 검사로 남기고 R1–R13 각각 구현 commit·관련 테스트·실제 확인/미확인 상태를 이 문서에 연결한다.
+- [x] 기존 실패 재현을 모두 회귀 검사로 남기고 R1–R13 각각 구현 commit·관련 테스트·실제 확인/미확인 상태를 이 문서에 연결한다.
 - [ ] 최종 main 후보에서 Python 3.11–3.14 전체 검사, JS/shell/workflow 검사, root fixture, 실제 systemd 격리 설치/복구, web-only transport, 고정 Playwright PC/모바일 오류 시나리오를 실행한다. 예상하지 못한 skip은 실패다.
 - [ ] 최신 의존성 감사, 비밀값/공개 문자열 검사, Python/JS CodeQL SARIF 검사, 같은 commit의 재현 가능한 archive 생성·검증·추출본 설치 준비를 통과시킨다.
-- [ ] 권한/종료, 감시/알림/UI, 설치/uv/릴리스를 독립 읽기 전용 교차 검토한다. 확정된 P1/P2를 남긴 채 완료·배포하지 않는다. 실제 환경 검증이 막히면 미검증 상태를 기록하고 관련 완료 표시를 하지 않는다.
+- [x] 권한/종료, 감시/알림/UI, 설치/uv/릴리스를 독립 읽기 전용 교차 검토한다. 확정된 P1/P2를 남긴 채 완료·배포하지 않는다. 실제 환경 검증이 막히면 미검증 상태를 기록하고 관련 완료 표시를 하지 않는다.
 - [ ] diff·staging과 main의 새 변경을 확인한 뒤 `--no-ff` 병합한다. 통합으로 코드가 달라지면 해당 검사를 다시 수행한다. 최종 SHA를 push하고 그 SHA의 CI 결과를 확인한다.
 
 ## 단계 10 — 기존 운영에 반영하고 정리
@@ -403,3 +403,25 @@ git worktree list
 - 리허설 fixture는 실제 보안 게이트를 호출해 성공/실패를 확인했고, 수동 게시 제한이 없던 RED 이후 관련 17개 검사를 통과했다. 새 리허설·문서 변경은 이전 b771a4b CI 결과와 별도로 검증한다.
 - README·사용법·설정·구조·운영·CHANGELOG를 현재 구현에 맞췄다. VHD 빈 값은 미설정으로 정정했고, pidfd 제한·관측 공백·heartbeat·푸시 등록/수신·이력 오류·상태 경로와 개발/운영 사본 역할을 명시했다. 릴리스에는 현재 검증 기록과 그 상대 링크 대상도 명시적으로 포함한다.
 - 추가 수용 확인: 다운로드 오류 후 기존 환경 보존 단위 검사와 실제 root-only 환경의 web UID 접근 거부를 보강했다. 전체 428개 단위 검사, 실제 uv smoke, actionlint·공개정보/문서 링크 검사를 통과했다.
+
+### 실행 기록 — 최종 독립 교차 검토와 수정
+
+- a713dc60bd88cc496fd13de4b4e5e25c5b93c633을 세 읽기 전용 검토자가 독립 검토했다. 보안/서비스는 150개 실행(실제 root 전용 2개 제외), 감시/알림/UI는 135개, 설치/uv/릴리스는 71개 관련 검사를 통과했다. 서로 겹치는 검사는 전체 고유 검사 수에 합산하지 않는다.
+- 보안 P2: kill_stale의 최초 판정 뒤 kill_tree가 새 snapshot을 채택해 PID 재사용 또는 신규 활동을 놓쳤다. 실제 함수들을 연결한 무신호 fixture에서 두 실패를 확인한 뒤, 최초 start_ticks 전달·일치 확인과 최신 stale 판정을 추가했다. 유지된 대상만 신호를 보내며 PID 교체/신규 활동은 skip한다. 관련 74개 검사 통과.
+- UI P2: 시스템 시계 역행 후 미래 cached timestamp가 새 polling/SSE를 무시했다. 실제 PC/모바일 브라우저에서 RED 확인 후 미래 캐시를 대체하고 유효한 최신 관측을 선택하도록 수정했다. 늦게 도착한 이전 시각 체계의 미래 응답도 다시 캐시를 고정하지 않는다. 해당 브라우저 시나리오와 전체 offline dashboard 검사가 통과했다.
+- R13 검증 범위 보완: check-failure가 package 안에서만 실패하던 리허설은 checks 실패 증거가 아니었다. 수동 check-failure에서만 재사용 검사의 dependencies job을 실패시키도록 연결했다. 정상/태그 실행에서 검사를 생략하는 옵션은 없다. 관련 계약 RED→GREEN, 보안 게이트 17개와 actionlint 통과. 실제 job skip은 main 통합 후 리허설로 확인한다.
+- 최종 수정 후 전체 CI 단위 profile 428개, 실제 root 격리 2개, 전체 PC/모바일 offline suite, JS 문법·workflow 검사를 통과했다. a713dc6의 [CI 37707495614](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37707495614)도 success지만, 이 최종 수정 커밋의 원격 CI와 혼동하지 않는다.
+- 운영 비교: Resource Guard 세 서비스는 기존 PID와 NRestarts=0, 설치 파일 30/22개 및 사용자 설정·registry·접근 정책 해시가 그대로다. 컨테이너 6개도 동일하다. 최초 기준선의 무관한 서비스 3개는 실행 정보가 달라졌으므로 전체 작업 기간의 모든 서비스 불변을 주장하지 않는다. 이 작업은 해당 서비스를 제어하지 않았고 변경 원인은 확인하지 않았다. 배포 직전 새 기준선을 별도로 기록해 이번 배포 영향과 구분한다.
+
+| 항목 | 주 수정 커밋 | 검증 근거 |
+| --- | --- | --- |
+| R1 | da6ca84 | 채널 구성/전송 실패, 연속 sample 저장 및 재알림 간격 |
+| R2 | a275cd3 | 큰 정상 JSONL·worker 왕복·집계·출력 한도 |
+| R3 | ec0b47b 및 최종 리뷰 수정 | pidfd/UID/start token, CLI TERM/KILL, 일괄 종료 신원/활동 재확인 |
+| R4/R5 | 6f9a4fe | 관측 공백·회복·epoch heartbeat·DST/재시작 |
+| R6/R7/R8 | 2a4b91f | 등록 경합·EC 키·구독별 실패·PC/모바일 재등록 |
+| R9 | 3c6ed73 및 최종 리뷰 수정 | 연결 단절·응답 역전·시계 역행 PC/모바일 |
+| R10 | e000c00 | 500/501/1000/2000·부분 로그 오류·UTF-8 출력 한도 |
+| R11/R12 | ba8e954/a49f1f4/cbc7598 | 잠금·경로·첫 sample·실제 격리 systemd 전환/복구 |
+| R13 | cfb29d0/da6d6f0 및 리허설 보완 | 실제 양 언어 SARIF·오류 fixture·동일 archive; Actions 리허설은 통합 후 확인 |
+| uv | 559701f/b4ba555/b771a4b | shared lock·native 설치·4개 requirements 제거·Python 3.11–3.14·Git 없는 archive |

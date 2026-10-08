@@ -1,6 +1,11 @@
 name: Checks
 on:
   workflow_call:
+    inputs:
+      rehearsal_check_failure:
+        description: 'Failure-only injection for a manual release rehearsal'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -135,6 +140,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Reject the injected release check failure
+        if: inputs.rehearsal_check_failure
+        run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

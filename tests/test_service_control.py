@@ -232,22 +232,33 @@ class ControllerTests(unittest.TestCase):
         record = json.loads((self.path.parent / 'audit.jsonl').read_text().splitlines()[-1])
         self.assertEqual(record['detail'], {'pids': [111, 222], 'killed': [111]})
 
-    def test_kill_stale_signals_only_still_stale_requested_sessions(self):
-        with self.assertRaises(ControlError):
-            self.controller.kill_stale([])
-        with self.assertRaises(ControlError):
-            self.controller.kill_stale(['12'])
-        stale = Mock(root_pid=111)
-        fresh = Mock(root_pid=222)
-        snapshot = Mock(sessions=[stale, fresh], processes={})
-        with (patch('wsl_resource_guard.processes.build_snapshot', return_value=snapshot),
-              patch('wsl_resource_guard.processes.is_stale_session', side_effect=lambda s, h: s is stale),
-              patch('wsl_resource_guard.processes.kill_block_reason', return_value=''),
-              patch.object(self.controller, 'kill_tree', return_value={'message': 'ok'}) as kill):
-            result = self.controller.kill_stale([111, 222, 333])
-        kill.assert_called_once_with(111)
-        self.assertEqual(result['killed'], [111])
-        self.assertEqual(result['skipped'], [222, 333])
+    def test_kill_stale_preserves_identity_and_rechecks_activity(self):
+        from copy import deepcopy
+        for invalid in ([], ['12']):
+            with self.assertRaises(ControlError):
+                self.controller.kill_stale(invalid)
+        for scenario in ('unchanged', 'replaced-root', 'replaced-fresh-root', 'new-activity'):
+            with self.subTest(scenario=scenario):
+                old = self._kill_snapshot()
+                old.sessions[0].youngest_process_age_seconds = 49 * 3600
+                current = deepcopy(old)
+                if scenario.startswith('replaced'):
+                    current.processes[100].start_ticks = 200
+                    if scenario == 'replaced-fresh-root':
+                        current.sessions[0].youngest_process_age_seconds = 1
+                elif scenario == 'new-activity':
+                    current.sessions[0].youngest_process_age_seconds = 1
+                with (patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()),
+                      patch('wsl_resource_guard.processes.build_snapshot', side_effect=[old, current]),
+                      patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_: current.processes[pid]),
+                      patch('os.pidfd_open', side_effect=lambda pid: pid+1000), patch('os.close'),
+                      patch('signal.pidfd_send_signal') as signals, patch('os.kill') as numeric):
+                    result = self.controller.kill_stale([100, 999])
+                expected = [100] if scenario == 'unchanged' else []
+                self.assertEqual(result['killed'], expected)
+                self.assertEqual(result['skipped'], [999] if expected else [100,999])
+                self.assertEqual(signals.call_count, 2 if expected else 0)
+                numeric.assert_not_called()
 
     def test_summary_counts_problems_and_disk_alerts(self):
         from wsl_resource_guard.config import Settings
