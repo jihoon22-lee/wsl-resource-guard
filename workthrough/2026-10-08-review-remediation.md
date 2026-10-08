@@ -378,3 +378,11 @@ git worktree list
 - 동일 임시 개발 환경을 uv sync --locked --extra web --group dev --no-build --no-install-project로 동기화했다. 전체 CI 단위 profile 419개 통과. 운영 가상환경이나 저장소의 기존 .venv는 바꾸지 않았다.
 - GitHub의 현재 열린 Dependabot PR 조회 결과는 0건이다. uv ecosystem 전환과 이후 실제 봇 갱신 확인은 아직 남아 있다.
 - 이 커밋은 선언/잠금 추가 단계다. 기존 설치기·CI를 다음 단계에서 전환하고 requirements 네 파일을 제거한다. 이 중간 상태를 main이나 운영에 적용하지 않는다.
+
+### 실행 기록 — uv 설치기 전환
+
+- 이전 계획 정리 턴은 구현 진전이 없었으므로 현재 브랜치/HEAD와 실제 파일을 다시 확인하고 단계 8을 재개했다. 단일 체크아웃·기존 작업 브랜치를 유지했다.
+- 설치기는 bounded 정규 파일로 읽은 pyproject/uv.lock을 private 작업 경로에 고정하고 native sync --locked로 최종 .venvs 경로를 준비한다. 사용자 UV_PROJECT_ENVIRONMENT/CA/프록시를 상속하지 않고 시스템 CA를 명시한다. project sources/workspace/custom index/build backend와 비-PyPI lock 출처·잘못된 hash 메타데이터를 다운로드 전에 거부한다.
+- RED: 기존 requirements 전용 인터페이스와 CA 설정 누락으로 새 native 계약 검사가 실패했다. GREEN: 관련 8개, 설치 복구 12개, 전체 CI 단위 profile 422개를 통과했다. 실제 uv 호출 전 snapshot을 바꿔도 원래 잠금 입력을 사용하는 것을 검사했다.
+- 실제 root 임시 /var/lib 경로에서 신규/교체 환경을 각각 준비했고 nobody UID import/실행·최종 shebang·web-only 패키지 버전을 확인했다. hash mismatch, stale lock(--locked), wheel 부재(--no-build)를 실제 오류 원인까지 확인하고 이전 두 환경의 Gunicorn 실행을 재확인했다. 시험 경로는 context 종료 시 제거됐으며 서비스 제어는 하지 않았다.
+- 설치기/CI/패키징 전환 중간 단계다. requirements 제거와 native CI, Git 없는 공식 압축본 설치 검증은 이어서 수행한다. 운영 설치본은 변경하지 않았다.

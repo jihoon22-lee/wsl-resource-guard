@@ -86,10 +86,10 @@ def preflight_identity(owner: str, origin: str, login: str,
             raise RuntimeError('Existing web configuration has no secret_key')
 
 
-def prepare_venv(dest: Path, requirements: Path, web, environment: Path | None = None) -> Path:
+def prepare_venv(dest: Path, project: Path, web, environment: Path | None = None) -> Path:
     """Create at its permanent path: venv script shebangs cannot survive a rename."""
     environment = environment or dest / '.venvs' / uuid.uuid4().hex
-    install_environment(environment, requirements)
+    install_environment(environment, project)
     python = str(environment / 'bin/python')
     run_as(web, python, '-c', 'import flask, gunicorn', cwd='/')
     run_as(web, str(environment / 'bin/gunicorn'), '--version', cwd='/')
@@ -149,7 +149,7 @@ def _install_preflighted(owner, origin, login, serve, old_handler):
     payload = package_payload(SOURCE, include_web=True)
     for name in payload:
         validate_root_path(DEST / 'wsl_resource_guard' / name)
-    for name in ('requirements-web.txt', 'packaging/opencode-web.service'):
+    for name in ('pyproject.toml', 'uv.lock', 'packaging/opencode-web.service'):
         validate_root_path(DEST / name)
     validate_root_path(DEST / '.venvs')
     states = {name: unit_state(name) for name in UNITS}
@@ -174,11 +174,12 @@ def _install_preflighted(owner, origin, login, serve, old_handler):
             web = pwd.getpwnam('wrg-web')
         environment = DEST / '.venvs' / uuid.uuid4().hex
         (backup / 'environment-path.txt').write_text(str(environment))
-        prepare_venv(DEST, SOURCE / 'requirements-web.txt', web, environment)
+        prepare_venv(DEST, SOURCE, web, environment)
         # No running service is changed before environment validation succeeds.
         for name, content in payload.items():
             tx.write(DEST / 'wsl_resource_guard' / name, content)
-        tx.write(DEST / 'requirements-web.txt', (SOURCE / 'requirements-web.txt').read_bytes())
+        for name in ('pyproject.toml', 'uv.lock'):
+            tx.write(DEST / name, (SOURCE / name).read_bytes())
         from .guard_install import render_unit
         tx.write(DEST / 'packaging/opencode-web.service', render_unit(SOURCE / 'packaging/opencode-web.service', owner).encode())
         REGISTRY.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
