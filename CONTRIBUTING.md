@@ -1,12 +1,11 @@
 # 개발·검증·릴리스
 
-Python 3.11–3.14, Node.js, Playwright Chromium을 사용합니다. 운영 서비스와 분리된 체크아웃에서 작업하세요.
+Python 3.11–3.14, Node.js, Playwright Chromium을 사용합니다. 개발 체크아웃 하나에서 작업하고, 검증된 커밋만 설치기를 통해 기존 운영 설치본에 적용하세요.
 
 ```bash
 # uv 0.12.23을 사용합니다. Python은 기존 3.11–3.14 설치를 지정하세요.
-uv venv --python python3 --no-python-downloads .venv
-uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
-uv pip check --python .venv/bin/python
+uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python python3
+uv run --locked --no-sync python scripts/dependency_profiles.py
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/python scripts/ci_unit.py
 node --check wsl_resource_guard/web/app.js
@@ -21,22 +20,30 @@ node --check wsl_resource_guard/web/app.js
 PR과 CI는 권장하며 작은 수정의 승인된 직접 push를 허용합니다. required PR/CI를 강제하지 않습니다.
 비밀값·운영 데이터·실제 계정 경로를 커밋하지 마세요. 새 작업은 공개 이력에서 시작하고 이전 비공개 브랜치를 병합하지 않습니다.
 
-의존성 업데이트는 입력 명세를 수정하고 uv 0.12.23으로 다시 잠급니다.
-기존 출력 잠금의 버전은 기본 보존되며 의도한 패키지만 `--upgrade-package`로 올립니다.
+의존성 선언은 `pyproject.toml`, 버전·해시 잠금은 `uv.lock` 하나로 관리합니다.
+기본 guard/CLI는 외부 Python 의존성을 요구하지 않으며 웹은 `web` extra, 검사 도구는 `dev` group입니다.
+운영 웹과 개발 환경의 공통 패키지는 같은 잠금에서 선택합니다. Python 3.11–3.14 CI에서 실제 설치 버전도 대조합니다.
+
+선언을 바꾸면 `uv lock`을 실행합니다. 기존 버전은 기본 보존하며 의도한 패키지만 갱신하세요.
 
 ```bash
-uv pip compile requirements-web.in --generate-hashes --python-version 3.11 --universal -o requirements-web.txt
-uv pip compile requirements-dev.in --generate-hashes --python-version 3.11 --universal -o requirements-dev.txt
-.venv/bin/python -m pip_audit --require-hashes --disable-pip -r requirements-web.txt
-.venv/bin/python -m pip_audit --require-hashes --disable-pip -r requirements-dev.txt
+uv lock --upgrade-package flask
+uv lock --check
+uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python python3
+uv run --locked --no-sync python scripts/dependency_profiles.py --audit
 ```
 
-`requirements-*.in`과 해시가 있는 `.txt`가 명세와 잠금의 기준입니다. `uv sync`/`uv run`이나
-`uv.lock`은 사용하지 않습니다. Dependabot은 이 파일 형식에 맞는 `pip` ecosystem을 유지합니다.
-`pip` 패키지는 개발 검사 도구 `pip-audit → pip-api`의 간접 의존성입니다. 설치 명령에는 사용하지 않습니다.
-새 환경에서 `uv pip check`를 실행해 Dependabot 갱신 중 간접 의존성이 빠지지 않았는지 확인합니다.
-[uv 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)를 따르되 버전을 고정하세요.
-uv는 pip.conf/PIP_INDEX_URL 설정을 읽지 않으므로 사설 인덱스를 쓰는 개발자는 uv 설정을 별도로 검토해야 합니다.
+`--locked`는 선언과 잠금이 다르면 실패하며 실행 도중 잠금을 갱신하지 않습니다.
+감사 스크립트는 같은 잠금에서 web/dev 입력을 해시 포함 requirements 형식으로 임시 export하고,
+각각 감사한 뒤 입력과 감사 캐시를 삭제합니다. requirements 파일을 별도로 추적하거나 수동 관리하지 않습니다.
+`pip` 패키지는 검사 도구 `pip-audit → pip-api`의 간접 의존성으로 남을 수 있지만 설치 명령에는 사용하지 않습니다.
+Dependabot은 `uv` ecosystem으로 pyproject/uv.lock을 갱신하며 Actions 갱신도 유지합니다.
+봇 PR은 잠금 검사·설치 검증·전체 CI로 확인합니다. 설정만 바꾼 상태를 실제 봇 갱신 성공으로 간주하지 않습니다.
+
+[uv 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)에 따라 uv 0.12.23을 사용하세요.
+운영 설치기는 사용자 uv 설정을 상속하지 않고 PyPI wheel만 허용합니다. 개발용 사설 인덱스·path/VCS·workspace·build hook은
+현재 운영 설치기의 지원 범위가 아니므로 해당 설정을 추가한 프로젝트는 설치 전에 거부됩니다.
+
 워크플로 Action은 전체 SHA와 버전 주석을 함께 갱신합니다. CI 도구의 검사 예외를 포괄적으로 추가하지 않습니다.
 
 ## 릴리스

@@ -386,3 +386,10 @@ git worktree list
 - RED: 기존 requirements 전용 인터페이스와 CA 설정 누락으로 새 native 계약 검사가 실패했다. GREEN: 관련 8개, 설치 복구 12개, 전체 CI 단위 profile 422개를 통과했다. 실제 uv 호출 전 snapshot을 바꿔도 원래 잠금 입력을 사용하는 것을 검사했다.
 - 실제 root 임시 /var/lib 경로에서 신규/교체 환경을 각각 준비했고 nobody UID import/실행·최종 shebang·web-only 패키지 버전을 확인했다. hash mismatch, stale lock(--locked), wheel 부재(--no-build)를 실제 오류 원인까지 확인하고 이전 두 환경의 Gunicorn 실행을 재확인했다. 시험 경로는 context 종료 시 제거됐으며 서비스 제어는 하지 않았다.
 - 설치기/CI/패키징 전환 중간 단계다. requirements 제거와 native CI, Git 없는 공식 압축본 설치 검증은 이어서 수행한다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — native uv CI·감사·Dependabot 연결
+
+- CI 환경 생성은 sync --locked --extra web --group dev로 전환했다. 같은 uv.lock에서 web/dev를 임시 export하여 공통 버전과 실제 설치 버전을 검사하고, 보안 감사도 각 profile에 따로 적용한다. 감사 입력/캐시는 종료 시 제거한다. 운영 web 8개·개발 44개 버전 일치와 알려진 취약점 0을 확인했다.
+- 프로필 marker 선택, 비고정/충돌 버전 거부, web/dev/실제 설치 불일치의 3개 회귀 검사와 전체 CI 단위 profile 425개 통과. actionlint·shellcheck·bash -n·JS 문법·공개 파일/문서 링크 검사도 통과했다.
+- requirements 네 파일을 제거하고 현재 설치·검사·패키징·CONTRIBUTING 참조를 pyproject/uv.lock으로 바꿨다. 과거 작업 기록의 당시 requirements 설명은 역사적 기록으로 남긴다. Dependabot을 uv ecosystem으로 바꾸고 Actions 항목은 보존했다. 현재 열린 Dependabot PR은 다시 조회해 0건이며, 실제 봇 갱신 확인은 아직 아니다.
+- artifact-roundtrip에 검증된 압축본을 풀어 Git 없이 실제 root dependency preparation을 수행하도록 추가했다. 이 커밋의 원격 전체 CI와 압축본 검증 결과는 다음 실행 기록에서 확인한다. 운영 배포·main 병합은 아직 하지 않았다.

@@ -10,7 +10,7 @@ except ImportError:
     create_app = None
 
 
-@unittest.skipIf(create_app is None, 'Install requirements-web.txt to test the dashboard')
+@unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test the dashboard')
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.control = Mock(return_value={'services': [], 'origin': 'https://pc.example.ts.net:9443'})
@@ -182,7 +182,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.get('/assets/app.js',headers={}).status_code,403)
 
 
-@unittest.skipIf(create_app is None, 'Install requirements-web.txt to test the dashboard')
+@unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test the dashboard')
 class NewRouteTests(unittest.TestCase):
     setUp, get, token = WebTests.setUp, WebTests.get, WebTests.token
 
@@ -232,7 +232,7 @@ class NewRouteTests(unittest.TestCase):
             else: self.control.assert_not_called()
 
 
-@unittest.skipIf(create_app is None, 'Install requirements-web.txt to test the dashboard')
+@unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test the dashboard')
 class StreamTests(unittest.TestCase):
     def setUp(self):
         self.origin = 'https://pc.example.ts.net:9443'
