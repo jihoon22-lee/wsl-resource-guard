@@ -12,3 +12,12 @@ Issues = "https://github.com/jihoon22-lee/wsl-resource-guard/issues"
 
 [tool.unittest]
 start-directory = "tests"
+
+[project.optional-dependencies]
+web = ["Flask>=3.1,<4", "gunicorn>=26.2.0,<27"]
+
+[dependency-groups]
+dev = ["playwright==1.63.0", "cryptography>=50.0.2,<51", "pip-audit>=2.9,<3", "PyYAML>=6,<7"]
+
+[tool.uv]
+package = false

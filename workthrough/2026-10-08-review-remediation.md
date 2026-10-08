@@ -173,8 +173,8 @@ updateBadges();
 - [x] 사용자 경로 생성/쓰기 검사도 소유자 UID·기본 GID로 수행한다. systemd unit의 경로 quoting/escaping을 중앙화하고 제어문자·개행·specifier 주입을 거부한다. root가 사용자 경로를 따라 chown/덮어쓰지 않는다.
 - [x] 사용자 지정 상태 경로를 daemon lock, snapshot_state/restore_state, 첫 실행 확인 모두에 전달한다. 설치 중 설정 파일 변경을 감지하면 전환 전에 중단한다. guard의 실행 중 state_dir 변경은 자동 적용하지 않고 설치 재생성 필요 상태로 명시한다.
 - [x] 단순 is-active 뒤 성공을 반환하지 않는다. 새 프로세스 시작 이후 올바른 state 경로의 첫 성공 수집을 최대 180초 내 확인하고, 실패 시 이번 작업의 코드·유닛·active/enabled·데이터만 복구한다. 경보 severity가 normal이어야 한다는 조건은 두지 않는다.
-- [ ] 격리된 systemd 환경에서 기본/사용자 지정 경로 신규 설치, 사용자→시스템 전환, 반대 순서 거부, 설치 경쟁, 권한 오류, 최초 수집 실패, 롤백 후 기존 guard 수집을 시험한다. 운영 WSL에 fixture 유닛을 설치하거나 별도 WSL 배포판을 기동하지 않는다. GitHub-hosted disposable VM 등 독립된 환경에서 실제 namespace 시험을 수행한다.
-- [ ] `fix: Serialize guard installation and validate writable state paths`로 커밋한다.
+- [x] 격리된 systemd 환경에서 기본/사용자 지정 경로 신규 설치, 사용자→시스템 전환, 반대 순서 거부, 설치 경쟁, 권한 오류, 최초 수집 실패, 롤백 후 기존 guard 수집을 시험한다. 운영 WSL에 fixture 유닛을 설치하거나 별도 WSL 배포판을 기동하지 않는다. GitHub-hosted disposable VM 등 독립된 환경에서 실제 namespace 시험을 수행한다.
+- [x] 설치 경합과 상태 경로를 별도 검증 단위로 커밋했다: `ba8e954`와 `a49f1f4`. 실제 수명주기 수용 시험 보강은 `cbc7598`이다.
 
 ```python
 with owner_install_lock(owner):
@@ -207,7 +207,7 @@ assert not any(n.get("level") == "error" for n in analysis_notifications)
 **제거:** `requirements-web.in`, `requirements-web.txt`, `requirements-dev.in`, `requirements-dev.txt`.
 
 - [ ] CLI/guard의 기본 dependencies=[]는 유지하고 웹은 `project.optional-dependencies.web`, 검사 도구는 `dependency-groups.dev`에 선언한다. cryptography는 개발 시험에 포함하고 현재 시스템 Python을 사용하는 guard/컨트롤러의 선택적 의존성 설치 구조는 유지한다. 시스템 cryptography 검증은 웹 venv 검사와 별도로 남긴다.
-- [ ] 현재 승인 버전을 제약으로 가져와 uv.lock을 생성한다. 운영/개발 공통 버전을 일치시키고 불필요한 일괄 업그레이드를 하지 않는다. MarkupSafe 차이는 운영 3.0.3을 초기 공통 기준으로 삼아 회귀·취약점 검사를 통과시킨다. 호환상 필요한 변경만 별도로 설명한다.
+- [x] 현재 승인 버전을 제약으로 가져와 uv.lock을 생성한다. 운영/개발 공통 버전을 일치시키고 불필요한 일괄 업그레이드를 하지 않는다. MarkupSafe 차이는 운영 3.0.3을 초기 공통 기준으로 삼아 회귀·취약점 검사를 통과시킨다. 호환상 필요한 변경만 별도로 설명한다.
 - [ ] 개발/CI는 `uv sync --locked --extra web --group dev --no-build --no-install-project`로 동기화한다. 실행에서 잠금을 묵시적으로 바꾸지 않게 한다. Python 3.11–3.14 각각 웹 공통 패키지 버전이 운영 profile과 같은지 검사한다.
 - [ ] 설치기는 검증한 uv와 root 소유 임시 manifest/lock으로 `uv sync --locked --extra web --no-dev --no-install-project --no-build --python /usr/bin/python3`를 실행한다. `UV_PROJECT_ENVIRONMENT`는 설치기만 정한 기존 `.venvs/<install-id>` 최종 경로에 연결한다. 환경을 만든 뒤 이동하지 않는다.
 - [ ] env whitelist, 명시적 CA/TLS, 사용자 인덱스·프록시·설정 무시, Python 자동 다운로드 금지, 고정 PyPI 출처와 artifact 해시 확인을 보존한다. 프로젝트 sources/workspace/path/VCS/build hook을 이 root 설치 경로에서 허용하지 않는다. corrupt lock/artifact가 반드시 실패하는 시험을 둔다.
@@ -370,3 +370,11 @@ git worktree list
 - 릴리스 package는 검사 workflow에서 만든 checked-release-assets를 그대로 받아 검증·게시 단계로 전달한다. 새 압축본을 다시 만들지 않으며 두 다운로드 단계 모두 artifact digest 불일치에서 실패한다.
 - 게이트 CLI 실패 시 이어지는 게시 sentinel이 실행되지 않는 shell fixture와 release jobs의 needs/default success 조건을 검증했다. 실제 GitHub의 실패 태그→publish job skip을 발생시키는 시험은 아직 수행하지 않았으며 공개 Release는 생성하지 않았다.
 - 보안 게이트 관련 15개 시험과 전체 CI 단위 profile 419개 통과. 최종 workflow 수정 후 관련 15개를 다시 통과했다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R12/R13 원격 검증과 uv 선언 통합 시작
+
+- cfb29d01e0d3596e8c0013a28f405cb61fbc98bb의 [CI 37705664235](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37705664235) 13개 job이 모두 통과했다. 새 CodeQL 게이트가 두 실제 언어 분석을 검사했다. guard-lifecycle의 권한 거부와 완전 신규 custom 경로 시험, 실제 수집과 복구·정리 로그도 확인했다.
+- pyproject의 web extra/dev group, package=false와 uv.lock을 추가했다. 초기 생성에만 기존 승인 버전 제약을 사용한 뒤 제거했고 다시 lock/check를 수행했다. 영구적인 중복 버전 제약은 남기지 않는다. 44개 의존성이 기존 승인 목록과 일치하며 MarkupSafe는 운영 3.0.3 기준이다.
+- 동일 임시 개발 환경을 uv sync --locked --extra web --group dev --no-build --no-install-project로 동기화했다. 전체 CI 단위 profile 419개 통과. 운영 가상환경이나 저장소의 기존 .venv는 바꾸지 않았다.
+- GitHub의 현재 열린 Dependabot PR 조회 결과는 0건이다. uv ecosystem 전환과 이후 실제 봇 갱신 확인은 아직 남아 있다.
+- 이 커밋은 선언/잠금 추가 단계다. 기존 설치기·CI를 다음 단계에서 전환하고 requirements 네 파일을 제거한다. 이 중간 상태를 main이나 운영에 적용하지 않는다.
