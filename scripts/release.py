@@ -19,8 +19,11 @@ from wsl_resource_guard.build_info import release_revision
 ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
               'AGENTS.md', 'workthrough/2026-10-07-public-release.md',
               'workthrough/2026-10-08-uv-dependencies.md',
+              'workthrough/2026-10-08-review-remediation.md', 'workthrough/2026-10-08-full-code-review.md',
               'pyproject.toml', 'uv.lock', 'install-user.sh',
-              'install-root.sh', 'install-services.sh'}
+              'install-root.sh', 'install-services.sh', '.github/workflows/checks.yml',
+              '.github/workflows/release.yml', '.github/workflows/ci.yml',
+              '.github/workflows/public-checks.yml', '.github/dependabot.yml'}
 PREFIXES = ('bin/', 'wsl_resource_guard/', 'config/', 'packaging/', 'tests/', 'scripts/')
 DOCS = {'docs/installation.md', 'docs/usage.md', 'docs/configuration.md',
         'docs/architecture.md', 'docs/operations.md'}

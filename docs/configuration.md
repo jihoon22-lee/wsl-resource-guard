@@ -31,6 +31,10 @@ wrg configure-alerts
 외부 알림은 선택 사항입니다. `configure-alerts`는 비밀값을 숨김 입력으로 받고 0600 권한으로 보관합니다.
 `wrg test-alert`는 실제 메시지를 보내므로 수신 계정을 확인한 뒤 명시적으로 실행하세요.
 자격 정보가 없거나 관측할 수 없는 항목을 정상 수신·정상 0으로 표시하지 않습니다.
+수집 간격이 설정 주기의 두 배를 넘거나 시계가 역행하면 지속·회복 판정 시간을 다시 시작합니다.
+기존 경보는 관측 실패만으로 해제하지 않고 새 정상 관측으로 회복을 확인합니다.
+heartbeat는 설정한 발송 분을 놓쳐도 다음 수집에서 가장 최근 예정 슬롯을 한 번 처리합니다.
+오래 중단된 동안의 모든 슬롯을 몰아서 발송하지 않으며 발송 시도와 실제 성공은 구분합니다.
 
 ## 검증되는 기본값과 범위
 
@@ -79,4 +83,4 @@ wrg configure-alerts
 | `weekly_report_weekday` | `0` | 0–6 | 주간 리포트 요일 (0=월 … 6=일) |
 | `weekly_report_hour` | `9` | 0–23 | 주간 리포트 발송 시각 (시) |
 
-`project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로는 빈 값으로 자동 탐색합니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.
+`project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로의 빈 값은 미설정(`not-configured`)이며 자동 탐색하지 않습니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.
