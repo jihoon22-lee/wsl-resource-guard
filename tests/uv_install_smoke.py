@@ -64,6 +64,14 @@ def main():
                 print(f'uv rejected {name}')
             else:
                 raise AssertionError(f'{name} accepted')
+        private = root/'private'
+        private.mkdir(mode=0o700)
+        try:
+            prepare_venv(root, source, web, private/'inaccessible')
+        except PermissionError:
+            print('uv rejected an environment inaccessible to the web UID')
+        else:
+            raise AssertionError('web UID access check did not reject a root-only environment')
         for environment in (old, new):
             subprocess.run([str(environment / 'bin/gunicorn'), '--version'], check=True)
         assert not list((root / '.venvs').glob('.uv-*'))

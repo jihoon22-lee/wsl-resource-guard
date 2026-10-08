@@ -208,3 +208,21 @@ class UvEnvironmentTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     module.install_environment(root/'new', project)
                 download.assert_not_called()
+
+    def test_bootstrap_download_failure_preserves_the_old_environment(self):
+        module = self.module()
+        import urllib.error
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root/'project'
+            self.project(project)
+            old = root/'old'
+            old.mkdir()
+            (old/'marker').write_text('keep')
+            with patch.object(module, 'validate_root_path'), \
+                 patch.object(module, 'download_uv', side_effect=urllib.error.URLError('fixture outage')):
+                with self.assertRaises(urllib.error.URLError):
+                    module.install_environment(root/'new', project)
+            self.assertFalse((root/'new').exists())
+            self.assertFalse(list(root.glob('.uv-*')))
+            self.assertEqual((old/'marker').read_text(), 'keep')

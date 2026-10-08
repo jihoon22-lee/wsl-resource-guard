@@ -206,15 +206,15 @@ assert not any(n.get("level") == "error" for n in analysis_notifications)
 **수정:** `pyproject.toml`, 신규 `uv.lock`, `uv_environment.py`, `service_install.py`, CI 4개 workflow, `.github/dependabot.yml`, `scripts/release.py`, `scripts/ci_unit.py`, 관련 설치·패키징 시험과 `tests/uv_install_smoke.py`.
 **제거:** `requirements-web.in`, `requirements-web.txt`, `requirements-dev.in`, `requirements-dev.txt`.
 
-- [ ] CLI/guard의 기본 dependencies=[]는 유지하고 웹은 `project.optional-dependencies.web`, 검사 도구는 `dependency-groups.dev`에 선언한다. cryptography는 개발 시험에 포함하고 현재 시스템 Python을 사용하는 guard/컨트롤러의 선택적 의존성 설치 구조는 유지한다. 시스템 cryptography 검증은 웹 venv 검사와 별도로 남긴다.
+- [x] CLI/guard의 기본 dependencies=[]는 유지하고 웹은 `project.optional-dependencies.web`, 검사 도구는 `dependency-groups.dev`에 선언한다. cryptography는 개발 시험에 포함하고 현재 시스템 Python을 사용하는 guard/컨트롤러의 선택적 의존성 설치 구조는 유지한다. 시스템 cryptography 검증은 웹 venv 검사와 별도로 남긴다.
 - [x] 현재 승인 버전을 제약으로 가져와 uv.lock을 생성한다. 운영/개발 공통 버전을 일치시키고 불필요한 일괄 업그레이드를 하지 않는다. MarkupSafe 차이는 운영 3.0.3을 초기 공통 기준으로 삼아 회귀·취약점 검사를 통과시킨다. 호환상 필요한 변경만 별도로 설명한다.
-- [ ] 개발/CI는 `uv sync --locked --extra web --group dev --no-build --no-install-project`로 동기화한다. 실행에서 잠금을 묵시적으로 바꾸지 않게 한다. Python 3.11–3.14 각각 웹 공통 패키지 버전이 운영 profile과 같은지 검사한다.
-- [ ] 설치기는 검증한 uv와 root 소유 임시 manifest/lock으로 `uv sync --locked --extra web --no-dev --no-install-project --no-build --python /usr/bin/python3`를 실행한다. `UV_PROJECT_ENVIRONMENT`는 설치기만 정한 기존 `.venvs/<install-id>` 최종 경로에 연결한다. 환경을 만든 뒤 이동하지 않는다.
-- [ ] env whitelist, 명시적 CA/TLS, 사용자 인덱스·프록시·설정 무시, Python 자동 다운로드 금지, 고정 PyPI 출처와 artifact 해시 확인을 보존한다. 프로젝트 sources/workspace/path/VCS/build hook을 이 root 설치 경로에서 허용하지 않는다. corrupt lock/artifact가 반드시 실패하는 시험을 둔다.
-- [ ] pip-audit에는 같은 uv.lock에서 web/dev profile을 각각 해시 포함 임시 requirements로 export한다. 출력은 임시 검사 입력이며 Git에 추적하거나 수동 관리하지 않는다. 각 profile을 독립 감사하고 공통 버전 일치를 검사한다.
+- [x] 개발/CI는 `uv sync --locked --extra web --group dev --no-build --no-install-project`로 동기화한다. 실행에서 잠금을 묵시적으로 바꾸지 않게 한다. Python 3.11–3.14 각각 웹 공통 패키지 버전이 운영 profile과 같은지 검사한다.
+- [x] 설치기는 검증한 uv와 root 소유 임시 manifest/lock으로 `uv sync --locked --extra web --no-dev --no-install-project --no-build --python /usr/bin/python3`를 실행한다. `UV_PROJECT_ENVIRONMENT`는 설치기만 정한 기존 `.venvs/<install-id>` 최종 경로에 연결한다. 환경을 만든 뒤 이동하지 않는다.
+- [x] env whitelist, 명시적 CA/TLS, 사용자 인덱스·프록시·설정 무시, Python 자동 다운로드 금지, 고정 PyPI 출처와 artifact 해시 확인을 보존한다. 프로젝트 sources/workspace/path/VCS/build hook을 이 root 설치 경로에서 허용하지 않는다. corrupt lock/artifact가 반드시 실패하는 시험을 둔다.
+- [x] pip-audit에는 같은 uv.lock에서 web/dev profile을 각각 해시 포함 임시 requirements로 export한다. 출력은 임시 검사 입력이며 Git에 추적하거나 수동 관리하지 않는다. 각 profile을 독립 감사하고 공통 버전 일치를 검사한다.
 - [ ] Dependabot의 pip 항목을 `package-ecosystem: uv`로 변경하고 Actions 항목을 유지한다. 실제 봇이 생성하는 lock 변경을 `uv lock --check`와 전체 CI로 검증한다. 봇 실행 전에는 실제 봇 갱신 확인 완료라고 쓰지 않는다.
-- [ ] release allowlist/필수 파일을 pyproject+uv.lock 기준으로 갱신한다. Git 없는 압축본에서 uv 동기화·설치 준비가 동작하고 낡은 requirements 참조가 남지 않는지 확인한다.
-- [ ] manifest/lock 불일치, wheel 부재, hash 변조, 다운로드 실패, 오염 환경, 웹 UID 접근 실패에서 기존 운영 설치·유닛이 바뀌지 않는지 검사한다.
+- [x] release allowlist/필수 파일을 pyproject+uv.lock 기준으로 갱신한다. Git 없는 압축본에서 uv 동기화·설치 준비가 동작하고 낡은 requirements 참조가 남지 않는지 확인한다.
+- [x] manifest/lock 불일치, wheel 부재, hash 변조, 다운로드 실패, 오염 환경, 웹 UID 접근 실패에서 기존 운영 설치·유닛이 바뀌지 않는지 검사한다.
 - [ ] 개발 잠금 통합과 설치/CI/패키징 연결을 검증 가능한 커밋으로 나누되, main에는 모든 전환이 끝난 상태로 통합한다.
 
 선언 구조:
@@ -242,8 +242,8 @@ uv run --locked --no-sync python scripts/ci_unit.py
 
 **수정:** README, CONTRIBUTING, CHANGELOG, `docs/installation.md`, `configuration.md`, `architecture.md`, `operations.md`, `usage.md`, 이 기록. 새 문서 묶음을 추가하지 않는다.
 
-- [ ] VHD 경로 빈 값은 자동 탐색이 아니라 not-configured라고 정정한다. 이번 범위에서 자동 탐색 기능을 새로 만들지 않는다.
-- [ ] pidfd 미지원 시 종료 제한, 수집 공백/heartbeat 의미, 큰 이력 오류, 푸시 등록/수신 차이, 시스템 state_dir 지원 범위·재설치 조건, uv 사용법과 복구 절차를 구현과 맞춘다.
+- [x] VHD 경로 빈 값은 자동 탐색이 아니라 not-configured라고 정정한다. 이번 범위에서 자동 탐색 기능을 새로 만들지 않는다.
+- [x] pidfd 미지원 시 종료 제한, 수집 공백/heartbeat 의미, 큰 이력 오류, 푸시 등록/수신 차이, 시스템 state_dir 지원 범위·재설치 조건, uv 사용법과 복구 절차를 구현과 맞춘다.
 - [ ] 기존 실패 재현을 모두 회귀 검사로 남기고 R1–R13 각각 구현 commit·관련 테스트·실제 확인/미확인 상태를 이 문서에 연결한다.
 - [ ] 최종 main 후보에서 Python 3.11–3.14 전체 검사, JS/shell/workflow 검사, root fixture, 실제 systemd 격리 설치/복구, web-only transport, 고정 Playwright PC/모바일 오류 시나리오를 실행한다. 예상하지 못한 skip은 실패다.
 - [ ] 최신 의존성 감사, 비밀값/공개 문자열 검사, Python/JS CodeQL SARIF 검사, 같은 commit의 재현 가능한 archive 생성·검증·추출본 설치 준비를 통과시킨다.
@@ -393,3 +393,13 @@ git worktree list
 - 프로필 marker 선택, 비고정/충돌 버전 거부, web/dev/실제 설치 불일치의 3개 회귀 검사와 전체 CI 단위 profile 425개 통과. actionlint·shellcheck·bash -n·JS 문법·공개 파일/문서 링크 검사도 통과했다.
 - requirements 네 파일을 제거하고 현재 설치·검사·패키징·CONTRIBUTING 참조를 pyproject/uv.lock으로 바꿨다. 과거 작업 기록의 당시 requirements 설명은 역사적 기록으로 남긴다. Dependabot을 uv ecosystem으로 바꾸고 Actions 항목은 보존했다. 현재 열린 Dependabot PR은 다시 조회해 0건이며, 실제 봇 갱신 확인은 아직 아니다.
 - artifact-roundtrip에 검증된 압축본을 풀어 Git 없이 실제 root dependency preparation을 수행하도록 추가했다. 이 커밋의 원격 전체 CI와 압축본 검증 결과는 다음 실행 기록에서 확인한다. 운영 배포·main 병합은 아직 하지 않았다.
+
+
+### 실행 기록 — uv 원격 수용 결과와 릴리스 리허설 준비
+
+- b771a4b63049f72f02b103d5ab367e271573f326의 [CI 37706970812](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37706970812)는 13개 job 모두 success다. Python 3.11–3.14 각각 425개 단위 검사, web 8/dev 44 버전 일치, 취약점 감사, 실제 CodeQL과 브라우저, guard 수명주기를 확인했다.
+- artifact-roundtrip 로그에서 전달된 공식 압축본의 SHA/재현성 확인 후 Git 없는 추출본으로 실제 root uv 설치 준비·web UID·해시 변조·잠금 불일치·wheel 부재 차단까지 통과했음을 확인했다. 로컬에서도 같은 커밋의 두 압축본이 바이트 단위로 일치하고 검증을 통과했다.
+- R13의 실제 job 차단 확인을 위해 Release에 게시 없는 workflow_dispatch 경로를 추가했다. main 포함 여부·버전·전체 검사·동일 산출물 검증은 유지하고, 실제 gh release create는 tag push 이벤트에서만 실행한다. 수동 실패 주입은 해당 run이 다운로드한 SARIF 사본만 변경한다. 정상/일반 검사 실패/분석 누락/고위험 결과와 잘못된 태그를 main 통합 후 실제 Actions에서 확인한다. 이 실제 리허설은 아직 실행 전이다.
+- 리허설 fixture는 실제 보안 게이트를 호출해 성공/실패를 확인했고, 수동 게시 제한이 없던 RED 이후 관련 17개 검사를 통과했다. 새 리허설·문서 변경은 이전 b771a4b CI 결과와 별도로 검증한다.
+- README·사용법·설정·구조·운영·CHANGELOG를 현재 구현에 맞췄다. VHD 빈 값은 미설정으로 정정했고, pidfd 제한·관측 공백·heartbeat·푸시 등록/수신·이력 오류·상태 경로와 개발/운영 사본 역할을 명시했다. 릴리스에는 현재 검증 기록과 그 상대 링크 대상도 명시적으로 포함한다.
+- 추가 수용 확인: 다운로드 오류 후 기존 환경 보존 단위 검사와 실제 root-only 환경의 web UID 접근 거부를 보강했다. 전체 428개 단위 검사, 실제 uv smoke, actionlint·공개정보/문서 링크 검사를 통과했다.

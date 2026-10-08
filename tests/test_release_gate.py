@@ -189,3 +189,41 @@ class LanguageOutputTests(unittest.TestCase):
         downloads = [step for step in release['publish']['steps']
                      if step.get('uses', '').startswith('actions/download-artifact@')]
         self.assertEqual(downloads[0]['with']['digest-mismatch'], 'error')
+
+    def test_manual_rehearsal_fixture_reaches_real_security_gate(self):
+        import subprocess
+        import sys
+        root = Path(__file__).resolve().parents[1]
+        for scenario in ('none', 'check-failure', 'analysis-missing', 'security-high'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                for language in ('python', 'javascript'):
+                    run = CompleteAnalysisTests().good()
+                    run['tool']['extensions'][0]['name'] = f'codeql/{language}-queries'
+                    (output/f'{language}.sarif').write_text(json.dumps({'version':'2.1.0','runs':[run]}))
+                injected = subprocess.run([sys.executable, str(root/'tests/release_rehearsal.py'), directory, scenario],
+                                          text=True, capture_output=True, timeout=10)
+                if scenario == 'check-failure':
+                    self.assertNotEqual(injected.returncode, 0)
+                    self.assertIn('Injected release check failure', injected.stderr)
+                    continue
+                self.assertEqual(injected.returncode, 0, injected.stderr)
+                checked = subprocess.run([sys.executable, str(root/'scripts/security_gate.py'), directory],
+                                         text=True, capture_output=True, timeout=10)
+                self.assertEqual(checked.returncode == 0, scenario == 'none', checked.stderr)
+                if scenario == 'security-high':
+                    self.assertIn('Blocked SARIF finding', checked.stderr)
+
+    def test_manual_release_can_only_rehearse_and_still_checks_both_analyses(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root/'.github/workflows/release.yml').read_text())
+        events = workflow.get('on', workflow.get(True))
+        self.assertIn('workflow_dispatch', events)
+        package = workflow['jobs']['package']['steps']
+        self.assertTrue(any('security_gate.py' in step.get('run','') for step in package))
+        publish = workflow['jobs']['publish']['steps']
+        sends = [step for step in publish if 'gh release create' in step.get('run','')]
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0].get('if'), "github.event_name == 'push'")
+        self.assertTrue(any(step.get('if') == "github.event_name == 'workflow_dispatch'" for step in publish))
