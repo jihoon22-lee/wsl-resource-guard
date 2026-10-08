@@ -161,6 +161,12 @@ def main():
         result = command('/bin/bash', str(REPO / 'install-root.sh'), '--owner', ACCOUNT, check=False)
         assert result.returncode != 0 and pid(owner, True) == before
         assert not Path('/etc/wrg-forbidden-fixture').exists()
+        protected = HOME / 'root-only fixture'
+        protected.mkdir(mode=0o700)
+        write_config(owner, protected / 'state')
+        result = command('/bin/bash', str(REPO / 'install-root.sh'), '--owner', ACCOUNT, check=False)
+        assert result.returncode != 0 and pid(owner, True) == before
+        assert not (protected / 'state').exists()
         write_config(owner)
         with owner_install_lock(owner):
             result = command('/bin/bash', str(REPO / 'install-root.sh'), '--owner', ACCOUNT, check=False)
@@ -175,6 +181,15 @@ def main():
         expect_failed_upgrade(owner)
         collect_twice(owner, True, custom)
         assert command('systemctl', 'is-enabled', UNIT).stdout.strip() == 'enabled'
+        # Also exercise a fresh custom-path install, not only an update.
+        command('systemctl', 'disable', '--now', UNIT)
+        guard_install.SYSTEM_UNIT.unlink()
+        command('systemctl', 'daemon-reload')
+        shutil.rmtree(HOME / '.local/lib/wsl-resource-guard')
+        (HOME / '.local/bin/wrg').unlink()
+        shutil.rmtree(custom)
+        command('/bin/bash', str(REPO / 'install-root.sh'), '--owner', ACCOUNT)
+        collect_twice(owner, True, custom)
         print('Real user/system installation, conflict rejection, custom state and rollback passed')
     finally:
         if owner is not None:

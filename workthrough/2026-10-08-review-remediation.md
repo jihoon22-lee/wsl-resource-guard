@@ -354,3 +354,10 @@ git worktree list
 - 사용자 지정 경로의 snapshot/복구, 새 실패 기록 보존, 준비 중 설정 변경 시 서비스 명령 0, 새 PID/토큰/시각 불일치 거부, 실제 sample 저장→readiness 연결을 검사했다. 전체 CI 단위 profile 411개와 실제 root fixture 2개가 통과했다.
 - tests/guard_install_smoke.py와 guard-lifecycle CI job을 추가했다. 일회용 GitHub-hosted systemd VM만 허용하며 WSL/기존 설치에서는 거부한다. 사용자 신규 설치·전환 실패 복구·시스템 전환·역순 거부·잠금 경합·사용자 지정 mount 쓰기·업데이트 실패 복구를 실제 유닛으로 시험한다. **이 CI 수명주기 실행은 아직 미검증**이며 단계 6 완료 조건은 남아 있다.
 - 운영 설치본은 변경하지 않았다. R11 커밋은 ba8e954이다.
+
+### 실행 기록 — 첫 원격 통합 검증
+
+- a49f1f4548004cf1d81c6b9f31b88db2d4d32b20 작업 브랜치를 push하고 [CI 37705103362](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37705103362)를 수동 실행했다. 13개 job 모두 success다. main 병합·운영 배포는 아직 아니다.
+- Python 3.11–3.14, PC/모바일·transport·workflow 정적 검사, root 격리, 의존성 감사, 공개정보/Gitleaks, Python/JS CodeQL, 재현 가능한 압축본과 artifact roundtrip을 통과했다. 이는 해당 커밋의 결과이며 이후 변경은 최종 SHA에서 다시 확인한다.
+- 실제 GitHub-hosted VM의 guard-lifecycle 로그에서 사용자 신규 설치, 첫 수집 실패 시 사용자 guard 복구, 시스템 전환, 역순 설치 거부, 잠금 경합, HOME의 공백/%/$ 및 사용자 지정 상태 경로 쓰기, 시스템 업데이트 실패 복구, 마지막 fixture 제거가 통과했음을 확인했다.
+- 추가로 권한 거부의 서비스 전환 전 실패와 사용자 지정 경로의 완전 신규 설치를 CI fixture에 보강했다. 이 두 추가 시나리오는 다음 CI에서 확인해야 한다.
