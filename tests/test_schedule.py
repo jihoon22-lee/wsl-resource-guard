@@ -41,7 +41,7 @@ class ScheduleTests(unittest.TestCase):
 
     def test_email_heartbeat_is_not_due_before_top_of_hour(self) -> None:
         now = self.local_timestamp(0, 59, 59)
-        self.assertFalse(email_heartbeat_due(now, "", self.settings))
+        self.assertFalse(email_heartbeat_due(now, email_hour_slot(now), self.settings))
 
     def test_email_heartbeat_is_sent_only_once_per_hour_slot(self) -> None:
         now = self.local_timestamp(1, 0, 20)
@@ -57,7 +57,7 @@ class ScheduleTests(unittest.TestCase):
         expected = datetime.fromtimestamp(now).astimezone().replace(
             minute=0, second=0, microsecond=0
         ) + timedelta(hours=1)
-        self.assertEqual(next_email_heartbeat_at(now, "", self.settings), expected)
+        self.assertEqual(next_email_heartbeat_at(now, email_hour_slot(now), self.settings), expected)
 
 
 if __name__ == "__main__":

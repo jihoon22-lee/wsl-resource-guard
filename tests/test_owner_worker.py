@@ -41,6 +41,39 @@ class SafeReadTests(unittest.TestCase):
 
 
 class OwnerDataTests(unittest.TestCase):
+    def test_log_tail_supports_controller_limits_and_rejects_invalid_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            path = home / '.local/state/opencode-web.log'
+            path.parent.mkdir(parents=True)
+            path.write_text(''.join(f'line-{i}\n' for i in range(2100)))
+            reader = owner_worker.OwnerData(home)
+            for count in (500, 501, 1000, 2000):
+                result = owner_worker.dispatch('logs', {'target': 'opencode-web.service', 'lines': count}, reader)
+                self.assertEqual(result.splitlines()[1:], [f'line-{i}' for i in range(2100-count, 2100)])
+            for count in (0, 2001, True, 1.5, '1000'):
+                with self.subTest(count=count), self.assertRaises(ValueError):
+                    owner_worker.dispatch('logs', {'target': 'opencode-web.service', 'lines': count}, reader)
+
+    def test_auxiliary_log_failures_are_visible_and_do_not_expose_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reader = owner_worker.OwnerData(Path(directory))
+            args = {'target': 'opencode-web.service', 'lines': 1000}
+            for failure in (FileNotFoundError('/private/marker'), PermissionError('/private/marker'),
+                            TimeoutError('/private/marker')):
+                with patch.object(owner_worker, 'read_text', side_effect=failure):
+                    result = owner_worker.dispatch('logs', args, reader)
+                self.assertIn('보조 로그 읽기 실패', result)
+                self.assertNotIn('/private/marker', result)
+            path = reader.home / '.local/state/opencode-web.log'
+            path.parent.mkdir(parents=True)
+            os.mkfifo(path)
+            self.assertIn('보조 로그 읽기 실패', owner_worker.dispatch('logs', args, reader))
+            path.unlink()
+            path.write_text('가'*100000)
+            result = owner_worker.dispatch('logs', args, reader)
+            self.assertLessEqual(len(result.encode()), 64100)
+
     def test_permission_denied_secret_is_handled_without_exists_probe(self):
         from wsl_resource_guard.config import Settings
         settings = Settings(secrets_path=Path('/fixture/denied-secret.json'))
@@ -81,6 +114,36 @@ class OwnerDataTests(unittest.TestCase):
 @unittest.skipUnless(os.geteuid() == 0, 'Requires isolated root credential test')
 class RootIsolationTests(unittest.TestCase):
     """Run as root only; no accounts, service state, or installed files change."""
+    def test_installer_queries_drop_supplementary_groups_and_cannot_read_root_files(self):
+        import pwd
+        from types import SimpleNamespace
+        from wsl_resource_guard.installer import owner_query
+        account = pwd.getpwnam('nobody')
+        with tempfile.TemporaryDirectory(prefix='wrg-owner-query-', dir='/run') as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            private = root / 'private.json'
+            private.write_text('root-only fixture')
+            private.chmod(0o600)
+            home = root / 'home'
+            home.mkdir()
+            os.chown(home, account.pw_uid, account.pw_gid)
+            (home / 'linked.json').symlink_to(private)
+            owner = SimpleNamespace(pw_uid=account.pw_uid, pw_gid=account.pw_gid,
+                                    pw_name=account.pw_name, pw_dir=str(home))
+            def inspect():
+                try:
+                    (home / 'linked.json').read_text()
+                    readable = True
+                except PermissionError:
+                    readable = False
+                return {'uid': os.geteuid(), 'gid': os.getegid(), 'groups': os.getgroups(),
+                        'home': os.environ['HOME'], 'readable': readable}
+            result = owner_query(owner, inspect)
+            self.assertEqual(result, dict(uid=account.pw_uid, gid=account.pw_gid, groups=[],
+                                          home=str(home), readable=False))
+            self.assertEqual(private.read_text(), 'root-only fixture')
+
     def test_actual_dropped_worker_cannot_follow_root_only_symlinks(self):
         import importlib
         import pwd
@@ -133,6 +196,12 @@ class RootIsolationTests(unittest.TestCase):
                                     ('logs', {'target': 'opencode-web.service', 'lines': 10}),
                                     ('disks', {})):
                 with self.subTest(operation=operation):
+                    if operation in ('history', 'attribution', 'session-history', 'alerts'):
+                        # Unreadable history is now an explicit failed read,
+                        # never a healthy-looking empty history response.
+                        with self.assertRaises(OSError):
+                            worker.call_owner(owner, operation, args)
+                        continue
                     result = worker.call_owner(owner, operation, args)
                     self.assertNotIn(marker, json.dumps(result))
             (config / 'config.toml').unlink()
@@ -174,3 +243,15 @@ class WorkerLaunchTests(unittest.TestCase):
             self.assertEqual(result['settings']['config_path'], directory + '/.config/wsl-resource-guard/config.toml')
             self.assertEqual(result['settings']['project_roots'], [directory + '/projects'])
             self.assertEqual(result['state'], {})
+
+    def test_real_worker_timeout_and_output_limit_are_explicit_failures(self):
+        from types import SimpleNamespace
+        import pwd
+        account = pwd.getpwuid(os.geteuid())
+        with tempfile.TemporaryDirectory() as directory:
+            owner = SimpleNamespace(pw_uid=account.pw_uid, pw_gid=account.pw_gid,
+                                    pw_name=account.pw_name, pw_dir=directory)
+            with patch.object(owner_worker, 'TIMEOUT', 0), self.assertRaises(TimeoutError):
+                owner_worker.call_owner(owner, 'context')
+            with patch.object(owner_worker, 'MAX_OUTPUT', 8), self.assertRaises(ValueError):
+                owner_worker.call_owner(owner, 'context')

@@ -21,7 +21,7 @@ from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations
 from .disks import disk_severity, read_disks
 from .metrics import KIB_PER_GIB, SystemMetrics, read_host_memory, read_system_metrics
 from .notifications import SKIPPED_DETAILS, Notifier, NotificationResult
-from .processes import ProcessSnapshot, SessionUsage, apply_cpu_rates, build_snapshot
+from .processes import ProcessSnapshot, SessionUsage, apply_cpu_rates, build_snapshot, process_start_ticks
 from .reporting import build_html_report, build_text_report, collect_resource_rows
 
 
@@ -551,13 +551,43 @@ def email_hour_slot(now: float) -> str:
     return datetime.fromtimestamp(now).astimezone().strftime("%Y-%m-%dT%H")
 
 
+def _heartbeat_at_or_before(now: float, settings: Settings) -> int:
+    # Walk real minute boundaries instead of adding a civil hour: DST can
+    # repeat/skip an hour, and some zones change offset by only 30 minutes.
+    candidate = math.floor(now / 60) * 60
+    minute = time.localtime(candidate).tm_min
+    quick = candidate - ((minute - settings.email_heartbeat_minute) % 60) * 60
+    if time.localtime(quick).tm_min == settings.email_heartbeat_minute:
+        return quick
+    for offset in range(181):
+        stamp = candidate - offset * 60
+        if time.localtime(stamp).tm_min == settings.email_heartbeat_minute:
+            return stamp
+    raise ValueError('Heartbeat schedule has no recent local minute')
+
+
+def email_heartbeat_slot(now: float, settings: Settings) -> str:
+    return f'epoch:{_heartbeat_at_or_before(now, settings)}'
+
+
+def _last_email_slot_time(slot: str, settings: Settings) -> float | None:
+    try:
+        if slot.startswith('epoch:'):
+            return float(int(slot[6:]))
+        # Legacy civil-hour stamps lacked an offset/fold. Interpret them in
+        # the current local zone once; all subsequent writes use epoch slots.
+        return datetime.strptime(slot, '%Y-%m-%dT%H').replace(
+            minute=settings.email_heartbeat_minute).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def email_heartbeat_due(now: float, last_email_hour_slot: str, settings: Settings) -> bool:
-    local_now = datetime.fromtimestamp(now).astimezone()
-    return (
-        settings.email_heartbeat_enabled
-        and local_now.minute == settings.email_heartbeat_minute
-        and email_hour_slot(now) != last_email_hour_slot
-    )
+    if not settings.email_heartbeat_enabled:
+        return False
+    previous = _last_email_slot_time(last_email_hour_slot, settings)
+    due = _heartbeat_at_or_before(now, settings)
+    return previous is None or previous > now or previous < due
 
 
 def next_email_heartbeat_at(
@@ -567,19 +597,14 @@ def next_email_heartbeat_at(
 ) -> datetime | None:
     if not settings.email_heartbeat_enabled:
         return None
-    local_now = datetime.fromtimestamp(now).astimezone()
-    candidate = local_now.replace(
-        minute=settings.email_heartbeat_minute,
-        second=0,
-        microsecond=0,
-    )
-    current_slot_pending = (
-        local_now.minute == settings.email_heartbeat_minute
-        and email_hour_slot(now) != last_email_hour_slot
-    )
-    if not current_slot_pending and candidate <= local_now:
-        candidate += timedelta(hours=1)
-    return candidate
+    if email_heartbeat_due(now, last_email_hour_slot, settings):
+        return datetime.fromtimestamp(_heartbeat_at_or_before(now, settings)).astimezone()
+    minute = math.floor(now / 60) * 60
+    for offset in range(1, 181):
+        candidate = minute + offset * 60
+        if time.localtime(candidate).tm_min == settings.email_heartbeat_minute:
+            return datetime.fromtimestamp(candidate).astimezone()
+    raise ValueError('Heartbeat schedule has no upcoming local minute')
 
 
 def sample(settings: Settings, notify: bool = False, persist: bool = True,
@@ -609,12 +634,12 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
                 condition_since[str(key)] = float(value)
             except (TypeError, ValueError):
                 continue
-    psi_sample_gap = previous is not None and (
+    sample_gap = previous is None or (
         metrics.timestamp < previous.timestamp
         or metrics.timestamp - previous.timestamp > max(1, 2 * settings.interval_seconds)
     )
-    if psi_sample_gap:
-        condition_since = {key: value for key, value in condition_since.items() if ".psi_" not in key}
+    if sample_gap:
+        condition_since = {}
     oom_victims = (
         oom_kill_victims(previous.timestamp)
         if previous and metrics.oom_kills > previous.oom_kills
@@ -636,6 +661,7 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
     )
     last_alert = _state_float(state, "last_alert")
     last_email_status = _state_float(state, "last_email_status")
+    last_email_success = _state_float(state, "last_email_success")
     raw_channel_errors = state.get("last_channel_errors", {})
     channel_errors = (
         {str(key): str(value) for key, value in raw_channel_errors.items()
@@ -645,7 +671,10 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
     )
     last_email_hour_slot = str(state.get("last_email_hour_slot", "") or "")
     now = metrics.timestamp
-    normal_since = _state_float(state, "normal_since")
+    last_slot_time = _last_email_slot_time(last_email_hour_slot, settings)
+    if last_slot_time is not None and last_slot_time > now:
+        evaluation.observations.append('미래 heartbeat 처리 기록을 현재 스케줄로 재평가합니다.')
+    normal_since = 0.0 if sample_gap else _state_float(state, "normal_since")
     # Start of the current abnormal episode; condition_since is emptied as soon
     # as the conditions clear, so it cannot date the episode at recovery time.
     abnormal_since = _state_float(state, "abnormal_since")
@@ -663,8 +692,6 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         psi_reasons = [r for r in recovery_from_reasons if "PSI" in r]
         previous_psi_alert = ({"severity": recovery_from_severity, "reasons": psi_reasons}
                               if psi_reasons and recovery_from_severity != "normal" else {})
-    if psi_sample_gap and any("PSI" in reason for reason in recovery_from_reasons):
-        normal_since = 0.0
     psi_unobserved = metrics.psi_some_avg60 is None or metrics.psi_full_avg60 is None
     psi_alert = evaluation.psi_alert
     psi_pending = any(".psi_" in key for key in evaluation.condition_since) and not psi_alert
@@ -677,7 +704,7 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
             normal_since = 0.0
         else:
             started = _state_float(state, "psi_normal_since")
-            psi_normal_since = started if not psi_sample_gap and 0 < started <= now else now
+            psi_normal_since = started if not sample_gap and 0 < started <= now else now
             if now - psi_normal_since < settings.recovery_sustain_seconds:
                 psi_alert = previous_psi_alert
                 # Other alerts must not erase PSI's independent recovery streak.
@@ -693,6 +720,18 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         elif not psi_pending:
             remaining = max(1, math.ceil(settings.recovery_sustain_seconds - (now - psi_normal_since)))
             evaluation.pending_reasons.append(f"PSI 정상 상태 확인 중 ({remaining}초 남음)")
+    disks_by_id = {disk["id"]: disk for disk in metrics.disks if disk.get("kind") == "windows"}
+    configured_drives = {drive.rstrip(':').upper() + ':' for drive in settings.disk_drives}
+    missing_disk_reasons = [reason for reason in recovery_from_reasons
+        if any(reason.startswith(f'{drive} 디스크 ') and
+               disks_by_id.get(drive, {}).get('status') != 'ok'
+               for drive in configured_drives)]
+    if missing_disk_reasons and recovery_from_severity != 'normal':
+        if recovery_from_severity == 'critical' or evaluation.severity == 'normal':
+            evaluation.severity = recovery_from_severity
+        evaluation.reasons.extend(r for r in missing_disk_reasons if r not in evaluation.reasons)
+        evaluation.pending_reasons.append('디스크 관측 재개 후 정상 확인 필요')
+        normal_since = 0.0
     evaluation, normal_since, recovery_ready = stabilize_recovery(
         evaluation,
         recovery_from_severity,
@@ -710,15 +749,15 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
     raw_notified_disks = state.get("notified_disk_conditions", [])
     old_notified_disks = [str(key) for key in raw_notified_disks] if isinstance(raw_notified_disks, list) else []
     raw_disk_normal = state.get("disk_normal_since", {})
-    disk_normal_since = dict(raw_disk_normal) if isinstance(raw_disk_normal, dict) else {}
-    disks_by_id = {disk["id"]: disk for disk in metrics.disks if disk.get("kind") == "windows"}
+    disk_normal_since = dict(raw_disk_normal) if isinstance(raw_disk_normal, dict) and not sample_gap else {}
     # Retain notification identities through the recovery grace period so a
     # drive oscillating around 20% does not generate a fresh alert every sample.
     for key in list(old_notified_disks):
         drive = key.split(".disk.", 1)[-1]
         current_disk = disks_by_id.get(drive)
         if current_disk is None:
-            old_notified_disks.remove(key)
+            if drive not in configured_drives:
+                old_notified_disks.remove(key)
             disk_normal_since.pop(drive, None)
         elif current_disk.get("status") == "ok" and disk_severity(
             current_disk, settings.warning_disk_free_percent, settings.critical_disk_free_percent
@@ -784,12 +823,13 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         by_drive.update({key.split(".disk.", 1)[-1]: key for key in disk_conditions})
         old_notified_disks = sorted(by_drive.values())
         if any(result.channel == "gmail" for result in results):
-            last_email_status = now
-            local_now = datetime.fromtimestamp(now).astimezone()
-            if local_now.minute == settings.email_heartbeat_minute:
-                # A Gmail alert sent (or attempted) during the scheduled minute
-                # is also that hour's status email, preventing a duplicate.
-                last_email_hour_slot = email_hour_slot(now)
+            if any(result.channel == 'gmail' and not result.skipped for result in results):
+                last_email_status = now
+            if any(result.channel == 'gmail' and result.sent for result in results):
+                last_email_success = now
+            if email_heartbeat_due(now, last_email_hour_slot, settings):
+                # This sample's alert already processed the latest due slot.
+                last_email_hour_slot = email_heartbeat_slot(now, settings)
 
     if notify and email_heartbeat_due(now, last_email_hour_slot, settings):
         message, html_message = _event_reports(metrics, snapshot, evaluation)
@@ -804,8 +844,11 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         _record_channel_results(channel_errors, results)
         # Record the attempt as well as success so a broken SMTP configuration
         # cannot trigger a retry every 15 seconds.
-        last_email_status = now
-        last_email_hour_slot = email_hour_slot(now)
+        if any(result.channel == 'gmail' and not result.skipped for result in results):
+            last_email_status = now
+        if any(result.channel == 'gmail' and result.sent for result in results):
+            last_email_success = now
+        last_email_hour_slot = email_heartbeat_slot(now, settings)
         if evaluation.severity != "normal":
             last_alert = now
 
@@ -816,6 +859,8 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
 
     next_state: dict[str, object] = {
         "updated_at": now,
+        "writer_pid": os.getpid(),
+        "writer_start_ticks": process_start_ticks(os.getpid()),
         "severity": evaluation.severity,
         "notified_severity": old_notified_severity,
         "notified_reasons": notified_reasons,
@@ -829,6 +874,7 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         "abnormal_since": abnormal_since,
         "last_alert": last_alert,
         "last_email_status": last_email_status,
+        "last_email_success": last_email_success,
         "last_email_hour_slot": last_email_hour_slot,
         "last_channel_errors": channel_errors,
         "notified_disk_conditions": old_notified_disks,
@@ -973,12 +1019,16 @@ def state_writer_lock(state_path: Path):
 
 def _reload_settings(active: Settings, proposed: Settings) -> Settings:
     if proposed.state_path.resolve() != active.state_path.resolve():
-        print("config warning state_dir change requires restart; keeping locked directory", flush=True)
+        print("config warning state_dir change requires reinstall/restart; keeping locked directory", flush=True)
         return replace(proposed, state_dir=active.state_dir)
     return proposed
 
 
 def run_forever(settings: Settings) -> None:
+    expected = os.environ.get('WRG_SYSTEM_STATE_DIR')
+    if expected and settings.state_path.resolve() != Path(expected).resolve():
+        print('config warning state_dir change requires reinstall; keeping installed directory', flush=True)
+        settings = replace(settings, state_dir=expected)
     with state_writer_lock(settings.state_path):
         _run_locked(settings)
 

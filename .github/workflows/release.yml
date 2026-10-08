@@ -2,6 +2,18 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to validate; rehearsal never creates a tag or Release'
+        required: true
+        type: string
+      scenario:
+        description: 'Failure injection in disposable analysis copies'
+        required: true
+        default: none
+        type: choice
+        options: [none, check-failure, analysis-missing, security-high]
 permissions:
   contents: read
   security-events: read
@@ -19,7 +31,7 @@ jobs:
           persist-credentials: false
       - name: Validate tag and main ancestry
         env:
-          RELEASE_TAG: '${{ github.ref_name }}'
+          RELEASE_TAG: '${{ inputs.tag || github.ref_name }}'
         run: |
           git merge-base --is-ancestor HEAD origin/main
           python3 - <<'PY'
@@ -36,6 +48,8 @@ jobs:
   checks:
     needs: validate
     uses: ./.github/workflows/checks.yml
+    with:
+      rehearsal_check_failure: "${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'check-failure' }}"
   package:
     needs: [public, checks]
     runs-on: ubuntu-24.04
@@ -47,9 +61,28 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - run: |
-          python scripts/release.py build dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: checked-release-assets
+          path: dist
+          digest-mismatch: error
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codeql-*
+          path: sarif
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Inject a failure for a manual rehearsal only
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REHEARSAL_SCENARIO: '${{ inputs.scenario }}'
+        run: python tests/release_rehearsal.py sarif "$REHEARSAL_SCENARIO"
+      - name: Require both analyses and the checked archive before publication
+        run: |
+          python scripts/security_gate.py sarif
           python scripts/release.py verify dist/*.tar.gz
+          cd dist
+          sha256sum -c SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets
@@ -67,14 +100,12 @@ jobs:
         with:
           name: release-assets
           path: dist
-      - name: Publish verified assets
+          digest-mismatch: error
+      - name: Verify the exact publication input
         env:
-          GH_TOKEN: '${{ github.token }}'
-          GH_REPO: '${{ github.repository }}'
-          RELEASE_TAG: '${{ github.ref_name }}'
+          RELEASE_TAG: '${{ inputs.tag || github.ref_name }}'
           RELEASE_SHA: '${{ github.sha }}'
         run: |
-          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_SHA"
           cd dist
           sha256sum -c SHA256SUMS
           python3 - <<'PY'
@@ -86,6 +117,19 @@ jobs:
               assert metadata['commit'] == os.environ['RELEASE_SHA']
               assert 'v' + metadata['version'] == os.environ['RELEASE_TAG']
           PY
+      - name: Complete manual rehearsal without publishing
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "Release rehearsal passed; no tag or Release was created."
+      - name: Publish verified assets
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: '${{ github.token }}'
+          GH_REPO: '${{ github.repository }}'
+          RELEASE_TAG: '${{ github.ref_name }}'
+          RELEASE_SHA: '${{ github.sha }}'
+        run: |
+          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_SHA"
+          cd dist
           gh release create "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --verify-tag --generate-notes
           mkdir "$RUNNER_TEMP/download-check"
           gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/download-check" --pattern '*.tar.gz' --pattern SHA256SUMS

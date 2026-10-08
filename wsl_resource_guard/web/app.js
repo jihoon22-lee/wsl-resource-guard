@@ -480,8 +480,7 @@ function renderOverview() {
     m = d.metrics,
     available = m.mem_available_kib,
     swap = m.swap_total_kib - m.swap_free_kib,
-    stale =
-      !d.daemon_updated_at || Date.now() / 1000 - d.daemon_updated_at > 90;
+    stale = observationIsStale(d.daemon_updated_at);
   const staleMin =
     stale && d.daemon_updated_at
       ? Math.max(1, Math.floor((Date.now() / 1000 - d.daemon_updated_at) / 60))
@@ -1756,7 +1755,9 @@ function keyBytes(base64) {
   const raw = atob((base64 + "=".repeat((4 - (base64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
+let pushRenderVersion = 0;
 async function renderPushDevice() {
+  const version = ++pushRenderVersion;
   const host = $("push-device");
   if (!host) return;
   if (!pushSupported()) {
@@ -1772,13 +1773,51 @@ async function renderPushDevice() {
     return;
   }
   const reg = swRegistration || (await registerServiceWorker());
-  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  let sub = null, registered = false, replaceSubscription = false, statusError = "";
+  try {
+    sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (sub) {
+      const localKey = sub.options?.applicationServerKey;
+      const expected = keyBytes(pushKeyData.public_key);
+      if (localKey) {
+        const actual = new Uint8Array(localKey);
+        replaceSubscription = actual.length !== expected.length || actual.some((b, i) => b !== expected[i]);
+      }
+      if (!replaceSubscription) {
+        const status = await api("/api/push/status", { subscription: sub.toJSON() });
+        registered = status.registered === true;
+        replaceSubscription = status.expired === true;
+      }
+    }
+  } catch {
+    statusError = "서버 등록 여부를 확인하지 못했습니다. 다시 등록할 수 있습니다.";
+  }
+  if (version !== pushRenderVersion || $("push-device") !== host) return;
   const denied = Notification.permission === "denied";
-  host.innerHTML = `<div class="push-row"><div><strong>이 기기 푸시 알림</strong><span class="subline">${sub ? "이 기기에서 경보를 받고 있습니다" : denied ? "브라우저 설정에서 이 사이트의 알림이 차단되어 있습니다" : "경보·회복 알림을 이 기기로 받습니다"} · 등록된 기기 ${num(pushKeyData.subscriptions)}대</span></div><div class="row-actions">${sub ? '<button class="button compact secondary" id="push-test">테스트 보내기</button><button class="button compact secondary" id="push-off">해제</button>' : `<button class="button compact primary" id="push-on" ${denied ? "disabled" : ""}>이 기기에서 받기</button>`}</div></div>`;
-  $("push-on")?.addEventListener("click", async () => {
+  const ready = registered && !denied && !replaceSubscription && !statusError;
+  const description = denied ? "브라우저 설정에서 이 사이트의 알림이 차단되어 있습니다"
+    : !reg ? "브라우저 알림 서비스를 준비하지 못했습니다. 새로고침 후 다시 시도하세요"
+    : replaceSubscription ? "푸시 키가 변경됐거나 구독이 만료됐습니다. 다시 등록하세요"
+    : statusError || (ready ? "서버 등록 완료 · 실제 수신은 테스트 알림으로 확인하세요"
+      : sub ? "서버 등록 미완료 · 기존 브라우저 구독으로 다시 등록할 수 있습니다"
+      : "경보·회복 알림을 이 기기로 받습니다");
+  const on = `<button class="button compact primary" id="push-on" ${denied || !reg ? "disabled" : ""}>${sub ? "다시 등록" : "이 기기에서 받기"}</button>`;
+  host.innerHTML = `<div class="push-row"><div><strong>이 기기 푸시 알림</strong><span class="subline">${esc(description)} · 등록된 기기 ${num(pushKeyData.subscriptions)}대</span></div><div class="row-actions">${ready ? '<button class="button compact secondary" id="push-test">테스트 보내기</button>' : on}${sub ? '<button class="button compact secondary" id="push-off">해제</button>' : ""}</div></div>`;
+  $("push-on")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
     try {
-      if ((await Notification.requestPermission()) !== "granted") return notify("알림 권한이 허용되지 않았습니다.");
-      const subscription = await reg.pushManager.subscribe({
+      if (!reg) throw new Error("브라우저 알림 서비스를 준비하지 못했습니다.");
+      if ((await Notification.requestPermission()) !== "granted") {
+        notify("알림 권한이 허용되지 않았습니다.");
+        return;
+      }
+      let subscription = sub;
+      if (subscription && replaceSubscription) {
+        await api("/api/push/unsubscribe", { endpoint: subscription.endpoint });
+        if (!(await subscription.unsubscribe())) throw new Error("이전 구독을 해제하지 못했습니다.");
+        subscription = null;
+      }
+      subscription ||= await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: keyBytes(pushKeyData.public_key),
       });
@@ -1788,16 +1827,20 @@ async function renderPushDevice() {
       await refresh(true);
     } catch (error) {
       notify(error.message || "푸시 등록에 실패했습니다.");
+    } finally {
+      await renderPushDevice();
     }
   });
   $("push-off")?.addEventListener("click", async () => {
     try {
       const data = await api("/api/push/unsubscribe", { endpoint: sub.endpoint });
-      await sub.unsubscribe();
+      if (!(await sub.unsubscribe())) throw new Error("서버 등록은 해제됐지만 브라우저 구독을 해제하지 못했습니다.");
       notify(data.message, true);
       await refresh(true);
     } catch (error) {
       notify(error.message);
+    } finally {
+      await renderPushDevice();
     }
   });
   $("push-test")?.addEventListener("click", async () => {
@@ -1808,6 +1851,7 @@ async function renderPushDevice() {
     }
   });
 }
+
 function renderAudit() {
   if (!loaded.audit) {
     $("audit-table").innerHTML = '<div class="empty">불러오는 중…</div>';
@@ -1850,6 +1894,25 @@ function render() {
 // Menu badges: where attention is needed, without opening each view. Fed
 // by whatever data is loaded plus the live summary stream (see liveSummary).
 let liveSummary = null;
+function observationIsStale(timestamp) {
+  const stamp = Number(timestamp), now = Date.now() / 1000;
+  return !Number.isFinite(stamp) || stamp <= 0 || stamp > now + 5 || now - stamp > 90;
+}
+function observationCanReplace(incoming, previous) {
+  const next = Number(incoming) || 0, cached = Number(previous) || 0;
+  const now = Date.now() / 1000;
+  // After a backward clock adjustment the cached timestamp belongs to an
+  // obsolete clock epoch. A delayed future response must not pin it again.
+  if (next > now + 5 && cached > 0 && cached <= now + 5) return false;
+  return !next || !cached || cached > now + 5 || next >= cached;
+}
+function currentResourceSeverity() {
+  const liveAt = observationIsStale(liveSummary?.updated_at) ? 0 : Number(liveSummary.updated_at);
+  const pollAt = observationIsStale(monitorData?.daemon_updated_at) ? 0 : Number(monitorData.daemon_updated_at);
+  const source = liveAt > pollAt ? liveSummary : monitorData;
+  if (!source || !(liveAt || pollAt)) return "unknown";
+  return source.severity || "unknown";
+}
 function appProblems() {
   return serviceData.services.filter(
     (s) =>
@@ -1882,7 +1945,7 @@ function updateBadges() {
   const diskCount = disks ? disks.length : (sum.disk_alerts || []).length;
   const diskBad = disks ? disks.some((d) => d.severity === "critical") : sum.disk_critical;
   setBadge("disks", diskCount, diskBad ? "bad" : "");
-  const severity = sum.severity || monitorData?.severity;
+  const severity = currentResourceSeverity();
   setBadge("alerts", ["warning", "critical"].includes(severity) || false, severity === "critical" ? "bad" : "");
   const stale = monitorData ? (monitorData.sessions || []).filter((r) => r.stale).length : sum.stale_sessions || 0;
   setBadge("sessions", stale);
@@ -1900,9 +1963,9 @@ const SEVERITY_COLORS = {
   critical: "#c95661",
 };
 function updateAlertBadge() {
-  const severity = liveSummary?.severity || (monitorData ? monitorData.severity : "unknown");
+  const severity = currentResourceSeverity();
   const icon = { critical: "🔴", warning: "🟠" }[severity] || "";
-  document.title = (icon ? `${icon} ` : "") + BASE_TITLE;
+  document.title = (icon ? `${icon} ` : severity === "unknown" ? "상태 미확인 · " : "") + BASE_TITLE;
   const favicon = $("favicon");
   if (!favicon) return;
   const color = SEVERITY_COLORS[severity] || "#9aa6b2";
@@ -1959,7 +2022,9 @@ async function refresh(force = false) {
       attribution: (v) => (attributionData = v),
       sessionHistory: (v) => (sessionHistoryData = v),
       pushKey: (v) => (pushKeyData = v),
-      monitor: (v) => (monitorData = v),
+      monitor: (v) => {
+        if (!monitorData || observationCanReplace(v.daemon_updated_at, monitorData.daemon_updated_at)) monitorData = v;
+      },
       services: (v) => (serviceData = v),
       serviceMemory: (v) => (serviceMemoryData = v),
       history: (v) => (historyData = v),
@@ -2485,17 +2550,30 @@ window.addEventListener("hashchange", () => {
 // regular polling stays as the fallback (the server caps live streams).
 let stream = null,
   liveSignature = "";
+function invalidateLiveSummary() {
+  liveSummary = null;
+  liveSignature = "";
+  document.body.classList.remove("live");
+  updateBadges();
+  updateAlertBadge();
+}
 function connectStream() {
   if (stream || !window.EventSource || document.hidden) return;
-  stream = new EventSource("/api/stream");
-  stream.addEventListener("summary", (e) => {
+  const source = stream = new EventSource("/api/stream");
+  source.addEventListener("summary", (e) => {
+    if (source !== stream) return;
     let data;
     try {
       data = JSON.parse(e.data);
     } catch {
+      invalidateLiveSummary();
       return;
     }
-    if (data.error) return;
+    if (!data || typeof data !== "object" || Array.isArray(data) || data.error) {
+      invalidateLiveSummary();
+      return;
+    }
+    if (liveSummary && !observationCanReplace(data.updated_at, liveSummary.updated_at)) return;
     liveSummary = data;
     document.body.classList.add("live");
     const signature = `${data.severity}|${(data.reasons || []).join("|")}|${data.service_problems}|${(data.disk_alerts || []).join()}`;
@@ -2505,19 +2583,18 @@ function connectStream() {
     updateAlertBadge();
     if (changed && !busyAction) refresh();
   });
-  stream.addEventListener("error", () => {
+  source.addEventListener("error", () => {
+    if (source !== stream) return;
     // Each 50 s window ends with an error event and an automatic reconnect;
     // only a refused stream (503) closes for good, and polling carries on.
-    if (stream && stream.readyState === EventSource.CLOSED) {
-      stream = null;
-      document.body.classList.remove("live");
-    }
+    invalidateLiveSummary();
+    if (source.readyState === EventSource.CLOSED) stream = null;
   });
 }
 function disconnectStream() {
   stream?.close();
   stream = null;
-  document.body.classList.remove("live");
+  invalidateLiveSummary();
 }
 document.addEventListener("visibilitychange", () => (document.hidden ? disconnectStream() : connectStream()));
 // Keyboard: g+<key> jumps to a view, / focuses the view's search, r

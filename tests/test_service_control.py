@@ -232,22 +232,33 @@ class ControllerTests(unittest.TestCase):
         record = json.loads((self.path.parent / 'audit.jsonl').read_text().splitlines()[-1])
         self.assertEqual(record['detail'], {'pids': [111, 222], 'killed': [111]})
 
-    def test_kill_stale_signals_only_still_stale_requested_sessions(self):
-        with self.assertRaises(ControlError):
-            self.controller.kill_stale([])
-        with self.assertRaises(ControlError):
-            self.controller.kill_stale(['12'])
-        stale = Mock(root_pid=111)
-        fresh = Mock(root_pid=222)
-        snapshot = Mock(sessions=[stale, fresh], processes={})
-        with (patch('wsl_resource_guard.processes.build_snapshot', return_value=snapshot),
-              patch('wsl_resource_guard.processes.is_stale_session', side_effect=lambda s, h: s is stale),
-              patch('wsl_resource_guard.processes.kill_block_reason', return_value=''),
-              patch.object(self.controller, 'kill_tree', return_value={'message': 'ok'}) as kill):
-            result = self.controller.kill_stale([111, 222, 333])
-        kill.assert_called_once_with(111)
-        self.assertEqual(result['killed'], [111])
-        self.assertEqual(result['skipped'], [222, 333])
+    def test_kill_stale_preserves_identity_and_rechecks_activity(self):
+        from copy import deepcopy
+        for invalid in ([], ['12']):
+            with self.assertRaises(ControlError):
+                self.controller.kill_stale(invalid)
+        for scenario in ('unchanged', 'replaced-root', 'replaced-fresh-root', 'new-activity'):
+            with self.subTest(scenario=scenario):
+                old = self._kill_snapshot()
+                old.sessions[0].youngest_process_age_seconds = 49 * 3600
+                current = deepcopy(old)
+                if scenario.startswith('replaced'):
+                    current.processes[100].start_ticks = 200
+                    if scenario == 'replaced-fresh-root':
+                        current.sessions[0].youngest_process_age_seconds = 1
+                elif scenario == 'new-activity':
+                    current.sessions[0].youngest_process_age_seconds = 1
+                with (patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()),
+                      patch('wsl_resource_guard.processes.build_snapshot', side_effect=[old, current]),
+                      patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_: current.processes[pid]),
+                      patch('os.pidfd_open', side_effect=lambda pid: pid+1000), patch('os.close'),
+                      patch('signal.pidfd_send_signal') as signals, patch('os.kill') as numeric):
+                    result = self.controller.kill_stale([100, 999])
+                expected = [100] if scenario == 'unchanged' else []
+                self.assertEqual(result['killed'], expected)
+                self.assertEqual(result['skipped'], [999] if expected else [100,999])
+                self.assertEqual(signals.call_count, 2 if expected else 0)
+                numeric.assert_not_called()
 
     def test_summary_counts_problems_and_disk_alerts(self):
         from wsl_resource_guard.config import Settings
@@ -556,14 +567,16 @@ class ControllerTests(unittest.TestCase):
             return []
 
         with (patch('wsl_resource_guard.config.Settings.load', return_value=settings),
-              patch('wsl_resource_guard.history.read_history', side_effect=fake_read) as read):
+              patch('wsl_resource_guard.history.read_history', side_effect=fake_read) as read,
+              patch('wsl_resource_guard.history.iter_history', side_effect=fake_read) as stream):
             self.controller.dispatch({'op': 'history', 'range': '3h'}, uid=1, web_uid=999)
             self.controller.dispatch({'op': 'alerts'}, uid=1, web_uid=999)
             # Cached answers within the TTL must not re-read the files.
             self.controller.dispatch({'op': 'history', 'range': '3h'}, uid=1, web_uid=999)
             self.controller.dispatch({'op': 'alerts'}, uid=1, web_uid=999)
         self.assertEqual(seen, [True, True])
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(stream.call_count, 1)
 
     def test_history_ranges_cache_independently(self):
         from wsl_resource_guard.config import Settings
@@ -606,12 +619,35 @@ class ControllerTests(unittest.TestCase):
         self.data['services'] = [entry]
         atomic_json(self.path, self.data)
         self.controller.logs('compose-demo', lines=999999)
-        self.assertEqual(self.commands()[-1], ('journalctl', '-u', 'demo.service', '-n', '999999', '--no-pager', '-o', 'short-iso'))
+        self.assertEqual(self.commands()[-1], ('journalctl', '-u', 'demo.service', '-n', '2000', '--no-pager', '-o', 'short-iso'))
         # dispatch는 1..2000으로 클램프
         self.controller.dispatch({'op': 'logs', 'id': 'compose-demo', 'lines': 50000}, uid=1, web_uid=999)
         self.assertEqual(self.commands()[-1][3:5], ('-n', '2000'))
         self.controller.dispatch({'op': 'logs', 'id': 'compose-demo', 'lines': -5}, uid=1, web_uid=999)
         self.assertEqual(self.commands()[-1][3:5], ('-n', '1'))
+
+    def test_auxiliary_log_failure_preserves_journal_and_reports_partial_failure(self):
+        self.data['services'] = [dict(self.entry, kind='systemd', target='opencode-web.service')]
+        atomic_json(self.path, self.data)
+        self.run.return_value = 'journal fixture'
+        for failure in (PermissionError('private marker'), TimeoutError('private marker'),
+                        ValueError('private marker'), ControlError('private marker')):
+            self.controller._owner_read = Mock(side_effect=failure)
+            result = self.controller.logs('compose-demo', lines=1000)
+            self.assertIn('journal fixture', result['text'])
+            self.assertIn('보조 로그 읽기 실패', result['text'])
+            self.assertNotIn('private marker', result['text'])
+        self.controller._owner_read = Mock(return_value='auxiliary fixture')
+        for count in (500, 501, 1000, 2000):
+            result = self.controller.logs('compose-demo', lines=count)
+            self.controller._owner_read.assert_called_with('logs', {'target': 'opencode-web.service', 'lines': count})
+            self.assertIn('journal fixture', result['text'])
+            self.assertIn('auxiliary fixture', result['text'])
+        self.run.return_value = '가'*100000
+        self.assertLessEqual(len(self.controller.logs('compose-demo')['text'].encode()), 100000)
+        for value in (True, None, 2.5, 'invalid'):
+            self.controller.dispatch({'op': 'logs', 'id': 'compose-demo', 'lines': value}, uid=1, web_uid=999)
+            self.assertEqual(self.commands()[-1][3:5], ('-n', '80'))
 
     def test_ssh_disable_stops_socket_as_well(self):
         self.data['services'] = [dict(self.entry, id='ssh', target='ssh.service', kind='systemd',
@@ -674,7 +710,7 @@ class ControllerTests(unittest.TestCase):
     def _kill_snapshot(self, cgroup='/user.slice/wrg-demo.scope'):
         from wsl_resource_guard.processes import ProcessInfo, ProcessSnapshot, SessionUsage
         uid = os.getuid()
-        fields = dict(uid=uid, state='S', rss_kib=1, swap_kib=0, age_seconds=10, cwd='/x')
+        fields = dict(uid=uid, state='S', rss_kib=1, swap_kib=0, age_seconds=10, cwd='/x', start_ticks=100)
         root = ProcessInfo(pid=100, ppid=1, name='codex', cgroup=cgroup, command='codex', **fields)
         child = ProcessInfo(pid=101, ppid=100, name='node', cgroup=cgroup, command='node', **fields)
         session = SessionUsage(root_pid=100, provider='codex', root_name='codex', project='demo',
@@ -686,13 +722,31 @@ class ControllerTests(unittest.TestCase):
         return Settings(state_dir=self.temp.name)
 
     def test_kill_tree_signals_session_tree_with_sigterm(self):
-        with patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()):
-            with patch('wsl_resource_guard.processes.build_snapshot', return_value=self._kill_snapshot()):
-                with patch('wsl_resource_guard.service_control.os.kill') as kill:
-                    result = self.controller.kill_tree(100)
-        self.assertEqual(sorted(call.args[0] for call in kill.call_args_list), [100, 101])
+        snap = self._kill_snapshot()
+        with (patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()),
+              patch('wsl_resource_guard.processes.build_snapshot', return_value=snap),
+              patch('wsl_resource_guard.processes._read_process', side_effect=lambda pid, *_: snap.processes[pid]),
+              patch('os.pidfd_open', side_effect=lambda pid: pid+1000), patch('os.close'),
+              patch('signal.pidfd_send_signal') as kill, patch('os.kill') as numeric):
+            result = self.controller.kill_tree(100)
+        self.assertEqual(sorted(call.args[0] for call in kill.call_args_list), [1100, 1101])
         self.assertTrue(all(call.args[1] == signal.SIGTERM for call in kill.call_args_list))
+        numeric.assert_not_called()
         self.assertIn('SIGTERM', result['message'])
+
+    def test_kill_tree_rejects_identity_changed_after_snapshot(self):
+        from dataclasses import replace
+        snap = self._kill_snapshot()
+        replacement = replace(snap.processes[100], uid=0, cgroup='/system.slice/protected.service')
+        with (patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()),
+              patch('wsl_resource_guard.processes.build_snapshot', return_value=snap),
+              patch('wsl_resource_guard.processes._read_process', return_value=replacement),
+              patch('os.pidfd_open', return_value=987), patch('os.close'),
+              patch('signal.pidfd_send_signal') as bound_signal, patch('os.kill') as numeric_signal):
+            with self.assertRaises(ControlError):
+                self.controller.kill_tree(100)
+        bound_signal.assert_not_called()
+        numeric_signal.assert_not_called()
 
     def test_kill_tree_rejects_unknown_pid_and_systemd_units(self):
         with patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()):
@@ -718,7 +772,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(audit['ok'])
         with patch('wsl_resource_guard.config.Settings.load', return_value=self._kill_settings()):
             with patch('wsl_resource_guard.processes.build_snapshot', return_value=self._kill_snapshot()):
-                with patch('wsl_resource_guard.service_control.os.kill'):
+                with patch('wsl_resource_guard.processes.signal_verified_process', return_value=True):
                     result = self.controller.dispatch(
                         {'op': 'kill', 'pid': 100, 'confirmed': True}, uid=999, web_uid=999)
         self.assertIn('SIGTERM', result['message'])

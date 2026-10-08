@@ -23,6 +23,36 @@ def setUpModule() -> None:
 
 
 class NotificationTests(unittest.TestCase):
+    def test_construction_failures_do_not_skip_later_channels_or_expose_secrets(self):
+        from wsl_resource_guard.notifications import NotificationResult
+        notifier = Notifier(Settings(windows_toast_enabled=False, webhook_enabled=True))
+        notifier.secrets = {
+            "gmail_user": "sender@example.test\nprivate-marker",
+            "gmail_to": "receiver@example.test", "gmail_app_password": "fixture",
+            "webhook_url": "http://[broken-private-marker",
+        }
+        with patch.object(notifier, "_send_push", return_value=NotificationResult("push", True, "sent")):
+            results = notifier.send("fixture", "body", "warning")
+        by_channel = {r.channel: r for r in results}
+        for channel in ("gmail", "webhook"):
+            self.assertFalse(by_channel[channel].sent)
+            self.assertFalse(by_channel[channel].skipped)
+            self.assertNotIn("private-marker", by_channel[channel].detail)
+        self.assertTrue(by_channel["push"].sent)
+
+    def test_unexpected_channel_exception_isolated_but_shutdown_is_not(self):
+        notifier = Notifier(Settings(windows_toast_enabled=False, push_enabled=False))
+        notifier.secrets = {}
+        for error in (UnicodeError("private-marker"), RuntimeError("private-marker")):
+            with self.subTest(error=type(error).__name__), patch.object(notifier, "_send_gmail", side_effect=error):
+                results = notifier.send("fixture", "body", "warning")
+                self.assertEqual([r.channel for r in results], ["gmail", "discord"])
+                self.assertFalse(results[0].sent)
+                self.assertNotIn("private-marker", results[0].detail)
+        with patch.object(notifier, "_send_gmail", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                notifier.send("fixture", "body", "warning")
+
     def test_gmail_contains_plain_text_and_html_alternatives(self) -> None:
         notifier = Notifier(Settings())
         notifier.secrets = {

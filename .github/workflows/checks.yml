@@ -1,6 +1,11 @@
 name: Checks
 on:
   workflow_call:
+    inputs:
+      rehearsal_check_failure:
+        description: 'Failure-only injection for a manual release rehearsal'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -25,9 +30,8 @@ jobs:
           enable-cache: false
       - name: Create and verify the locked environment
         run: |
-          uv venv --python "$(command -v python)" --no-python-downloads .venv
-          uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
-          uv pip check --python .venv/bin/python
+          uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python "$(command -v python)"
+          .venv/bin/python scripts/dependency_profiles.py
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - run: python scripts/ci_unit.py
   browser-static:
@@ -50,9 +54,8 @@ jobs:
           enable-cache: false
       - name: Create and verify the locked environment
         run: |
-          uv venv --python "$(command -v python)" --no-python-downloads .venv
-          uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
-          uv pip check --python .venv/bin/python
+          uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python "$(command -v python)"
+          .venv/bin/python scripts/dependency_profiles.py
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - run: python -m playwright install --with-deps chromium
       - run: |
@@ -83,7 +86,7 @@ jobs:
   artifact-roundtrip:
     needs: browser-static
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -102,6 +105,15 @@ jobs:
           python3 scripts/release.py build expected
           cmp received/SHA256SUMS expected/SHA256SUMS
           cmp received/*.tar.gz expected/*.tar.gz
+      - name: Prepare dependencies from the verified archive without Git
+        run: |
+          archive_root=$(mktemp -d "$RUNNER_TEMP/wrg-archive.XXXXXX")
+          trap 'rm -rf -- "$archive_root"' EXIT
+          tar -xzf received/*.tar.gz -C "$archive_root"
+          source_dir=$(find "$archive_root" -mindepth 1 -maxdepth 1 -type d)
+          test -f "$source_dir/uv.lock"
+          test ! -e "$source_dir/.git"
+          sudo env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$source_dir" /usr/bin/python3 "$source_dir/tests/uv_install_smoke.py" --project "$source_dir"
   privilege-boundary:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -113,10 +125,24 @@ jobs:
         run: sudo env PYTHONPATH=tests /usr/bin/python3 -m unittest test_owner_worker.RootIsolationTests -q
       - name: Prepare isolated final-path environments and reject invalid locks
         run: sudo env PYTHONPATH=. /usr/bin/python3 tests/uv_install_smoke.py
+  guard-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise guard installation and recovery on this disposable VM
+        env:
+          RUNNER_ENVIRONMENT: '${{ runner.environment }}'
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT /usr/bin/python3 -B tests/guard_install_smoke.py
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Reject the injected release check failure
+        if: inputs.rehearsal_check_failure
+        run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -130,12 +156,10 @@ jobs:
           enable-cache: false
       - name: Create and verify the locked environment
         run: |
-          uv venv --python "$(command -v python)" --no-python-downloads .venv
-          uv pip sync --python .venv/bin/python --require-hashes --no-build requirements-dev.txt
-          uv pip check --python .venv/bin/python
+          uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python "$(command -v python)"
+          .venv/bin/python scripts/dependency_profiles.py
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
-      - run: python -m pip_audit --require-hashes --disable-pip -r requirements-web.txt
-      - run: python -m pip_audit --require-hashes --disable-pip -r requirements-dev.txt
+      - run: python scripts/dependency_profiles.py --audit
   codeql:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -159,7 +183,13 @@ jobs:
           output: sarif
           upload: never
           upload-database: false
-      - run: python3 scripts/security_gate.py sarif
+      - name: Require complete analysis of the checked-out commit
+        env:
+          EXPECTED_SHA: '${{ github.sha }}'
+          CODEQL_LANGUAGE: '${{ matrix.language }}'
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/security_gate.py sarif --language "$CODEQL_LANGUAGE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

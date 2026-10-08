@@ -18,6 +18,7 @@ from .safe_read import read_text
 MAX_OUTPUT = 16 * 1024 * 1024
 TIMEOUT = 20
 LOG_TAILS = {'opencode-web.service': [('[OpenCode stdout]', '.local/state/opencode-web.log')]}
+MAX_LOG_LINES = 2000
 
 
 def weekly_status(value):
@@ -97,7 +98,7 @@ class OwnerData:
         if bucket:
             result = read_history_downsampled(self._state_path(), since, bucket)
         else:
-            result = read_history(self._state_path(), since)[-1800:]
+            result = read_history(self._state_path(), since, limit=1800)
         with self._history_lock:
             self._history_cache[range_key] = (time.monotonic(), result)
         return result
@@ -133,10 +134,10 @@ class OwnerData:
         with self._history_lock:
             if self._alerts_cache is not None and time.monotonic() - self._alerts_at < 300:
                 return self._alerts_cache
-        from .history import alert_episodes, read_history, reason_summary_7d
+        from .history import alert_episodes, iter_history, reason_summary_7d
         settings = self._owner_settings()
         since = time.time() - settings.retention_days * 86400
-        records = read_history(settings.state_path, since,
+        records = iter_history(settings.state_path, since,
                                fields=('timestamp', 'severity', 'reasons'))
         episodes = alert_episodes(records, gap_seconds)
         result = {'episodes': episodes,
@@ -260,14 +261,15 @@ def dispatch(operation: str, args: dict, reader=None):
         from .webpush import gone_endpoints
         return sorted(gone_endpoints(reader._state_path()))
     target, lines = args.get('target'), args.get('lines', 80)
-    if target not in LOG_TAILS or type(lines) is not int or not 1 <= lines <= 500:
+    if target not in LOG_TAILS or type(lines) is not int or not 1 <= lines <= MAX_LOG_LINES:
         raise ValueError('Invalid log target')
     chunks = []
     for label, relative in LOG_TAILS[target]:
         try:
             text = read_text(reader.home / relative, max_bytes=64000, errors='replace', tail=True)
-        except OSError:
-            text = ''
+        except OSError as exc:
+            chunks.append(f'{label}\n[보조 로그 읽기 실패: {type(exc).__name__}]')
+            continue
         chunks.append(label + '\n' + '\n'.join(text.splitlines()[-lines:]))
     return '\n\n'.join(chunks)
 

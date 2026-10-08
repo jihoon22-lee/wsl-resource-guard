@@ -76,6 +76,11 @@ def validate_subscription(sub: object) -> dict:
         raise ValueError('구독 키를 해석할 수 없습니다.') from None
     if len(p256dh) != 65 or p256dh[0] != 4 or len(auth) != 16:
         raise ValueError('구독 키 형식이 올바르지 않습니다.')
+    from cryptography.hazmat.primitives.asymmetric import ec
+    try:
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), p256dh)
+    except ValueError:
+        raise ValueError('구독 공개키가 유효한 P-256 점이 아닙니다.') from None
     return {'endpoint': sub['endpoint'], 'keys': {'p256dh': b64url(p256dh), 'auth': b64url(auth)}}
 
 
@@ -152,7 +157,10 @@ def send(subscription: dict, vapid: dict, subject: str, message: dict,
             return True, f'HTTP {response.status}', False
     except urllib.error.HTTPError as exc:
         # 404/410: the browser dropped the subscription; stop sending to it.
-        return False, f'HTTP {exc.code}', exc.code in (404, 410)
+        try:
+            return False, f'HTTP {exc.code}', exc.code in (404, 410)
+        finally:
+            exc.close()
     except (urllib.error.URLError, OSError) as exc:
         return False, f'{type(exc).__name__}: {getattr(exc, "reason", exc)}'[:200], False
 
@@ -186,14 +194,21 @@ def send_all(shared_dir: Path, state_dir: Path | None, subject: str | None, mess
     subject = subject or vapid.get('subject') or 'https://localhost'
     subscriptions = load_json(shared_dir / SUBSCRIPTIONS_FILE, [])
     expired_path = state_dir / EXPIRED_FILE if state_dir else None
-    expired = set(load_json(expired_path, [])) if expired_path else set()
+    expired = gone_endpoints(state_dir) if state_dir else set()
     before = set(expired)
-    targets = [s for s in subscriptions if isinstance(s, dict) and s.get('endpoint') not in expired]
+    targets = [s for s in subscriptions if not (isinstance(s, dict)
+               and isinstance(s.get('endpoint'), str) and s['endpoint'] in expired)]
     if not vapid.get('private_key') or not targets:
         return 0, 0, 'no subscriptions'
     sent, details = 0, []
     for sub in targets:
-        ok, detail, gone = send(sub, vapid, subject, message, urgency, opener=opener)
+        try:
+            normalized = validate_subscription(sub)
+            ok, detail, gone = send(normalized, vapid, subject, message, urgency, opener=opener)
+        except Exception as exc:
+            # A corrupt stored key or message construction error must not
+            # prevent the remaining devices from receiving their attempt.
+            ok, detail, gone = False, type(exc).__name__, False
         sent += ok
         details.append(detail)
         if gone:

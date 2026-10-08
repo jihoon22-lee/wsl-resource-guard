@@ -302,6 +302,8 @@ class DiskAlertTests(unittest.TestCase):
                     run(115,14,'warning',1)
                     run(120,9,'critical',2)
                     run(130,25,'critical',2)
+                    for timestamp in range(145,249,15):
+                        run(timestamp,25,'critical',2)
                     run(249,25,'critical',2)
                     run(250,25,'normal',3)
                     self.assertEqual(notifier.return_value.send.call_args.args[2],'recovery')
@@ -343,7 +345,10 @@ class DiskAlertTests(unittest.TestCase):
             with patch('wsl_resource_guard.daemon.read_system_metrics') as read_metrics,patch('wsl_resource_guard.daemon.read_disks') as read_disk:
                 with patch('wsl_resource_guard.daemon.build_snapshot',return_value=snapshot()),patch('wsl_resource_guard.daemon.Notifier') as notifier:
                     notifier.return_value.send.return_value=[]
-                    for timestamp,free,count in [(100,19,1),(110,21,1),(120,19,1),(140,21,1),(260,21,2),(270,19,3)]:
+                    observations = [(100,19,1),(110,21,1),(120,19,1),(140,21,1)]
+                    observations += [(t,21,1) for t in range(155,260,15)]
+                    observations += [(260,21,2),(270,19,3)]
+                    for timestamp,free,count in observations:
                         read_metrics.return_value=metrics(8,timestamp=timestamp)
                         read_disk.return_value=[disk(free)]
                         sample(settings,notify=True)

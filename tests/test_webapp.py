@@ -10,7 +10,7 @@ except ImportError:
     create_app = None
 
 
-@unittest.skipIf(create_app is None, 'Install requirements-web.txt to test the dashboard')
+@unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test the dashboard')
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.control = Mock(return_value={'services': [], 'origin': 'https://pc.example.ts.net:9443'})
@@ -182,7 +182,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.get('/assets/app.js',headers={}).status_code,403)
 
 
-@unittest.skipIf(create_app is None, 'Install requirements-web.txt to test the dashboard')
+@unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test the dashboard')
 class NewRouteTests(unittest.TestCase):
     setUp, get, token = WebTests.setUp, WebTests.get, WebTests.token
 
@@ -202,7 +202,7 @@ class NewRouteTests(unittest.TestCase):
                            ('/api/settings/change', {'key': 'x', 'value': True}),
                            ('/api/sessions/kill-stale', {'pids': [1]}),
                            ('/api/push/subscribe', {'subscription': 'x'}),
-                           ('/api/push/unsubscribe', {})):
+                           ('/api/push/unsubscribe', {}), ('/api/push/status', {'subscription': []})):
             self.control.reset_mock()
             self.assertEqual(self.post(path, body).status_code, 400, path)
             self.control.assert_not_called()
@@ -217,8 +217,22 @@ class NewRouteTests(unittest.TestCase):
         self.assertEqual(result.status_code, 403)
         self.control.assert_not_called()
 
+    def test_push_status_requires_csrf_and_relays_only_fixed_body_operation(self):
+        subscription={'endpoint':'https://fcm.googleapis.com/fcm/send/fixture','keys':{}}
+        token=self.token()
+        for supplied in (False,True):
+            self.control.reset_mock()
+            headers={**self.headers,'Origin':self.origin}
+            if supplied: headers['X-CSRF-Token']=token
+            result=self.client.post('/api/push/status',base_url=self.origin,headers=headers,
+                json={'subscription':subscription,'op':'shell'},environ_overrides=self.environ)
+            self.assertEqual(result.status_code,200 if supplied else 403)
+            if supplied:
+                self.control.assert_called_once_with({'op':'push-status','subscription':subscription})
+            else: self.control.assert_not_called()
 
-@unittest.skipIf(create_app is None, 'Install requirements-web.txt to test the dashboard')
+
+@unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test the dashboard')
 class StreamTests(unittest.TestCase):
     def setUp(self):
         self.origin = 'https://pc.example.ts.net:9443'

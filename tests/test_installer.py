@@ -77,9 +77,9 @@ class InstallerSafetyTests(unittest.TestCase):
             with patch('wsl_resource_guard.service_install.install_environment') as install, \
                  patch('wsl_resource_guard.service_install.run', side_effect=lambda *a, **k: calls.append(a) or ''), \
                  patch('wsl_resource_guard.service_install.run_as', side_effect=lambda user, *a, **k: calls.append(('user', user.pw_uid, *a)) or ''):
-                result = stage(dest, dest / 'requirements.txt', web)
+                result = stage(dest, dest / 'project', web)
             self.assertEqual(result.parent, dest / '.venvs')
-            install.assert_called_once_with(result, dest / 'requirements.txt')
+            install.assert_called_once_with(result, dest / 'project')
             self.assertIn(('user', web.pw_uid, str(result / 'bin/gunicorn'), '--version'), calls)
             self.assertFalse((dest / '.venv').exists())
 
@@ -91,6 +91,43 @@ class InstallerSafetyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'progress'):
                     with installer.install_lock(path):
                         pass
+
+
+    def test_owner_query_bounds_output_and_releases_pipe_after_error(self):
+        from wsl_resource_guard.installer import owner_query
+        owner = pwd.getpwuid(os.getuid())
+        self.assertEqual(owner_query(owner, lambda: {'state': '/fixture'}), {'state': '/fixture'})
+        before = len(list(Path('/proc/self/fd').iterdir()))
+        with self.assertRaisesRegex(RuntimeError, 'Owner-UID'):
+            owner_query(owner, lambda: {'value': 'x'*4096})
+        self.assertEqual(len(list(Path('/proc/self/fd').iterdir())), before)
+        import time
+        with self.assertRaises(TimeoutError):
+            owner_query(owner, lambda: time.sleep(10), timeout=.05)
+        self.assertEqual(len(list(Path('/proc/self/fd').iterdir())), before)
+
+    def test_owner_lock_contends_across_processes_and_releases_on_failure(self):
+        import subprocess
+        import sys
+        from types import SimpleNamespace
+        from wsl_resource_guard.installer import owner_install_lock
+        with tempfile.TemporaryDirectory() as directory:
+            owner = SimpleNamespace(pw_dir=directory, pw_uid=os.getuid(), pw_gid=os.getgid(),
+                                    pw_name=pwd.getpwuid(os.getuid()).pw_name)
+            script = ("from types import SimpleNamespace; from wsl_resource_guard.installer import owner_install_lock; "
+                      "import sys,os,pwd; owner=SimpleNamespace(pw_dir=sys.argv[1],pw_uid=os.getuid(),"
+                      "pw_gid=os.getgid(),pw_name=pwd.getpwuid(os.getuid()).pw_name); "
+                      "lock=owner_install_lock(owner); lock.__enter__(); lock.__exit__(None,None,None)")
+            with self.assertRaisesRegex(RuntimeError, 'fixture'):
+                with owner_install_lock(owner):
+                    result = subprocess.run([sys.executable, '-B', '-c', script, directory],
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('installation is in progress', result.stderr)
+                    raise RuntimeError('fixture')
+            result = subprocess.run([sys.executable, '-B', '-c', script, directory],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class ServiceRollbackTests(unittest.TestCase):
@@ -112,7 +149,8 @@ class ServiceRollbackTests(unittest.TestCase):
             (source / 'packaging').mkdir()
             for name in (*service_install.UNITS, 'opencode-web.service'):
                 (source / 'packaging' / name).write_text('ExecStart=@WEB_VENV@/bin/gunicorn\n')
-            (source / 'requirements-web.txt').write_text('')
+            (source / 'pyproject.toml').write_text('fixture manifest')
+            (source / 'uv.lock').write_text('fixture lock')
             dest = root / 'opt'
             (dest / 'wsl_resource_guard').mkdir(parents=True)
             (dest / 'wsl_resource_guard/__init__.py').write_text('# old\n')

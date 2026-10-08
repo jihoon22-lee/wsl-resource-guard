@@ -19,9 +19,11 @@ from wsl_resource_guard.build_info import release_revision
 ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
               'AGENTS.md', 'workthrough/2026-10-07-public-release.md',
               'workthrough/2026-10-08-uv-dependencies.md',
-              'pyproject.toml', 'requirements-web.in', 'requirements-web.txt',
-              'requirements-dev.in', 'requirements-dev.txt', 'install-user.sh',
-              'install-root.sh', 'install-services.sh'}
+              'workthrough/2026-10-08-review-remediation.md', 'workthrough/2026-10-08-full-code-review.md',
+              'pyproject.toml', 'uv.lock', 'install-user.sh',
+              'install-root.sh', 'install-services.sh', '.github/workflows/checks.yml',
+              '.github/workflows/release.yml', '.github/workflows/ci.yml',
+              '.github/workflows/public-checks.yml', '.github/dependabot.yml'}
 PREFIXES = ('bin/', 'wsl_resource_guard/', 'config/', 'packaging/', 'tests/', 'scripts/')
 DOCS = {'docs/installation.md', 'docs/usage.md', 'docs/configuration.md',
         'docs/architecture.md', 'docs/operations.md'}
@@ -46,7 +48,7 @@ def build(output: Path, ref='HEAD') -> Path:
         content[name] = subprocess.check_output(['git', '-C', str(ROOT), 'cat-file', 'blob', oid])
         modes[name] = 0o755 if mode == '100755' else 0o644
     for required in ('pyproject.toml', 'LICENSE', 'bin/wrg', 'install-services.sh',
-                     'wsl_resource_guard/web/app.js', 'requirements-web.txt'):
+                     'wsl_resource_guard/web/app.js', 'uv.lock'):
         if required not in content:
             raise ValueError('Missing archive file: ' + required)
     version = tomllib.loads(content['pyproject.toml'].decode())['project']['version']

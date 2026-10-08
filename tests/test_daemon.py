@@ -329,6 +329,38 @@ class OomVictimTests(unittest.TestCase):
 
 
 class SampleStateTests(unittest.TestCase):
+    def test_malformed_email_preserves_samples_history_and_reminder_interval(self):
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory, windows_toast_enabled=False,
+                                push_enabled=False, email_heartbeat_enabled=False,
+                                history_interval_seconds=10)
+            secrets = {"gmail_user": "sender@example.test\nprivate-marker",
+                       "gmail_to": "receiver@example.test", "gmail_app_password": "fixture",
+                       "discord_webhook_url": "https://discord.com/api/webhooks/fixture"}
+            response = MagicMock()
+            response.__enter__.return_value.status = 204
+            with (patch.object(Settings, "load_secrets", return_value=secrets),
+                  patch("wsl_resource_guard.daemon.read_system_metrics") as reader,
+                  patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                  patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                  patch("wsl_resource_guard.notifications.urllib.request.urlopen", return_value=response) as sent,
+                  patch("wsl_resource_guard.notifications.smtplib.SMTP_SSL") as smtp):
+                history_at = disk_at = 0
+                for stamp in (100, 115):
+                    reader.return_value = metrics(1.0, timestamp=stamp)
+                    current, processes, evaluation = sample(settings, notify=True, shared_dir=Path(directory))
+                    history_at, disk_at = record_history(settings, current, processes, evaluation,
+                                                         history_at, disk_at)
+                    self.assertEqual(load_state(Path(directory)/"state.json")["updated_at"], stamp)
+                saved = load_state(Path(directory)/"state.json")
+                self.assertIn("gmail", saved["last_channel_errors"])
+                self.assertNotIn("discord", saved["last_channel_errors"])
+                self.assertEqual(sent.call_count, 1)  # Failed Gmail must not repeat the Discord alert.
+                smtp.assert_not_called()
+            lines = [line for p in Path(directory).glob("history-*.jsonl") for line in p.read_text().splitlines()]
+            self.assertEqual([json.loads(line)["timestamp"] for line in lines], [100, 115])
+
     def test_corrupted_state_fields_do_not_stop_sampling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = Settings(state_dir=directory)
@@ -515,6 +547,7 @@ class SampleStateTests(unittest.TestCase):
                         "reasons": ["가용 RAM 3.5 GiB"],
                         "normal_since": 880,
                         "abnormal_since": 60,
+                        "metrics": metrics(12, timestamp=985).to_dict(),
                         "condition_since": {},
                     }
                 )
@@ -555,6 +588,7 @@ class SampleStateTests(unittest.TestCase):
                         "reasons": ["가용 RAM 3.5 GiB"],
                         "normal_since": 880,
                         "condition_since": {},
+                        "metrics": metrics(12, timestamp=985).to_dict(),
                     }
                 )
             )

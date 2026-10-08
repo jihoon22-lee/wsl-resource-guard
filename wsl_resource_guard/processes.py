@@ -3,8 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 import os
+import errno
 from pathlib import Path
+import pwd
 import re
+import signal
+import subprocess
 from typing import Iterable
 
 
@@ -35,6 +39,7 @@ class ProcessInfo:
     cgroup: str
     command: str = field(repr=False)
     cpu_jiffies: int = 0
+    start_ticks: int | None = None
 
     @property
     def is_mcp(self) -> bool:
@@ -200,6 +205,9 @@ def _launches_program(command: str, programs: frozenset[str]) -> bool:
 
 
 def _read_process(pid: int, clock_ticks: int, uptime: float) -> ProcessInfo | None:
+    first_token = process_start_ticks(pid)
+    if first_token is None:
+        return None
     proc_dir = Path("/proc") / str(pid)
     try:
         status_text = (proc_dir / "status").read_text(encoding="utf-8")
@@ -252,6 +260,8 @@ def _read_process(pid: int, clock_ticks: int, uptime: float) -> ProcessInfo | No
     except OSError:
         cgroup = ""
 
+    if first_token != start_ticks or process_start_ticks(pid) != start_ticks:
+        return None
     return ProcessInfo(
         pid=pid,
         ppid=ppid,
@@ -265,6 +275,7 @@ def _read_process(pid: int, clock_ticks: int, uptime: float) -> ProcessInfo | No
         cgroup=cgroup,
         cpu_jiffies=cpu_jiffies,
         command=command,
+        start_ticks=start_ticks,
     )
 
 
@@ -304,8 +315,65 @@ SERVICE_KILL_BLOCK = "systemd 관리 서비스는 여기서 종료하지 않습�
 
 def kill_block_reason(root: ProcessInfo | None) -> str:
     """Non-empty when this tree root must not be signalled from session controls."""
-    leaf = ((root.cgroup if root else "") or "").rsplit("/", 1)[-1]
-    return SERVICE_KILL_BLOCK if leaf.endswith(".service") else ""
+    # The nearest owning unit also covers sub-cgroups inside a service, while
+    # an interactive scope under a per-user manager remains interactive.
+    for component in reversed(((root.cgroup if root else "") or "").split('/')):
+        if component.endswith('.scope'):
+            return ''
+        if component.endswith('.service'):
+            return SERVICE_KILL_BLOCK
+    return ''
+
+
+def signal_verified_process(process: ProcessInfo, expected_uid: int, sig: int) -> bool:
+    """Signal the snapshot's process instance, never a newly reused numeric PID.
+
+    Root sends through a fixed, unprivileged subprocess so a concurrent setuid
+    exec cannot turn an owner operation into a signal to another user's process.
+    False means the target exited; identity/policy/permission failures are errors.
+    """
+    if (process.pid <= 1 or process.pid == os.getpid() or expected_uid <= 0
+            or process.uid != expected_uid or not process.start_ticks
+            or sig not in (signal.SIGTERM, signal.SIGKILL)):
+        raise PermissionError('종료 대상의 소유자·시작 시각을 확인할 수 없습니다.')
+    if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+        raise OSError(errno.ENOSYS, '이 환경은 안전한 pidfd 프로세스 종료를 지원하지 않습니다.')
+    try:
+        fd = os.pidfd_open(process.pid)
+    except ProcessLookupError:
+        return False
+    try:
+        current = _read_process(process.pid, os.sysconf('SC_CLK_TCK'), 0)
+        if current is None or current.state in ('Z', 'X'):
+            return False
+        if (current.pid != process.pid or current.uid != expected_uid
+                or current.start_ticks != process.start_ticks or not current.cgroup):
+            raise PermissionError('종료 대상의 신원이 변경됐거나 확인되지 않습니다.')
+        reason = kill_block_reason(process) or kill_block_reason(current)
+        if reason:
+            raise PermissionError(reason)
+        if os.geteuid() == 0:
+            account = pwd.getpwuid(expected_uid)
+            code = ('import signal,sys\n'
+                    'try: signal.pidfd_send_signal(int(sys.argv[1]),int(sys.argv[2]))\n'
+                    'except ProcessLookupError: sys.exit(3)\n'
+                    'except PermissionError: sys.exit(4)\n')
+            result = subprocess.run(['/usr/bin/python3', '-I', '-c', code, str(fd), str(int(sig))],
+                                    user=expected_uid, group=account.pw_gid, extra_groups=(),
+                                    pass_fds=(fd,), cwd='/', env={'LANG': 'C.UTF-8'},
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=5, check=False)
+            if result.returncode == 3:
+                return False
+            if result.returncode:
+                raise PermissionError('소유자 권한으로 프로세스에 신호를 보낼 수 없습니다.')
+        else:
+            signal.pidfd_send_signal(fd, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    finally:
+        os.close(fd)
 
 
 def is_stale_session(session: "SessionUsage", stale_session_hours: float) -> bool:

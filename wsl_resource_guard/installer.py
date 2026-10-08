@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import pwd
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import traceback
 import uuid
 
@@ -27,8 +29,8 @@ def resolve_owner(name: str | None):
     return owner
 
 
-def run(*args: str, capture=False) -> str:
-    result = subprocess.run(args, check=True, text=True, stdout=subprocess.PIPE if capture else None)
+def run(*args: str, capture=False, timeout=None) -> str:
+    result = subprocess.run(args, check=True, text=True, stdout=subprocess.PIPE if capture else None, timeout=timeout)
     return result.stdout or ''
 
 
@@ -42,27 +44,91 @@ def run_as(owner, *args: str, capture=False, **kwargs) -> str:
     return result.stdout or ''
 
 
-def owner_call(owner, callback):
+def owner_call(owner, callback, *, timeout=None):
     """Run filesystem work after permanently dropping root; never chown user paths."""
     if os.geteuid() != 0:
         if os.geteuid() != owner.pw_uid:
             raise RuntimeError('Owner UID does not match invoking user')
-        return callback()
+        if timeout is None:
+            return callback()
     pid = os.fork()
     if pid == 0:
         try:
-            os.initgroups(owner.pw_name, owner.pw_gid)
-            os.setgid(owner.pw_gid)
-            os.setuid(owner.pw_uid)
+            if os.geteuid() == 0:
+                os.setgroups([])
+                os.setgid(owner.pw_gid)
+                os.setuid(owner.pw_uid)
             os.environ.update(HOME=owner.pw_dir, USER=owner.pw_name, LOGNAME=owner.pw_name)
             callback()
         except BaseException:
             traceback.print_exc()
             os._exit(1)
         os._exit(0)
-    _, status = os.waitpid(pid, 0)
+    try:
+        if timeout is None:
+            _, status = os.waitpid(pid, 0)
+        else:
+            deadline = time.monotonic() + timeout
+            while True:
+                finished, status = os.waitpid(pid, os.WNOHANG)
+                if finished:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Owner installation query timed out')
+                time.sleep(min(.01, max(0, deadline - time.monotonic())))
+    except BaseException:
+        try:
+            finished, _ = os.waitpid(pid, os.WNOHANG)
+            if not finished:
+                # Still our unreaped child, so its PID cannot be reused.
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+        except (ChildProcessError, ProcessLookupError):
+            pass
+        raise
     if status != 0:
         raise RuntimeError('Owner-UID installation step failed; see preceding error')
+
+
+def owner_query(owner, callback, *, timeout=10):
+    """Return small installation facts without opening owner paths as root.
+
+    Only installer-owned callbacks are accepted; this is not a socket operation.
+    The payload is capped below Linux PIPE_BUF so the child can finish before
+    owner_call waits for it. Never pass file contents or secrets through here.
+    """
+    read_fd, write_fd = os.pipe()
+    try:
+        def collect():
+            encoded = json.dumps(callback(), allow_nan=False).encode('utf-8')
+            if len(encoded) > 4096:
+                raise ValueError('Owner installation facts exceed limit')
+            os.write(write_fd, encoded)
+        owner_call(owner, collect, timeout=timeout)
+        os.close(write_fd)
+        write_fd = -1
+        return json.loads(os.read(read_fd, 4097))
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
+
+def systemd_escape(value: str, *, command: bool = False, quoted: bool = True) -> str:
+    """Encode a unit literal using the receiving directive's parser."""
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError('Control characters are not allowed in unit values')
+    if command and any(c in value for c in '\\"\''):
+        raise ValueError('systemd executable paths cannot contain quotes or backslashes')
+    if not quoted:
+        # Single-path directives do not unquote or C-unescape. Preserve their
+        # literal spaces/quotes, but reject suffixes eaten by the unit parser.
+        if value.endswith(('\\', ' ')):
+            raise ValueError('Ambiguous trailing whitespace or backslash in unit path')
+        return value.replace('%', '%%')
+    value = value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
+    # Generated ExecStart directives use ':' to disable environment expansion.
+    return value
 
 
 def validate_root_path(path: Path, *, trusted_base: Path = Path('/')) -> None:
@@ -225,7 +291,7 @@ def owner_install_lock(owner):
         os.close(ready_read)
         os.close(done_write)
         try:
-            os.initgroups(owner.pw_name, owner.pw_gid)
+            os.setgroups([])
             os.setgid(owner.pw_gid)
             os.setuid(owner.pw_uid)
             path.parent.mkdir(parents=True, exist_ok=True)

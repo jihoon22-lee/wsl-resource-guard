@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 import urllib.error
 import urllib.request
 
-from .owner_worker import LOG_TAILS
+from .owner_worker import LOG_TAILS, MAX_LOG_LINES
 
 REGISTRY = Path('/var/lib/wrg-services/registry.json')
 # Root-written, owner-group-readable hand-off to the guard daemon (which runs
@@ -284,7 +284,26 @@ class Controller:
         gone = self._owner_read('gone-endpoints')
         return [s for s in subs if isinstance(s, dict) and s.get('endpoint') not in gone]
 
+    def push_status(self, subscription: object) -> dict:
+        """Check this device's exact subscription; never expose other endpoints."""
+        from . import webpush
+        try:
+            sub = webpush.validate_subscription(subscription)
+        except ValueError as exc:
+            raise ControlError(str(exc)) from None
+        with self.mutation(wait=5):
+            expired = sub['endpoint'] in self._owner_read('gone-endpoints')
+            saved = webpush.load_json(self.shared / webpush.SUBSCRIPTIONS_FILE, [])
+            registered = not expired and any(isinstance(row, dict)
+                and row.get('endpoint') == sub['endpoint'] and row.get('keys') == sub['keys']
+                for row in saved)
+            return {'registered': registered, 'expired': expired}
+
     def push_key(self) -> dict:
+        with self.mutation(wait=5):
+            return self._push_key_locked()
+
+    def _push_key_locked(self) -> dict:
         """VAPID public key for browser subscription; generated on first use."""
         from . import webpush
         ready, reason = webpush.available()
@@ -299,8 +318,12 @@ class Controller:
                 'subscriptions': len(self._push_subscriptions())}
 
     def push_subscribe(self, subscription: object, label: object = '') -> dict:
+        with self.mutation(wait=5):
+            return self._push_subscribe_locked(subscription, label)
+
+    def _push_subscribe_locked(self, subscription: object, label: object) -> dict:
         from . import webpush
-        if not self.push_key()['available']:
+        if not self._push_key_locked()['available']:
             raise ControlError('이 PC에서는 푸시 알림을 사용할 수 없습니다.')
         try:
             sub = webpush.validate_subscription(subscription)
@@ -311,9 +334,16 @@ class Controller:
         subs = [s for s in self._push_subscriptions() if s.get('endpoint') != sub['endpoint']]
         subs = (subs + [sub])[-webpush.MAX_SUBSCRIPTIONS:]
         self.write_shared(webpush.SUBSCRIPTIONS_FILE, subs)
-        return {'message': f'이 기기에서 경보 푸시를 받습니다. 등록된 기기 {len(subs)}대.'}
+        return {'message': f'이 기기의 푸시 등록을 완료했습니다. 등록된 기기 {len(subs)}대.'}
 
     def push_unsubscribe(self, endpoint: object) -> dict:
+        from . import webpush
+        if not webpush.endpoint_allowed(endpoint):
+            raise ControlError('해제할 브라우저 푸시 구독이 올바르지 않습니다.')
+        with self.mutation(wait=5):
+            return self._push_unsubscribe_locked(endpoint)
+
+    def _push_unsubscribe_locked(self, endpoint: str) -> dict:
         from . import webpush
         subs = [s for s in self._push_subscriptions() if s.get('endpoint') != endpoint]
         self.write_shared(webpush.SUBSCRIPTIONS_FILE, subs)
@@ -638,13 +668,25 @@ class Controller:
             return {'message': '등록을 삭제했습니다. 프로그램·DB·볼륨·로그는 보존됩니다.' if action == 'remove' else '설정을 적용했습니다.'}
 
     def logs(self, identifier: str, lines: int = 80) -> dict:
+        # Keep direct callers and socket requests on the same bounded contract.
+        try:
+            lines = int(lines) if type(lines) in (int, str) else 80
+        except ValueError:
+            lines = 80
+        lines = min(max(lines, 1), MAX_LOG_LINES)
         entry = next((s for s in self.load()['services'] if s['id'] == identifier), None)
         if entry is None:
             raise ControlError('등록된 서비스를 찾을 수 없습니다.')
         if entry['kind'] == 'systemd':
             output = self.run('journalctl', '-u', entry['target'], '-n', str(lines), '--no-pager', '-o', 'short-iso')
             if entry['target'] in LOG_TAILS:
-                output += '\n\n' + self._owner_read('logs', {'target': entry['target'], 'lines': lines})
+                try:
+                    auxiliary = self._owner_read('logs', {'target': entry['target'], 'lines': lines})
+                    if not isinstance(auxiliary, str):
+                        raise ValueError('Invalid auxiliary log response')
+                except (OSError, ValueError, ControlError, subprocess.TimeoutExpired) as exc:
+                    auxiliary = f'[보조 로그 읽기 실패: {type(exc).__name__}]'
+                output += '\n\n' + auxiliary
         else:
             chunks = []
             for container in self.containers(entry['target'])[:12]:
@@ -657,7 +699,7 @@ class Controller:
                     text = self.run('docker', 'logs', '--tail', str(lines), container['id'])
                 chunks.append(f"[{container['name']}]\n{text[-12000:]}")
             output = '\n'.join(chunks)
-        return {'text': output[-100000:]}
+        return {'text': output.encode('utf-8')[-100000:].decode('utf-8', errors='ignore')}
 
     def restore(self, dry_run: bool = False) -> dict:
         """Boot recovery affects only explicitly registered Compose projects."""
@@ -698,11 +740,11 @@ class Controller:
                 return {'message': f'변경 없이 계획만 표시합니다.\n{detail}', 'actions': planned}
             return {'message': '등록된 프로젝트의 자동 실행 설정을 적용했습니다.'}
 
-    def kill_tree(self, pid: int) -> dict:
+    def kill_tree(self, pid: int, *, expected_start_ticks: int | None = None, stale_only: bool = False) -> dict:
         """SIGTERM an LLM session or MCP tree root, re-validated at execution time."""
         if pid <= 1:
             raise ControlError('유효하지 않은 PID입니다.')
-        from .processes import build_snapshot, descendants_of, kill_block_reason
+        from .processes import build_snapshot, descendants_of, is_stale_session, kill_block_reason, signal_verified_process
         owner = pwd.getpwnam(self.load()['owner'])
         settings = self._owner_settings()
         snapshot = build_snapshot(settings.project_roots, uid=owner.pw_uid)
@@ -710,6 +752,11 @@ class Controller:
         group = next((item for item in snapshot.mcp_groups if item.root_pid == pid), None)
         if session is None and group is None:
             raise ControlError(f'PID {pid}는 현재 감지된 LLM 세션·MCP 루트가 아닙니다.')
+        root = snapshot.processes.get(pid)
+        if expected_start_ticks is not None and (root is None or root.start_ticks != expected_start_ticks):
+            raise ControlError('대상 프로세스가 바뀌어 종료하지 않았습니다.')
+        if stale_only and (session is None or not is_stale_session(session, settings.stale_session_hours)):
+            raise ControlError('현재 오래된 세션이 아니어서 종료하지 않았습니다.')
         reason = kill_block_reason(snapshot.processes.get(pid))
         if reason:
             raise ControlError(reason)
@@ -721,10 +768,9 @@ class Controller:
             if process.uid != owner.pw_uid:
                 continue  # The snapshot is uid-filtered already; belt and suspenders.
             try:
-                os.kill(process.pid, signal.SIGTERM)
-                signalled += 1
-            except (ProcessLookupError, PermissionError):
-                pass
+                signalled += int(signal_verified_process(process, owner.pw_uid, signal.SIGTERM))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise ControlError(f'PID {process.pid} 종료를 중단했습니다: {exc}') from None
         if not signalled:
             raise ControlError('신호를 보낼 프로세스가 없습니다. 이미 종료됐을 수 있습니다.')
         name = session.root_name if session else group.root_name
@@ -744,16 +790,17 @@ class Controller:
         owner = pwd.getpwnam(self.load()['owner'])
         settings = self._owner_settings()
         snapshot = build_snapshot(settings.project_roots, uid=owner.pw_uid)
-        eligible = {s.root_pid for s in snapshot.sessions
+        eligible = {s.root_pid: snapshot.processes[s.root_pid].start_ticks for s in snapshot.sessions
                     if is_stale_session(s, settings.stale_session_hours)
-                    and not kill_block_reason(snapshot.processes.get(s.root_pid))}
+                    and not kill_block_reason(snapshot.processes.get(s.root_pid))
+                    and snapshot.processes[s.root_pid].start_ticks is not None}
         done, skipped = [], []
         for pid in pids:
             if pid not in eligible:
                 skipped.append(pid)
                 continue
             try:
-                self.kill_tree(pid)
+                self.kill_tree(pid, expected_start_ticks=eligible[pid], stale_only=True)
                 done.append(pid)
             except ControlError:
                 skipped.append(pid)
@@ -1092,6 +1139,8 @@ class Controller:
             return self.summary()
         if op == 'push-key':
             return self.push_key()
+        if op == 'push-status':
+            return self.push_status(request.get('subscription'))
         if op == 'audit':
             records = []
             for line in tail_lines(self.registry.parent / 'audit.jsonl', 50):
@@ -1101,11 +1150,7 @@ class Controller:
                     continue
             return records
         if op == 'logs':
-            try:
-                lines = int(request.get('lines', 80))
-            except (TypeError, ValueError):
-                lines = 80
-            return self.logs(str(request.get('id', '')), min(max(lines, 1), 2000))
+            return self.logs(str(request.get('id', '')), request.get('lines', 80))
         try:
             if op == 'register':
                 result = self.register(str(request.get('key', '')), request.get('name'), request.get('url'))

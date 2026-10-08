@@ -587,8 +587,103 @@ def check_snooze_and_bulk_stale_kill(page, posts: list, overrides: dict) -> None
         posts.clear()
 
 
+def check_stream_freshness(browser) -> None:
+    for mobile in (False, True):
+        context=browser.new_context(viewport={'width':390 if mobile else 1280,'height':900},
+                                    is_mobile=mobile,has_touch=mobile)
+        context.add_init_script("""window.__streams=[]; window.EventSource=class {
+          static CLOSED=2; static CONNECTING=0; constructor(){this.listeners={};this.readyState=1;__streams.push(this)}
+          addEventListener(name,fn){this.listeners[name]=fn} close(){this.readyState=2}
+          emit(name,data){this.listeners[name]?.({data:JSON.stringify(data)})}
+        };""")
+        page=context.new_page(); errors=[]; page.on('pageerror',lambda error:errors.append(str(error)))
+        base=time.time()-30
+        monitor=fixtures()['/api/monitor']; monitor.update(severity='normal',daemon_updated_at=base)
+        overrides={'/api/monitor':monitor}; page.route(ORIGIN+'/**',lambda r:serve(r,[],[],overrides))
+        def emit(severity,stamp):
+            page.evaluate("d => __streams.at(-1).emit('summary',d)",{'severity':severity,'updated_at':stamp,
+                'service_problems':5,'service_failed':True,'disk_alerts':['E:'],'disk_critical':True})
+        try:
+            page.goto(ORIGIN+'/#overview')
+            expect(page.locator('#overview-status')).to_be_visible()
+            for old,new in (('critical','normal'),('normal','critical')):
+                emit(old,base+10)
+                # A CONNECTING error must invalidate immediately, not just CLOSED.
+                page.evaluate("() => {const s=__streams.at(-1);s.readyState=0;s.emit('error',{})}")
+                monitor.update(severity=new,daemon_updated_at=base+15)
+                page.evaluate('refresh(true)')
+                self_title=re.compile('^🔴') if new=='critical' else re.compile('^내 PC')
+                expect(page).to_have_title(self_title)
+                assert page.evaluate('liveSummary') is None
+                expect(page.locator('body')).not_to_have_class(re.compile(r'\blive\b'))
+                # Reconnection can deliver older data; arrival order is not freshness.
+                emit(old,base+5)
+                expect(page).to_have_title(self_title)
+                emit(new,base+20)
+                expect(page).to_have_title(self_title)
+                page.evaluate('disconnectStream()')
+                page.evaluate('connectStream()')
+            monitor.update(severity='normal',daemon_updated_at=base-180)
+            # Start a fresh page so no newer poll is retained from the prior case.
+            page.reload(); expect(page.locator('#overview-status')).to_be_visible()
+            emit('normal',base-120)
+            expect(page).to_have_title(re.compile('상태 미확인'))
+            monitor.update(severity='critical',daemon_updated_at=base+20)
+            page.evaluate('refresh(true)')
+            emit('normal',base+10)
+            expect(page).to_have_title(re.compile('^🔴'))
+            page.evaluate("() => {Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'))}")
+            assert page.evaluate('liveSummary') is None
+            page.evaluate("() => {Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'))}")
+            assert page.evaluate('__streams.length')>=2
+            emit('normal',base+25)
+            expect(page).to_have_title(re.compile('^내 PC'))
+            # A delayed polling response cannot overwrite a newer stream value.
+            page.evaluate('refresh(true)')
+            expect(page).to_have_title(re.compile('^내 PC'))
+            # A backward wall-clock adjustment must not let the old future
+            # observations pin either transport until the clock catches up.
+            shifted = base - 3600
+            page.evaluate("stamp => {window.__realNow=Date.now;Date.now=()=>stamp*1000}", shifted)
+            monitor.update(severity='critical', daemon_updated_at=shifted)
+            page.evaluate('refresh(true)')
+            expect(page).to_have_title(re.compile('^🔴'))
+            assert page.evaluate('monitorData.severity') == 'critical'
+            page.evaluate('() => {Date.now=window.__realNow}')
+            monitor.update(severity='normal', daemon_updated_at=base+25)
+            page.evaluate('refresh(true)')
+            emit('normal', base+25)
+            expect(page).to_have_title(re.compile('^내 PC'))
+            page.evaluate('stamp => {Date.now=()=>stamp*1000}', shifted)
+            emit('critical', shifted)
+            expect(page).to_have_title(re.compile('^🔴'))
+            # A delayed pre-adjustment future response must not poison the cache again.
+            emit('normal', base+25)
+            expect(page).to_have_title(re.compile('^🔴'))
+            monitor.update(severity='critical', daemon_updated_at=shifted)
+            page.evaluate('refresh(true)')
+            expect(page.locator('#refresh')).to_be_enabled()
+            monitor.update(severity='normal', daemon_updated_at=base+25)
+            page.evaluate('refresh(true)')
+            expect(page.locator('#refresh')).to_be_enabled()
+            assert page.evaluate('monitorData.severity') == 'critical'
+            assert not errors,errors
+        finally:
+            context.close()
+
+
 def check_live_summary_stream(browser) -> None:
     page = browser.new_page()
+    page.add_init_script("""window.__nativeSummaries=[];const NativeEventSource=window.EventSource;
+      window.EventSource=class extends NativeEventSource {
+        addEventListener(name,fn,...args){
+          if(name!=='summary')return super.addEventListener(name,fn,...args);
+          return super.addEventListener(name,e=>{fn(e);__nativeSummaries.push({title:document.title,
+            live:document.body.classList.contains('live'),
+            services:document.querySelector('.sidebar [data-badge="services"]').textContent,
+            disks:document.querySelector('.sidebar [data-badge="disks"]').textContent});},...args);
+        }
+      };""")
     summary = {'severity': 'critical', 'updated_at': time.time(), 'reasons': ['x'],
                'disk_alerts': ['E:'], 'disk_critical': True, 'service_problems': 5,
                'service_failed': True, 'stale_sessions': 0, 'snooze_until': 0}
@@ -601,11 +696,15 @@ def check_live_summary_stream(browser) -> None:
     page.route(ORIGIN + '/**', route)
     # Audit loads neither services nor disks: the badges come from the stream.
     page.goto(ORIGIN + '/#audit')
-    expect(page.locator('.sidebar [data-badge="services"]')).to_have_text('5')
-    expect(page.locator('.sidebar [data-badge="services"]')).to_have_class(re.compile(r'\bbad\b'))
-    expect(page.locator('.sidebar [data-badge="disks"]')).to_have_text('1')
-    expect(page).to_have_title(re.compile('^🔴'))
-    expect(page.locator('body')).to_have_class(re.compile(r'\blive\b'))
+    page.wait_for_function('() => window.__nativeSummaries.length > 0')
+    observed=page.evaluate('__nativeSummaries[0]')
+    assert observed['services']=='5' and observed['disks']=='1' and observed['live'],observed
+    assert observed['title'].startswith('🔴'),observed
+    # The fulfilled fixture closes the actual HTTP stream. Its old payload
+    # must immediately stop claiming a live, current observation.
+    expect(page.locator('body')).not_to_have_class(re.compile(r'\blive\b'))
+    assert page.evaluate('liveSummary') is None
+    expect(page).to_have_title(re.compile('상태 미확인'))
     page.close()
 
 
@@ -744,17 +843,21 @@ def check_skip_link_contrast(page) -> None:
     assert ratio >= 4.5, f'light-theme skip-link contrast {ratio:.2f} ({fg} on {bg})'
 
 
-def check_log_viewer(page, gets: list) -> None:
+def check_log_viewer(page, gets: list, overrides: dict) -> None:
     page.goto(ORIGIN + '/#services')
     page.locator('#services-list [data-manage="demo"]').first.click()
     page.locator('#show-logs').click()
     expect(page.locator('#log-lines')).to_have_count(1)
-    page.locator('#log-lines').select_option('500')
+    overrides['/api/services/demo/logs'] = {'text': 'journal fixture\n[보조 로그 읽기 실패: PermissionError]'}
+    page.locator('#log-lines').select_option('1000')
+    expect(page.locator('#log-content')).to_contain_text('journal fixture')
+    expect(page.locator('#log-content')).to_contain_text('보조 로그 읽기 실패')
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not any(
             p == '/api/services/demo/logs' for p in gets):
         page.wait_for_timeout(100)
     assert any(p == '/api/services/demo/logs' for p in gets), gets
+    overrides.pop('/api/services/demo/logs')
     page.locator('#dialog-close').click()
 
 
@@ -1153,9 +1256,108 @@ def check_psi_availability(browser) -> None:
             ctx.close()
 
 
+def check_push_registration(browser) -> None:
+    """Actual rendering, storage and clicks; transport stays entirely local."""
+    for mobile in (False, True):
+        context = browser.new_context(viewport={'width':390 if mobile else 1280,'height':900},
+                                      is_mobile=mobile,has_touch=mobile)
+        key = fixtures()['/api/push/key']['public_key']
+        context.add_init_script("""(() => {
+          const key = KEY_PLACEHOLDER;
+          const bytes = () => Uint8Array.from(atob(key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+          const f = window.__pushFixture = {permission:'granted', local:sessionStorage.getItem('push-local')==='1',
+                                           changed:false, workerFailure:false};
+          const sub = () => ({endpoint:'https://fcm.googleapis.com/fcm/send/fixture',
+            options:{applicationServerKey:f.changed ? new Uint8Array([1,2]) : bytes()},
+            toJSON(){return {endpoint:this.endpoint,keys:{p256dh:key,auth:'fixture'}}},
+            async unsubscribe(){f.local=false;sessionStorage.removeItem('push-local');return true;}});
+          const reg = {pushManager:{async getSubscription(){return f.local ? sub() : null},
+            async subscribe(){f.local=true;f.changed=false;sessionStorage.setItem('push-local','1');
+              sessionStorage.setItem('push-created',String(Number(sessionStorage.getItem('push-created')||0)+1));
+              return sub();}}};
+          Object.defineProperty(navigator,'serviceWorker',{configurable:true,value:{async register(){
+            if(f.workerFailure)throw Error('fixture unavailable');return reg;}}});
+          Object.defineProperty(window,'PushManager',{configurable:true,value:function(){}});
+          Object.defineProperty(window,'Notification',{configurable:true,value:class {
+            static get permission(){return f.permission} static async requestPermission(){return f.permission}
+          }});
+        })();""".replace('KEY_PLACEHOLDER',json.dumps(key)))
+        page=context.new_page(); errors=[]; page.on('pageerror',lambda error:errors.append(str(error)))
+        posts=[]; gets=[]; server={'registered':False,'fail':True,'expired':False,'status_fail':False}
+        def route_push(route):
+            path=route.request.url.removeprefix(ORIGIN).split('?',1)[0]
+            if path in ('/api/push/status','/api/push/subscribe','/api/push/unsubscribe'):
+                assert route.request.method=='POST' and '?' not in route.request.url
+                assert route.request.headers.get('x-csrf-token')=='offline'
+                posts.append((path,json.loads(route.request.post_data)))
+                if path=='/api/push/status':
+                    if server['status_fail']:
+                        return route.fulfill(status=503,json={'error':'fixture status failed'})
+                    body={'registered':server['registered'],'expired':server['expired']}
+                elif path=='/api/push/subscribe':
+                    if server['fail']:
+                        return route.fulfill(status=503,json={'error':'fixture registration failed'})
+                    server['registered']=True; server['expired']=False; body={'message':'등록 완료'}
+                else:
+                    server['registered']=False; body={'message':'해제 완료'}
+                return route.fulfill(json=body)
+            return serve(route,posts,gets,{})
+        page.route(ORIGIN+'/**',route_push)
+        try:
+            page.goto(ORIGIN+'/#settings')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('등록 미완료')
+            expect(page.locator('#push-on')).to_have_text('다시 등록')
+            page.reload()
+            expect(page.locator('#push-device')).to_contain_text('등록 미완료')
+            server['fail']=False
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='1'
+            expect(page.locator('#push-test')).to_have_count(1)
+            assert '경보를 받고 있습니다' not in page.locator('#push-device').inner_text()
+            server['status_fail']=True
+            subscriptions_before=sum(path=='/api/push/subscribe' for path,_ in posts)
+            page.evaluate('renderPushDevice()')
+            expect(page.locator('#push-device')).to_contain_text('등록 여부를 확인하지 못했습니다')
+            expect(page.locator('#push-on')).to_have_text('다시 등록')
+            assert sum(path=='/api/push/subscribe' for path,_ in posts)==subscriptions_before
+            server['status_fail']=False
+            server['registered']=False
+            page.reload()
+            expect(page.locator('#push-on')).to_have_text('다시 등록')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='1'
+            page.evaluate("async () => {__pushFixture.changed=true; await renderPushDevice()}")
+            expect(page.locator('#push-device')).to_contain_text('키가 변경')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='2'
+            server['expired']=True; server['registered']=False
+            page.evaluate('renderPushDevice()')
+            expect(page.locator('#push-device')).to_contain_text('구독이 만료')
+            page.locator('#push-on').click()
+            expect(page.locator('#push-device')).to_contain_text('서버 등록 완료')
+            assert page.evaluate("sessionStorage.getItem('push-created')")=='3'
+            page.evaluate("async () => {__pushFixture.local=false;sessionStorage.removeItem('push-local');await renderPushDevice()}")
+            expect(page.locator('#push-on')).to_have_text('이 기기에서 받기')
+            page.evaluate("async () => {__pushFixture.permission='denied';await renderPushDevice()}")
+            expect(page.locator('#push-on')).to_be_disabled()
+            expect(page.locator('#push-device')).to_contain_text('차단')
+            page.evaluate("async () => {__pushFixture.permission='granted';__pushFixture.workerFailure=true;swRegistration=null;await renderPushDevice()}")
+            expect(page.locator('#push-on')).to_be_disabled()
+            page.evaluate("async () => {delete window.PushManager;await renderPushDevice()}")
+            expect(page.locator('#push-device')).to_contain_text('지원하지 않습니다')
+            assert not errors,errors
+        finally:
+            context.close()
+
+
 def main() -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch()
+        check_push_registration(browser)
         check_psi_availability(browser)
         page = browser.new_page()
         errors: list[str] = []
@@ -1185,7 +1387,7 @@ def main() -> None:
         check_quick_service_action(page, posts)
         check_oneshot_status(page)
         check_service_limits_health_and_dialog(page)
-        check_log_viewer(page, gets)
+        check_log_viewer(page, gets, overrides)
         posts.clear()
         check_settings_view(page)
         assert ('/api/settings/change', {'key': 'warning_available_gib', 'value': 6.5}) in posts, posts
@@ -1199,6 +1401,7 @@ def main() -> None:
         check_disk_docker_and_vhd_guide(page, overrides)
         check_history_tools(page, overrides)
         check_snooze_and_bulk_stale_kill(page, posts, overrides)
+        check_stream_freshness(browser)
         check_live_summary_stream(browser)
         # Narrow screens must not shrink chart text: viewBox follows the width.
         mobile = browser.new_page(viewport={'width': 390, 'height': 800})
@@ -1215,6 +1418,7 @@ def main() -> None:
         # stays sticky, and touch targets reach 44px.
         check_mobile_layout(mobile, overrides, gets)
         check_oneshot_status(mobile)
+        check_log_viewer(mobile, gets, overrides)
         check_disk_chart_hover(mobile, overrides, max_viewbox=420)
         assert not mobile_errors, mobile_errors
         mobile.close()

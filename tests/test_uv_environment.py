@@ -74,12 +74,15 @@ class UvEnvironmentTests(unittest.TestCase):
             executable.chmod(0o700)
             with patch.dict(os.environ, {'HOME':'/home/fixture', 'UV_INDEX_URL':'https://evil.example',
                     'PIP_INDEX_URL':'https://evil.example', 'PYTHONPATH':'/untrusted', 'LD_PRELOAD':'/untrusted',
-                    'HTTPS_PROXY':'https://evil.example'}):
+                    'HTTPS_PROXY':'https://evil.example', 'UV_PROJECT_ENVIRONMENT':'/untrusted/env',
+                    'SSL_CERT_FILE':'/untrusted/ca', 'SSLKEYLOGFILE':'/untrusted/keys'}):
                 import json
                 result = json.loads(module.run_uv(executable, workspace, '--version'))
-            for variable in ('UV_INDEX_URL', 'PIP_INDEX_URL', 'PYTHONPATH', 'LD_PRELOAD', 'HTTPS_PROXY'):
+            for variable in ('UV_INDEX_URL', 'PIP_INDEX_URL', 'PYTHONPATH', 'LD_PRELOAD', 'HTTPS_PROXY',
+                             'UV_PROJECT_ENVIRONMENT', 'SSLKEYLOGFILE'):
                 self.assertNotIn(variable, result['env'])
             self.assertEqual(result['env']['HOME'], directory)
+            self.assertEqual(result['env']['SSL_CERT_FILE'], '/etc/ssl/certs/ca-certificates.crt')
             self.assertEqual(result['cwd'], directory)
             self.assertIn('--no-python-downloads', result['args'])
             self.assertIn('--no-managed-python', result['args'])
@@ -93,24 +96,25 @@ class UvEnvironmentTests(unittest.TestCase):
             old.mkdir()
             (old / 'marker').write_text('keep')
             with self.assertRaises(FileExistsError):
-                module.install_environment(old, root / 'requirements.txt')
+                module.install_environment(old, root / 'project')
             self.assertEqual((old / 'marker').read_text(), 'keep')
-            (root / 'requirements.txt').write_text('')
+            project = root / 'project'
+            self.project(project)
             new = root / 'new'
             calls = []
-            def failing_uv(uv, workspace, *args):
+            def failing_uv(uv, workspace, *args, **kwargs):
                 calls.append(args)
-                if args[:2] == ('pip', 'sync'):
+                if args[:1] == ('sync',):
                     raise subprocess.CalledProcessError(1, 'uv')
                 return f'uv {module.UV_VERSION} (fixture)' if args == ('--version',) else ''
             with patch.object(module, 'download_uv', return_value=root / 'verified-uv'), \
                     patch.object(module, 'run_uv', side_effect=failing_uv), \
                     patch.object(module, 'validate_root_path'):
                 with self.assertRaises(subprocess.CalledProcessError):
-                    module.install_environment(new, root / 'requirements.txt')
+                    module.install_environment(new, project)
             self.assertEqual((old / 'marker').read_text(), 'keep')
             self.assertFalse(any(args[:2] == ('pip', 'check') for args in calls))
-            self.assertEqual(sorted(p.name for p in root.iterdir()), ['old', 'requirements.txt'])
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ['old', 'project'])
 
     def test_prepare_venv_uses_verified_uv_then_web_uid_validation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,6 +123,106 @@ class UvEnvironmentTests(unittest.TestCase):
             web = SimpleNamespace(pw_uid=os.getuid())
             with patch.object(service_install, 'install_environment', create=True) as install, \
                     patch.object(service_install, 'run_as') as run_as:
-                environment = service_install.prepare_venv(destination, destination / 'requirements.txt', web)
-            install.assert_called_once_with(environment, destination / 'requirements.txt')
+                environment = service_install.prepare_venv(destination, destination / 'project', web)
+            install.assert_called_once_with(environment, destination / 'project')
             self.assertEqual(run_as.call_count, 2)
+
+    def project(self, path):
+        path.mkdir()
+        source = Path(__file__).resolve().parents[1]
+        for name in ('pyproject.toml', 'uv.lock'):
+            (path / name).write_bytes((source / name).read_bytes())
+
+    def test_native_sync_uses_private_snapshot_and_final_environment(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / 'project'
+            self.project(project)
+            original = (project / 'uv.lock').read_bytes()
+            environment = root / 'new'
+            def run(uv, workspace, *args, **kwargs):
+                if args == ('--version',):
+                    (project / 'uv.lock').write_text('changed after snapshot')
+                    return f'uv {module.UV_VERSION} (fixture)'
+                self.assertEqual(args[0], 'sync')
+                for flag in ('--locked', '--extra', '--no-dev', '--no-install-project', '--no-build',
+                             '--link-mode', '--python'):
+                    self.assertIn(flag, args)
+                self.assertEqual(args[args.index('--extra')+1], 'web')
+                self.assertEqual(args[args.index('--python')+1], '/usr/bin/python3')
+                self.assertEqual(kwargs['environment'], environment)
+                self.assertNotEqual(workspace, project)
+                self.assertEqual((workspace / 'uv.lock').read_bytes(), original)
+                return ''
+            with patch.object(module, 'validate_root_path'), \
+                 patch.object(module, 'download_uv', return_value=root/'uv'), \
+                 patch.object(module, 'run_uv', side_effect=run):
+                module.install_environment(environment, project)
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ['project'])
+
+    def test_unsafe_project_or_lock_is_rejected_before_download(self):
+        module = self.module()
+        cases = [
+            ('pyproject.toml', lambda s: s+'\n[tool.uv.sources]\nflask = {path = "/untrusted"}\n'),
+            ('pyproject.toml', lambda s: s+'\n[tool.uv.workspace]\nmembers = ["../untrusted"]\n'),
+            ('pyproject.toml', lambda s: s+'\n[build-system]\nrequires = ["evil"]\nbuild-backend = "evil"\n'),
+            ('pyproject.toml', lambda s: s.replace('Flask>=3.1,<4', 'Flask @ https://invalid.example/f.whl')),
+            ('pyproject.toml', lambda s: s+'\n[[tool.uv.index]]\nurl = "https://invalid.example"\n'),
+            ('uv.lock', lambda s: s.replace('https://pypi.org/simple', 'https://invalid.example/simple')),
+            ('uv.lock', lambda s: s.replace('https://files.pythonhosted.org/', 'http://files.pythonhosted.org/')),
+            ('uv.lock', lambda s: s.replace('https://files.pythonhosted.org/', 'https://files.pythonhosted.org.evil.example/')),
+            ('uv.lock', lambda s: s.replace('sha256:', 'md5:')),
+            ('uv.lock', lambda s: s.replace('virtual = "."', 'editable = "/untrusted"')),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for i, (name, mutate) in enumerate(cases):
+                with self.subTest(case=i):
+                    project = root / f'project-{i}'
+                    self.project(project)
+                    (project/name).write_text(mutate((project/name).read_text()))
+                    with patch.object(module, 'validate_root_path'), \
+                         patch.object(module, 'download_uv') as download:
+                        with self.assertRaisesRegex(ValueError, 'project|lock|source|artifact|dependency'):
+                            module.install_environment(root/'new', project)
+                        download.assert_not_called()
+                    self.assertFalse((root/'new').exists())
+
+    def test_project_file_types_and_sizes_are_bounded(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root/'project'
+            self.project(project)
+            manifest = project/'pyproject.toml'
+            manifest.unlink()
+            os.mkfifo(manifest)
+            with patch.object(module, 'validate_root_path'), \
+                 patch.object(module, 'download_uv') as download:
+                with self.assertRaises(OSError):
+                    module.install_environment(root/'new', project)
+                download.assert_not_called()
+                manifest.unlink()
+                manifest.write_text('x' * (1024 * 1024 + 1))
+                with self.assertRaises(OSError):
+                    module.install_environment(root/'new', project)
+                download.assert_not_called()
+
+    def test_bootstrap_download_failure_preserves_the_old_environment(self):
+        module = self.module()
+        import urllib.error
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root/'project'
+            self.project(project)
+            old = root/'old'
+            old.mkdir()
+            (old/'marker').write_text('keep')
+            with patch.object(module, 'validate_root_path'), \
+                 patch.object(module, 'download_uv', side_effect=urllib.error.URLError('fixture outage')):
+                with self.assertRaises(urllib.error.URLError):
+                    module.install_environment(root/'new', project)
+            self.assertFalse((root/'new').exists())
+            self.assertFalse(list(root.glob('.uv-*')))
+            self.assertEqual((old/'marker').read_text(), 'keep')

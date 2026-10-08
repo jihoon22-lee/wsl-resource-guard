@@ -34,6 +34,7 @@ from .processes import (
     descendants_of,
     is_stale_session,
     process_start_ticks,
+    signal_verified_process,
 )
 from .services import ACTIONS, cmd_services, cmd_web
 from .disks import (
@@ -134,6 +135,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  {channel:<16}최근 실패: {detail}")
     current_state = load_state(settings.state_path / "state.json")
     last_email_status = float(current_state.get("last_email_status", 0.0) or 0.0)
+    last_email_success = float(current_state.get("last_email_success", 0.0) or 0.0)
     last_email_hour_slot = str(current_state.get("last_email_hour_slot", "") or "")
     heartbeat_state = "enabled" if settings.email_heartbeat_enabled else "disabled"
     if settings.email_heartbeat_enabled:
@@ -142,9 +144,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  email heartbeat {heartbeat_state}")
     if last_email_status:
         sent_at = datetime.fromtimestamp(last_email_status).astimezone()
-        print(f"  last email       {sent_at:%Y-%m-%d %H:%M:%S %Z}")
+        print(f"  last email attempt {sent_at:%Y-%m-%d %H:%M:%S %Z}")
     else:
-        print("  last email       아직 기록 없음")
+        print("  last email attempt 아직 기록 없음")
+    if last_email_success:
+        sent_at = datetime.fromtimestamp(last_email_success).astimezone()
+        print(f"  last email sent    {sent_at:%Y-%m-%d %H:%M:%S %Z}")
+    else:
+        print("  last email sent    확인된 성공 기록 없음")
     next_email = next_email_heartbeat_at(metrics.timestamp, last_email_hour_slot, settings)
     if next_email is not None:
         print(f"  next heartbeat   {next_email:%Y-%m-%d %H:%M:%S %Z}")
@@ -338,12 +345,17 @@ def cmd_stop_mcp(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(f"종료하려면 `wrg stop-mcp {args.pid} --confirm`을 실행하세요.")
         return 2
+    sent = 0
     for process in processes:
         try:
-            os.kill(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-    print("MCP 트리에 SIGTERM을 보냈습니다. 부모 LLM이 필요하면 다시 시작할 수 있습니다.")
+            sent += int(signal_verified_process(process, os.getuid(), signal.SIGTERM))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"PID {process.pid} 종료를 중단했습니다: {exc}", file=sys.stderr)
+            return 2
+    if sent:
+        print(f"MCP 트리의 {sent}개 프로세스에 SIGTERM을 보냈습니다. 부모 LLM이 필요하면 다시 시작할 수 있습니다.")
+    else:
+        print("대상 MCP 프로세스가 이미 종료되었습니다.")
     return 0
 
 
@@ -365,40 +377,35 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(f"종료하려면 별도 터미널에서 `wrg stop {args.pid} --confirm`을 실행하세요.")
         return 2
-    # Record each pid's start-time token before signalling it. A pid entry only
-    # counts as a survivor while that token still matches; a pid that exited
-    # and was reused is a different process and must never be signalled. A
-    # token read after SIGTERM could already belong to such a reused pid.
-    start_ticks: dict[int, int | None] = {}
+    # Preserve the original snapshot identity for both TERM and KILL. Re-reading
+    # a token and accepting it here could adopt an already reused PID.
+    signalled = {}
     for process in processes:
-        token = start_ticks[process.pid] = process_start_ticks(process.pid)
-        if token is None:
-            continue
         try:
-            os.kill(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+            if signal_verified_process(process, os.getuid(), signal.SIGTERM):
+                signalled[process.pid] = process
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"PID {process.pid} 종료를 중단했습니다: {exc}", file=sys.stderr)
+            return 2
     deadline = time.monotonic() + args.timeout
     survivors: list[int] = []
-    while time.monotonic() < deadline:
+    while True:
         survivors = [
             pid
-            for pid, token in start_ticks.items()
-            if token is not None and process_start_ticks(pid) == token
+            for pid, process in signalled.items()
+            if process_start_ticks(pid) == process.start_ticks
         ]
-        if not survivors:
+        if not survivors or time.monotonic() >= deadline:
             break
         time.sleep(0.25)
     if survivors and args.kill:
         killed = 0
         for pid in survivors:
-            if process_start_ticks(pid) != start_ticks[pid]:
-                continue
             try:
-                os.kill(pid, signal.SIGKILL)
-                killed += 1
-            except (ProcessLookupError, PermissionError):
-                pass
+                killed += int(signal_verified_process(signalled[pid], os.getuid(), signal.SIGKILL))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                print(f"PID {pid} 강제 종료를 중단했습니다: {exc}", file=sys.stderr)
+                return 2
         print(f"SIGTERM 후 남은 프로세스 {killed}개에 SIGKILL을 보냈습니다.")
         return 0
     if survivors:
@@ -479,13 +486,21 @@ def cmd_test_alert(args: argparse.Namespace) -> int:
 
 
 def cmd_history(args: argparse.Namespace) -> int:
+    try:
+        return _cmd_history(args)
+    except (OSError, ValueError) as exc:
+        print(f"이력을 읽지 못했습니다: {exc}", file=sys.stderr)
+        return 2
+
+
+def _cmd_history(args: argparse.Namespace) -> int:
     settings = _load_settings(args)
     if getattr(args, "episodes", False):
-        from .history import alert_episodes, read_history
+        from .history import alert_episodes, iter_history
         since = (time.time() - args.hours * 3600 if getattr(args, "hours", None)
                  else time.time() - settings.retention_days * 86400)
         episodes = alert_episodes(
-            read_history(settings.state_path, since,
+            iter_history(settings.state_path, since,
                          fields=("timestamp", "severity", "reasons")))
         if getattr(args, "json", False):
             print(json.dumps(episodes, ensure_ascii=False, indent=2))
@@ -500,37 +515,14 @@ def cmd_history(args: argparse.Namespace) -> int:
             reasons = ", ".join(episode["reasons_top5"]) or "-"
             print(f"{start:%Y-%m-%d %H:%M} → {end} · {episode['worst_severity']:<8} · {duration} · {reasons}")
         return 0
-    cutoff = time.time() - args.hours * 3600 if getattr(args, "hours", None) else None
-    records: list[dict[str, object]] = []
-    scanned = 0
-    for path in sorted(settings.state_path.glob("history-*.jsonl"), reverse=True):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in reversed(lines):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            scanned += 1
-            try:
-                stamp = float(record.get("timestamp", 0))
-            except (TypeError, ValueError):
-                stamp = 0.0
-            if cutoff is not None and stamp < cutoff:
-                continue
-            if getattr(args, "severity", None) and record.get("severity") != args.severity:
-                continue
-            records.append(record)
-            if len(records) >= args.limit:
-                break
-        if len(records) >= args.limit or scanned >= 20000:
-            break
+    from .history import read_history
+    cutoff = time.time() - args.hours * 3600 if getattr(args, "hours", None) else 0
+    records = read_history(settings.state_path, cutoff, fields=None, limit=args.limit,
+                           severity=getattr(args, 'severity', None))
     if getattr(args, "json", False):
-        print(json.dumps(list(reversed(records)), ensure_ascii=False, indent=2))
+        print(json.dumps(records, ensure_ascii=False, indent=2))
         return 0
-    for record in reversed(records):
+    for record in records:
         metrics = record.get("metrics", {})
         timestamp = datetime.fromtimestamp(float(record.get("timestamp", 0))).astimezone()
         available = float(metrics.get("mem_available_kib", 0)) / KIB_PER_GIB

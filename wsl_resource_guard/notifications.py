@@ -89,16 +89,23 @@ class Notifier:
     ) -> list[NotificationResult]:
         wanted = channels or {"toast", "gmail", "discord", "webhook", "push"}
         results: list[NotificationResult] = []
-        if "toast" in wanted and self.settings.windows_toast_enabled:
-            results.append(self._send_windows_toast(title, message))
-        if "gmail" in wanted and self.settings.gmail_enabled:
-            results.append(self._send_gmail(title, message, severity, html_message))
-        if "discord" in wanted and self.settings.discord_enabled:
-            results.append(self._send_discord(title, message, severity))
-        if "webhook" in wanted and self.settings.webhook_enabled:
-            results.append(self._send_webhook(title, message, severity))
-        if "push" in wanted and self.settings.push_enabled:
-            results.append(self._send_push(title, message, severity))
+        deliveries = (
+            ("toast", self.settings.windows_toast_enabled, self._send_windows_toast, (title, message)),
+            ("gmail", self.settings.gmail_enabled, self._send_gmail, (title, message, severity, html_message)),
+            ("discord", self.settings.discord_enabled, self._send_discord, (title, message, severity)),
+            ("webhook", self.settings.webhook_enabled, self._send_webhook, (title, message, severity)),
+            ("push", self.settings.push_enabled, self._send_push, (title, message, severity)),
+        )
+        for channel, enabled, deliver, args in deliveries:
+            if channel not in wanted or not enabled:
+                continue
+            try:
+                results.append(deliver(*args))
+            except Exception as exc:
+                # Include message/request construction in the channel boundary.
+                # Exception text can contain addresses or credentials. A broken
+                # channel must not stop the next channel or sample persistence.
+                results.append(NotificationResult(channel, False, type(exc).__name__))
         return results
 
     def _send_push(self, title: str, message: str, severity: str) -> NotificationResult:

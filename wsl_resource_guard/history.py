@@ -7,13 +7,18 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import errno
+import heapq
+import math
+import stat
+from collections.abc import Iterable
 from pathlib import Path
 import re
 import threading
 import time
 
 from .metrics import psi_status
-from .safe_read import read_text
+from .safe_read import iter_text_lines
 
 # range key -> (lookback seconds, bucket seconds). A 0 bucket means raw samples.
 HISTORY_RANGES = {
@@ -43,38 +48,78 @@ def _file_date(path: Path, prefix: str) -> object:
         return None
 
 
-def read_history(state_path: Path, since: float,
-                 fields: tuple = HISTORY_FIELDS) -> list[dict]:
-    """Oldest-first history records with timestamp >= since."""
-    records: list[dict] = []
-    since_day = datetime.fromtimestamp(since).date() if since else None
-    for path in sorted(state_path.glob('history-*.jsonl')):
-        day = _file_date(path, 'history-')
-        if day is None or (since_day is not None and day < since_day):
-            continue
-        try:
-            lines = read_text(path, max_bytes=16 * 1024 * 1024, errors='replace').splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            ts = record.get('timestamp')
-            if isinstance(ts, (int, float)) and ts >= since:
-                records.append({k: record.get(k) for k in fields})
-    records.sort(key=lambda r: r['timestamp'])
-    return records
+MAX_RESULT_BYTES = 8 * 1024 * 1024
+MAX_RECORDS = 100_000
+READ_SECONDS = 10
 
 
-def downsample(records: list[dict], bucket_seconds: int) -> list[dict]:
+def _encoded_size(value) -> int:
+    return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode('utf-8'))
+
+
+def _check_result(value):
+    if _encoded_size(value) > MAX_RESULT_BYTES:
+        raise OSError(errno.EFBIG, 'History result exceeds output limit')
+    return value
+
+
+class _Budget:
+    def __init__(self):
+        self.sizes = {}
+        self.total = 0
+
+    def keep(self, key, value):
+        size = _encoded_size(value)
+        self.total += size - self.sizes.get(key, 0)
+        self.sizes[key] = size
+        if self.total > MAX_RESULT_BYTES or len(self.sizes) > MAX_RECORDS:
+            raise OSError(errno.EFBIG, 'History aggregate exceeds output limit')
+
+
+def iter_history(state_path: Path, since: float, fields: tuple | None = HISTORY_FIELDS):
+    """Stream finite timestamped rows in daily-file order under one deadline."""
+    deadline = time.monotonic() + READ_SECONDS
+    for path in _history_files(state_path, since):
+        for record in _iter_records(path, deadline=deadline):
+            if record['timestamp'] >= since:
+                yield {k: record.get(k) for k in fields} if fields is not None else record
+
+
+def read_history(state_path: Path, since: float, fields: tuple | None = HISTORY_FIELDS,
+                 *, limit: int | None = None, severity: str | None = None,
+                 max_records: int = MAX_RECORDS, max_bytes: int = MAX_RESULT_BYTES) -> list[dict]:
+    """Oldest-first rows, optionally retaining only the latest bounded N rows.
+
+    Exceeding a full raw response's budget is an explicit failure. Aggregators
+    use iter_history instead, so their input is not limited by raw output size.
+    """
+    if limit is not None and not 1 <= limit <= max_records:
+        raise ValueError('History limit is outside the supported range')
+    rows = []
+    size = 2
+    for sequence, record in enumerate(iter_history(state_path, since, fields)):
+        if severity is not None and record.get('severity') != severity:
+            continue
+        entry = (record['timestamp'], sequence, record, _encoded_size(record) + 2)
+        if limit is not None and len(rows) == limit:
+            if entry[:2] <= rows[0][:2]:
+                continue
+            removed = heapq.heapreplace(rows, entry)
+            size -= removed[3]
+        else:
+            heapq.heappush(rows, entry)
+        size += entry[3]
+        if len(rows) > max_records or size > max_bytes:
+            raise OSError(errno.EFBIG, 'History result exceeds output limit')
+    return [entry[2] for entry in sorted(rows)]
+
+
+def downsample(records: Iterable[dict], bucket_seconds: int) -> list[dict]:
     """Aggregate records into time buckets preserving worst-case values."""
     if bucket_seconds <= 0:
         return list(records)
     buckets: dict[int, dict] = {}
+    budget = _Budget()
     for record in records:
         ts = record.get('timestamp')
         metrics = record.get('metrics')
@@ -89,8 +134,10 @@ def downsample(records: list[dict], bucket_seconds: int) -> list[dict]:
                    'metrics': {**metrics, 'psi_status': psi_status(metrics)},
                    '_psi_statuses': {psi_status(metrics)}}
             buckets[key] = acc
+            budget.keep(key, {k: v for k, v in acc.items() if k != '_psi_statuses'})
             continue
-        acc['timestamp'] = ts
+        latest = ts >= acc['timestamp']
+        acc['timestamp'] = max(acc['timestamp'], ts)
         if SEVERITY_RANK.get(record.get('severity'), 1) > SEVERITY_RANK.get(acc['severity'], -1):
             acc['severity'] = record.get('severity')
             acc['reasons'] = list(record.get('reasons') or [])
@@ -107,8 +154,9 @@ def downsample(records: list[dict], bucket_seconds: int) -> list[dict]:
                 merged[field] = value
         for field in _LATEST_KEYS:
             value = metrics.get(field)
-            if value is not None:
+            if value is not None and latest:
                 merged[field] = value
+        budget.keep(key, {k: v for k, v in acc.items() if k != '_psi_statuses'})
     for acc in buckets.values():
         statuses = acc.pop('_psi_statuses')
         has_value = any(acc['metrics'].get(k) is not None
@@ -175,7 +223,7 @@ def reason_label(text: object) -> str:
     return label or str(text).strip()
 
 
-def alert_episodes(records: list[dict], gap_seconds: int = 1800,
+def alert_episodes(records: Iterable[dict], gap_seconds: int = 1800,
                    now: float | None = None) -> list[dict]:
     """Group consecutive non-normal samples into alert episodes.
 
@@ -190,6 +238,7 @@ def alert_episodes(records: list[dict], gap_seconds: int = 1800,
     occurrences and last is the most recent raw text.
     """
     episodes: list[dict] = []
+    budget = _Budget()
     current: dict | None = None
     previous_ts: float | None = None
     for record in records:
@@ -198,7 +247,7 @@ def alert_episodes(records: list[dict], gap_seconds: int = 1800,
             continue
         severity = record.get('severity') or 'unknown'
         if (current is not None and previous_ts is not None
-                and ts - previous_ts > gap_seconds):
+                and (ts < previous_ts or ts - previous_ts > gap_seconds)):
             current['end'] = previous_ts
             current['ongoing'] = False
             episodes.append(current)
@@ -224,6 +273,7 @@ def alert_episodes(records: list[dict], gap_seconds: int = 1800,
             label = reason_label(reason)
             current['_labels'][label] = current['_labels'].get(label, 0) + 1
             current['_last'][label] = reason
+        budget.keep(len(episodes), current)
     if current is not None:
         # The trailing episode is ongoing only while fresh samples arrive;
         # otherwise the daemon has been off longer than the gap allows.
@@ -241,7 +291,7 @@ def alert_episodes(records: list[dict], gap_seconds: int = 1800,
                        labels.items(), key=lambda item: (-item[1], item[0]))]
         episode['reason_summary'] = summary
         episode['reasons_top5'] = [entry['label'] for entry in summary[:5]]
-    return episodes
+    return _check_result(episodes)
 
 
 def reason_summary_7d(episodes: list[dict], now: float | None = None) -> list[dict]:
@@ -270,25 +320,30 @@ def reason_summary_7d(episodes: list[dict], now: float | None = None) -> list[di
                 counts.items(), key=lambda item: (-item[1], -seconds[item[0]], item[0]))]
 
 
-# --- Per-file caches. Past days' files never change again, so their parsed
-# aggregates are kept by (path, mtime, size); only today's file is re-read.
+# Per-file aggregate caches include inode/ctime: replacement and permission
+# changes must not reuse an older parsed result, even with the same mtime/size.
 _file_cache: dict[tuple, object] = {}
 _file_cache_lock = threading.Lock()
 
 
 def _cached(path: Path, kind: str, build):
     try:
-        stat = path.stat()
-    except OSError:
-        return None
+        info = path.stat()
+    except FileNotFoundError:
+        raise OSError(errno.ENOENT, 'History file disappeared during read') from None
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(errno.EINVAL, 'Only regular history files may be read')
     key = (str(path), kind)
-    stamp = (stat.st_mtime_ns, stat.st_size)
+    stamp = (info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size)
     with _file_cache_lock:
         hit = _file_cache.get(key)
         if hit is not None and hit[0] == stamp:
             return hit[1]
-    value = build(path)
+    value = _check_result(build(path))
     with _file_cache_lock:
+        # A long-lived reader must not retain unlimited date/query combinations.
+        while len(_file_cache) >= 16:
+            _file_cache.pop(next(iter(_file_cache)))
         _file_cache[key] = (stamp, value)
         # Forget files that rotated away.
         for stale in [k for k in _file_cache if not Path(k[0]).exists()]:
@@ -298,55 +353,57 @@ def _cached(path: Path, kind: str, build):
 
 def _history_files(state_path: Path, since: float) -> list[Path]:
     since_day = datetime.fromtimestamp(since).date() if since else None
-    return [path for path in sorted(state_path.glob('history-*.jsonl'))
+    try:
+        paths = sorted(path for path in state_path.iterdir()
+                       if path.name.startswith('history-') and path.suffix == '.jsonl')
+    except FileNotFoundError:
+        return []
+    return [path for path in paths
             if (day := _file_date(path, 'history-')) is not None
             and (since_day is None or day >= since_day)]
 
 
-def _iter_records(path: Path):
-    try:
-        lines = read_text(path, max_bytes=16 * 1024 * 1024, errors='replace').splitlines()
-    except OSError:
-        return
-    for line in lines:
+def _iter_records(path: Path, *, deadline: float | None = None):
+    deadline = deadline if deadline is not None else time.monotonic() + READ_SECONDS
+    for line in iter_text_lines(path, max_line_bytes=1024 * 1024, deadline=deadline):
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
-        if isinstance(record, dict) and isinstance(record.get('timestamp'), (int, float)):
-            yield record
+        if isinstance(record, dict):
+            ts = record.get('timestamp')
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts):
+                yield record
 
 
 def read_history_downsampled(state_path: Path, since: float, bucket_seconds: int) -> list[dict]:
-    """downsample(read_history(...)) with each day's buckets cached.
-
-    Buckets are epoch-aligned and divide an hour, and local midnight falls on
-    an hour boundary, so a bucket never spans two daily files.
-    """
+    """Aggregate streaming daily inputs, caching only bounded bucket results."""
+    if bucket_seconds <= 0:
+        return read_history(state_path, since)
     result: list[dict] = []
+    budget = _Budget()
+    deadline = time.monotonic() + READ_SECONDS
     for path in _history_files(state_path, since):
-        rows = _cached(path, f'down:{bucket_seconds}', lambda p: downsample(
-            [{k: r.get(k) for k in HISTORY_FIELDS} for r in _iter_records(p)], bucket_seconds))
-        result.extend(r for r in rows or [] if r['timestamp'] >= since)
+        rows = _cached(path, f'down:{bucket_seconds}:{since}', lambda p: downsample(
+            ({k: r.get(k) for k in HISTORY_FIELDS} for r in _iter_records(p, deadline=deadline)
+             if r['timestamp'] >= since), bucket_seconds))
+        for row in rows or []:
+            budget.keep(len(result), row)
+            result.append(row)
     result.sort(key=lambda r: r['timestamp'])
-    return result
+    # Recombine a bucket that crosses local midnight or a time-zone change.
+    return _check_result(downsample(result, bucket_seconds))
 
 
-def _scan_sessions(path: Path) -> dict:
-    """One pass over a day: per-sample project RSS and per-session extremes."""
-    points: list[tuple[float, dict]] = []
+def _scan_sessions(path: Path, deadline: float) -> dict:
+    """Retain session extremes, never the full daily sample list."""
+    budget = _Budget()
     sessions: dict[str, dict] = {}
-    for record in _iter_records(path):
+    for record in _iter_records(path, deadline=deadline):
         ts = record['timestamp']
-        by_project: dict[str, int] = {}
         for session in record.get('sessions') or []:
             if not isinstance(session, dict):
                 continue
-            projects = session.get('projects') or [session]
-            for part in projects:
-                if isinstance(part, dict) and isinstance(part.get('rss_kib'), (int, float)):
-                    name = str(part.get('project') or '(unknown)')
-                    by_project[name] = by_project.get(name, 0) + int(part['rss_kib'])
             age = session.get('age_seconds')
             pid = session.get('root_pid')
             if not isinstance(age, (int, float)) or not isinstance(pid, int):
@@ -362,11 +419,12 @@ def _scan_sessions(path: Path) -> dict:
                     'started_at': ts - age, 'first_seen': ts, 'last_seen': ts,
                     'peak_rss_kib': rss, 'peak_mcp_count': int(session.get('mcp_count') or 0),
                     'persistent': bool(session.get('persistent'))}
-            entry['last_seen'] = ts
+            entry['last_seen'] = max(entry['last_seen'], ts)
+            entry['first_seen'] = min(entry['first_seen'], ts)
             entry['peak_rss_kib'] = max(entry['peak_rss_kib'], rss)
             entry['peak_mcp_count'] = max(entry['peak_mcp_count'], int(session.get('mcp_count') or 0))
-        points.append((ts, by_project))
-    return {'points': points, 'sessions': sessions}
+            budget.keep(key, entry)
+    return {'sessions': sessions}
 
 
 def memory_attribution(state_path: Path, since: float, bucket_seconds: int,
@@ -377,31 +435,39 @@ def memory_attribution(state_path: Path, since: float, bucket_seconds: int,
     absent from a sample counts as 0 there). The `top` projects by peak keep
     their own series; the rest fold into '기타'.
     """
-    samples: list[tuple[float, dict]] = []
-    for path in _history_files(state_path, since):
-        scan = _cached(path, 'sessions', _scan_sessions)
-        samples.extend(p for p in (scan or {}).get('points', []) if p[0] >= since)
-    samples.sort(key=lambda p: p[0])
     peaks: dict[str, int] = {}
-    for _, projects in samples:
-        for name, kib in projects.items():
-            peaks[name] = max(peaks.get(name, 0), kib)
-    keep = [name for name, _ in sorted(peaks.items(), key=lambda kv: -kv[1])[:top]]
-    other = len(peaks) > len(keep)
-    keys = keep + (['기타'] if other else [])
-    step = bucket_seconds or 60
     buckets: dict[int, dict] = {}
-    for ts, projects in samples:
-        acc = buckets.setdefault(int(ts // step), {'timestamp': ts, 'n': 0, 'sum': {}})
-        acc['timestamp'] = ts
+    budget = _Budget()
+    step = bucket_seconds or 60
+    for record in iter_history(state_path, since, fields=None):
+        ts = record['timestamp']
+        projects = {}
+        for session in record.get('sessions') or []:
+            if not isinstance(session, dict):
+                continue
+            for part in session.get('projects') or [session]:
+                if isinstance(part, dict) and isinstance(part.get('rss_kib'), (int, float)):
+                    name = str(part.get('project') or '(unknown)')
+                    projects[name] = projects.get(name, 0) + int(part['rss_kib'])
+        key = int(ts // step)
+        acc = buckets.setdefault(key, {'timestamp': ts, 'n': 0, 'sum': {}})
+        acc['timestamp'] = max(acc['timestamp'], ts)
         acc['n'] += 1
         for name, kib in projects.items():
+            peaks[name] = max(peaks.get(name, 0), kib)
+            acc['sum'][name] = acc['sum'].get(name, 0) + kib
+        budget.keep(key, acc)
+    keep = [name for name, _ in sorted(peaks.items(), key=lambda kv: -kv[1])[:top]]
+    keys = keep + (['기타'] if len(peaks) > len(keep) else [])
+    rows = []
+    for _, acc in sorted(buckets.items()):
+        sums = {}
+        for name, kib in acc['sum'].items():
             label = name if name in keep else '기타'
-            acc['sum'][label] = acc['sum'].get(label, 0) + kib
-    rows = [{'timestamp': acc['timestamp'],
-             'projects': {k: round(v / acc['n']) for k, v in acc['sum'].items()}}
-            for _, acc in sorted(buckets.items())]
-    return {'keys': keys, 'rows': rows}
+            sums[label] = sums.get(label, 0) + kib
+        rows.append({'timestamp': acc['timestamp'],
+                     'projects': {k: round(v / acc['n']) for k, v in sums.items()}})
+    return _check_result({'keys': keys, 'rows': rows})
 
 
 def session_history(state_path: Path, since: float, now: float | None = None,
@@ -412,14 +478,17 @@ def session_history(state_path: Path, since: float, now: float | None = None,
     reused). ended=True once it has not been sampled for active_gap seconds.
     """
     merged: dict[str, dict] = {}
+    budget = _Budget()
+    deadline = time.monotonic() + READ_SECONDS
     for path in _history_files(state_path, since):
-        scan = _cached(path, 'sessions', _scan_sessions)
+        scan = _cached(path, 'sessions', lambda p: _scan_sessions(p, deadline))
         for key, entry in ((scan or {}).get('sessions') or {}).items():
             if entry['last_seen'] < since:
                 continue
             seen = merged.get(key)
             if seen is None:
                 merged[key] = dict(entry)
+                budget.keep(key, entry)
                 continue
             seen['first_seen'] = min(seen['first_seen'], entry['first_seen'])
             seen['last_seen'] = max(seen['last_seen'], entry['last_seen'])
@@ -432,4 +501,4 @@ def session_history(state_path: Path, since: float, now: float | None = None,
         entry['duration_seconds'] = max(0, entry['last_seen'] - entry['started_at'])
         rows.append(entry)
     rows.sort(key=lambda e: -e['last_seen'])
-    return rows
+    return _check_result(rows)

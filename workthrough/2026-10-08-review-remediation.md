@@ -49,10 +49,10 @@
 
 **파일:** 이 기록, 기존 `AGENTS.md`, 설치·검증 스크립트 읽기. 제품 수정 없음.
 
-- [ ] `git status --short`, 현재 브랜치·HEAD·origin/main·작업 지침을 확인하고 `fix/review-remediation` 브랜치를 만든다.
-- [ ] 실제 설치 스탬프, 코드 해시, 유닛 내용/환경, active/enabled/PID, guard state 갱신 시각, history 크기, 사용자 설정·registry·웹 접근 정책의 해시를 기록한다. 비밀값·개인 호스트명은 공개 기록에 넣지 않는다.
-- [ ] 무관한 서비스 PID·Docker 실행 목록을 임시 메모리 또는 권한 제한된 한 임시 디렉터리에 기록한다. 프로젝트 전체를 복사하지 않는다.
-- [ ] 기존 잠금 기반 테스트 환경을 검증한다. 운영 환경은 그대로 두고 이후 단위별 검사를 수행한다.
+- [x] `git status --short`, 현재 브랜치·HEAD·origin/main·작업 지침을 확인하고 `fix/review-remediation` 브랜치를 만든다.
+- [x] 실제 설치 스탬프, 코드 해시, 유닛 내용/환경, active/enabled/PID, guard state 갱신 시각, history 크기, 사용자 설정·registry·웹 접근 정책의 해시를 기록한다. 비밀값·개인 호스트명은 공개 기록에 넣지 않는다.
+- [x] 무관한 서비스 PID·Docker 실행 목록을 임시 메모리 또는 권한 제한된 한 임시 디렉터리에 기록한다. 프로젝트 전체를 복사하지 않는다.
+- [x] 기존 잠금 기반 테스트 환경을 검증한다. 운영 환경은 그대로 두고 이후 단위별 검사를 수행한다.
 
 ```bash
 git status --short
@@ -69,10 +69,10 @@ git switch -c fix/review-remediation
 **검사:** `tests/test_notifications.py`, `test_daemon.py`, `test_reporting.py`.
 **인터페이스:** `Notifier.send(...) -> list[NotificationResult]` 유지. 실패한 채널도 `sent=False`, `skipped=False` 결과를 남기고 다음 채널을 실행한다.
 
-- [ ] 잘못된 Gmail 헤더, webhook URL, 인코딩/메시지 생성 오류를 각각 넣고 두 연속 sample에서 다른 채널·state·history가 누락되는 기존 실패를 재현한다. 외부 전송은 전부 mock한다.
-- [ ] 메시지·Request 구성부터 전송까지 채널 경계 안으로 옮긴다. send의 채널별 방어 경계는 `Exception`을 실패 결과로 변환하되 종료 신호/KeyboardInterrupt 같은 `BaseException`은 삼키지 않는다. 상세 오류에 비밀 주소·토큰을 노출하지 않는다.
-- [ ] 실패/시도/성공/미설정 상태를 구분한다. 실패했다고 발송 성공으로 표시하지 않으며, 정상 수집은 계속 저장하고 매 샘플 중복 발송을 막는 기존 재시도 간격을 보존한다.
-- [ ] 회귀 검사 통과 후 `fix: Isolate notification failures from monitoring persistence`로 커밋한다.
+- [x] 잘못된 Gmail 헤더, webhook URL, 인코딩/메시지 생성 오류를 각각 넣고 두 연속 sample에서 다른 채널·state·history가 누락되는 기존 실패를 재현한다. 외부 전송은 전부 mock한다.
+- [x] 메시지·Request 구성부터 전송까지 채널 경계 안으로 옮긴다. send의 채널별 방어 경계는 `Exception`을 실패 결과로 변환하되 종료 신호/KeyboardInterrupt 같은 `BaseException`은 삼키지 않는다. 상세 오류에 비밀 주소·토큰을 노출하지 않는다.
+- [x] 실패/시도/성공/미설정 상태를 구분한다. 실패했다고 발송 성공으로 표시하지 않으며, 정상 수집은 계속 저장하고 매 샘플 중복 발송을 막는 기존 재시도 간격을 보존한다.
+- [x] 회귀 검사 통과 후 `fix: Isolate notification failures from monitoring persistence`로 커밋한다.
 
 핵심 검사 형태:
 ```python
@@ -88,12 +88,12 @@ assert any(r.channel == "discord" and r.sent for r in results)
 **검사:** `tests/test_processes.py`, `test_service_control.py`, `test_cli.py`.
 **인터페이스:** `ProcessInfo`에 호환 기본값을 가진 시작 시각 식별자를 추가한다. 종료 공통 헬퍼 `signal_verified_process(process, expected_uid, sig) -> bool`을 `processes.py`에 두고 사라진 대상은 False, 불일치/미지원은 명확한 오류로 구분한다.
 
-- [ ] snapshot 뒤 PID·UID·시작 시각·cgroup이 바뀌는 경우, 자식 교체, 이미 종료, 자기 자신/보호 서비스, CLI 강제 종료를 각각 검사한다. syscall은 mock한다.
-- [ ] snapshot 생성에서 `/proc` 시작 시각을 보존하고 읽는 사이 프로세스가 바뀐 불일치 항목은 제외한다.
-- [ ] pidfd를 먼저 열고 현재 시작 시각·UID·보호 분류를 재검증한 후 `signal.pidfd_send_signal`로 보낸다. fd는 모든 종료 경로에서 닫는다. 지원하지 않는 환경에서 숫자 PID 신호로 조용히 후퇴하지 않고 종료 기능만 명확히 거부한다.
-- [ ] 단일 세션/MCP, 오래된 세션 일괄 종료, CLI `stop`, `stop-mcp`, `--kill`의 TERM/KILL 모두 같은 경계를 적용한다. 화면/CLI의 안전성 설명을 실제 보장과 맞춘다.
-- [ ] 실제 신호 검증은 자신이 생성한 폐기 가능한 프로세스에만 적용한다. 자원 감시 및 무관한 프로세스 PID는 그대로인지 확인한다.
-- [ ] `fix: Bind process termination to verified process identities`로 커밋한다.
+- [x] snapshot 뒤 PID·UID·시작 시각·cgroup이 바뀌는 경우, 자식 교체, 이미 종료, 자기 자신/보호 서비스, CLI 강제 종료를 각각 검사한다. syscall은 mock한다.
+- [x] snapshot 생성에서 `/proc` 시작 시각을 보존하고 읽는 사이 프로세스가 바뀐 불일치 항목은 제외한다.
+- [x] pidfd를 먼저 열고 현재 시작 시각·UID·보호 분류를 재검증한 후 `signal.pidfd_send_signal`로 보낸다. fd는 모든 종료 경로에서 닫는다. 지원하지 않는 환경에서 숫자 PID 신호로 조용히 후퇴하지 않고 종료 기능만 명확히 거부한다.
+- [x] 단일 세션/MCP, 오래된 세션 일괄 종료, CLI `stop`, `stop-mcp`, `--kill`의 TERM/KILL 모두 같은 경계를 적용한다. 화면/CLI의 안전성 설명을 실제 보장과 맞춘다.
+- [x] 실제 신호 검증은 자신이 생성한 폐기 가능한 프로세스에만 적용한다. 자원 감시 및 무관한 프로세스 PID는 그대로인지 확인한다.
+- [x] `fix: Bind process termination to verified process identities`로 커밋한다.
 
 핵심 호출 형태:
 ```python
@@ -110,14 +110,14 @@ finally:
 **수정:** `safe_read.py`, `history.py`, `daemon.py`, `reporting.py`, `cli.py`, 필요 시 `owner_worker.py`의 오류 전달.
 **검사:** `tests/test_history.py`, `test_daemon.py`, `test_schedule.py`, `test_psi.py`, `test_reporting.py`, `test_owner_worker.py`, `test_cli.py`.
 
-- [ ] R2: 기존 일별 JSONL 형식을 유지한다. `iter_text_lines(path, *, max_line_bytes, deadline)`를 추가해 권한을 낮춘 뒤 O_NONBLOCK으로 열고 fstat 정규 파일 확인 후 제한된 청크로 읽는다. 한 줄 한도는 1 MiB로 두며 초과/시간 초과는 명시적인 읽기 실패다. 파일 전체를 `read_text().splitlines()`로 메모리에 올리지 않는다.
-- [ ] 원시/집계 이력, 세션/프로젝트 귀속, 주간 보고서와 CLI history가 공통 iterator를 쓰게 한다. 집계는 읽는 중 누적하고 최종 응답 한도·worker 제한을 유지한다. 보고서·경보 집계는 전체 원시 목록을 만들지 않으며 CLI는 요청한 limit만 보관한다. 원시 목록 호환 호출에도 레코드/출력 예산을 두고 초과 시 명시적으로 실패한다. 불완전 읽기를 정상적인 빈 이력으로 반환하지 않는다. 캐시 갱신은 파일 교체·추가 기록을 구분한다.
-- [ ] 16 MiB 아래/같음/위, 리뷰의 8,640개 정상 레코드, 여러 날짜, 잘린 마지막 줄, 비객체 JSON, 큰 한 줄, FIFO/장치/심볼릭 링크, 읽는 중 추가 기록을 검사한다. 실제 owner worker를 거친 응답에서 날짜·집계·세션이 보존되는지 확인한다.
-- [ ] R4: 성공한 관측 간격이 `max(1, 2 * interval_seconds)`를 넘거나 시계가 역행하면 모든 지속 조건 타이머를 재설정한다. 이미 활성인 경보는 유지하고, 회복은 새 정상 관측 구간으로만 확인한다. PSI의 null/정상 0 구분과 독립 회복을 보존한다.
-- [ ] RAM/swap/세션/MCP/디스크 각각 수집 실패·재시작·설정 주기 변경·시계 역행을 시험한다. 실패 중 위험/정상 상태가 새로 입증된 것으로 처리하지 않는다.
-- [ ] R5: 현재 시각 이전의 가장 최근 예정 슬롯을 계산하고 마지막 처리 슬롯보다 새로울 때 한 번 보낸다. 장기 중단 후 과거 메일을 여러 통 한꺼번에 보내지 않는다. 발송 시도 기록과 성공 기록은 구분한다.
-- [ ] 5/15/60/120/600초 주기, 발송 분 건너뜀, 정확한 경계, 시간대/DST 변화, 미래 last-slot, 재시작과 실패 후 중복을 시험한다. 기존 저장 슬롯은 계속 읽고 새 비교는 예정 시각의 UTC epoch 기준으로 정규화한다. 미래로 잘못 저장된 슬롯은 경고와 함께 현재 스케줄에서 다시 판정하고, 이미 처리한 동일 epoch 슬롯은 중복 발송하지 않는다.
-- [ ] R2와 R4/R5는 검증된 의미 단위로 나눠 커밋한다: `fix: Stream history without dropping oversized days`, `fix: Exclude observation gaps and catch due heartbeat slots`.
+- [x] R2: 기존 일별 JSONL 형식을 유지한다. `iter_text_lines(path, *, max_line_bytes, deadline)`를 추가해 권한을 낮춘 뒤 O_NONBLOCK으로 열고 fstat 정규 파일 확인 후 제한된 청크로 읽는다. 한 줄 한도는 1 MiB로 두며 초과/시간 초과는 명시적인 읽기 실패다. 파일 전체를 `read_text().splitlines()`로 메모리에 올리지 않는다.
+- [x] 원시/집계 이력, 세션/프로젝트 귀속, 주간 보고서와 CLI history가 공통 iterator를 쓰게 한다. 집계는 읽는 중 누적하고 최종 응답 한도·worker 제한을 유지한다. 보고서·경보 집계는 전체 원시 목록을 만들지 않으며 CLI는 요청한 limit만 보관한다. 원시 목록 호환 호출에도 레코드/출력 예산을 두고 초과 시 명시적으로 실패한다. 불완전 읽기를 정상적인 빈 이력으로 반환하지 않는다. 캐시 갱신은 파일 교체·추가 기록을 구분한다.
+- [x] 16 MiB 아래/같음/위, 리뷰의 8,640개 정상 레코드, 여러 날짜, 잘린 마지막 줄, 비객체 JSON, 큰 한 줄, FIFO/장치/심볼릭 링크, 읽는 중 추가 기록을 검사한다. 실제 owner worker를 거친 응답에서 날짜·집계·세션이 보존되는지 확인한다.
+- [x] R4: 성공한 관측 간격이 `max(1, 2 * interval_seconds)`를 넘거나 시계가 역행하면 모든 지속 조건 타이머를 재설정한다. 이미 활성인 경보는 유지하고, 회복은 새 정상 관측 구간으로만 확인한다. PSI의 null/정상 0 구분과 독립 회복을 보존한다.
+- [x] RAM/swap/세션/MCP/디스크 각각 수집 실패·재시작·설정 주기 변경·시계 역행을 시험한다. 실패 중 위험/정상 상태가 새로 입증된 것으로 처리하지 않는다.
+- [x] R5: 현재 시각 이전의 가장 최근 예정 슬롯을 계산하고 마지막 처리 슬롯보다 새로울 때 한 번 보낸다. 장기 중단 후 과거 메일을 여러 통 한꺼번에 보내지 않는다. 발송 시도 기록과 성공 기록은 구분한다.
+- [x] 5/15/60/120/600초 주기, 발송 분 건너뜀, 정확한 경계, 시간대/DST 변화, 미래 last-slot, 재시작과 실패 후 중복을 시험한다. 기존 저장 슬롯은 계속 읽고 새 비교는 예정 시각의 UTC epoch 기준으로 정규화한다. 미래로 잘못 저장된 슬롯은 경고와 함께 현재 스케줄에서 다시 판정하고, 이미 처리한 동일 epoch 슬롯은 중복 발송하지 않는다.
+- [x] R2와 R4/R5는 검증된 의미 단위로 나눠 커밋한다: `fix: Stream history without dropping oversized days`, `fix: Exclude observation gaps and catch due heartbeat slots`.
 
 핵심 수용 단언:
 ```python
@@ -131,13 +131,13 @@ assert not email_heartbeat_due(now_after_scheduled_minute, handled_slot, setting
 **수정:** `service_control.py`, `webpush.py`, `webapp.py`, `web/app.js`.
 **검사:** `tests/test_service_control.py`, `test_webpush.py`, `test_webapp.py`, `browser_offline.py`.
 
-- [ ] 키 생성·등록·해제 전체에 같은 root 공유 잠금을 적용한다. public 메서드가 잠금을 잡고 내부 `_locked` 헬퍼가 재획득 없이 실행하도록 하여 중첩 호출 교착을 피한다. 키를 요청마다 재생성하지 않는다.
-- [ ] barrier 기반 동시 최초 키 요청은 모두 같은 키, N개 동시 등록은 N개 보존, 등록/해제 경합과 실패 후 잠금 해제까지 검사한다.
-- [ ] 등록 시 `EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), p256dh)`로 유효성을 검사한다. 기존 저장 데이터에 잘못된 항목이 있어도 구독별 실패 결과를 남기고 뒤의 정상 구독 발송을 계속한다. 기존 정상 VAPID 키·구독은 보존한다.
-- [ ] 브라우저 로컬 구독만으로 수신 중이라 표시하지 않는다. 기존 allowlist와 CSRF를 유지한 고정 연산으로 해당 endpoint의 서버 등록 상태를 확인하고 다른 구독 목록/비밀은 반환하지 않는다. endpoint는 query string/접근 로그에 넣지 않는다.
-- [ ] 서버 등록 실패 시 '등록 미완료/다시 등록' 상태로 전환한다. 기존 로컬 구독을 재사용해 등록을 재시도하며 자동 외부 재등록/발송은 하지 않는다. 실제 Push 수신 성공과 등록됨 문구도 구분한다.
-- [ ] PC/모바일에서 서버 실패→새로고침→재등록, 서버만 삭제된 구독, 로컬만 삭제된 구독, 권한 거부·지원 불가·키 변경을 fixture로 검사한다.
-- [ ] `fix: Preserve push subscriptions and report registration truthfully`로 커밋한다.
+- [x] 키 생성·등록·해제 전체에 같은 root 공유 잠금을 적용한다. public 메서드가 잠금을 잡고 내부 `_locked` 헬퍼가 재획득 없이 실행하도록 하여 중첩 호출 교착을 피한다. 키를 요청마다 재생성하지 않는다.
+- [x] barrier 기반 동시 최초 키 요청은 모두 같은 키, N개 동시 등록은 N개 보존, 등록/해제 경합과 실패 후 잠금 해제까지 검사한다.
+- [x] 등록 시 `EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), p256dh)`로 유효성을 검사한다. 기존 저장 데이터에 잘못된 항목이 있어도 구독별 실패 결과를 남기고 뒤의 정상 구독 발송을 계속한다. 기존 정상 VAPID 키·구독은 보존한다.
+- [x] 브라우저 로컬 구독만으로 수신 중이라 표시하지 않는다. 기존 allowlist와 CSRF를 유지한 고정 연산으로 해당 endpoint의 서버 등록 상태를 확인하고 다른 구독 목록/비밀은 반환하지 않는다. endpoint는 query string/접근 로그에 넣지 않는다.
+- [x] 서버 등록 실패 시 '등록 미완료/다시 등록' 상태로 전환한다. 기존 로컬 구독을 재사용해 등록을 재시도하며 자동 외부 재등록/발송은 하지 않는다. 실제 Push 수신 성공과 등록됨 문구도 구분한다.
+- [x] PC/모바일에서 서버 실패→새로고침→재등록, 서버만 삭제된 구독, 로컬만 삭제된 구독, 권한 거부·지원 불가·키 변경을 fixture로 검사한다.
+- [x] `fix: Preserve push subscriptions and report registration truthfully`로 커밋한다.
 
 ```python
 ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_key_bytes)
@@ -150,11 +150,11 @@ assert normal_endpoint_attempts == 1  # 앞선 잘못된 구독이 막지 못함
 **수정:** `web/app.js`, `owner_worker.py`, `service_control.py`, 필요 시 `webapp.py`.
 **검사:** `tests/browser_offline.py`, `test_owner_worker.py`, `test_service_control.py`, `test_webapp.py`.
 
-- [ ] SSE 오류/종료/탭 숨김 때 기존 liveSummary를 무효화한다. 모든 연결 상태에서 수신 순서만 믿지 않고 관측 시각으로 polling/SSE의 최신성을 판단한다. 연결 실패 시 새 polling 값으로 제목·favicon·배지가 회복되어야 한다.
-- [ ] critical→연결 실패→normal과 반대 순서, polling/SSE 응답 역전, 재연결, 오래된 데이터, 숨김 탭 복귀를 검사한다. 오래된 정상값을 현재 정상으로 표시하지 않는다.
-- [ ] 로그 최대 줄 수를 2000으로 통일한다. 컨트롤러의 고정 연산과 worker가 같은 상수를 사용하며 정규 파일·byte/output/time 상한은 유지한다. UI의 50/200/500/1000 옵션은 그대로 동작한다.
-- [ ] OpenCode의 500/501/1000/2000, API 상한 초과·비정수, 보조 로그 부재/권한 거부와 journal 정상 결과 조합을 검사한다. 보조 로그 실패를 숨기지 않고 부분 실패 표시와 정상 journal 내용을 함께 전달한다.
-- [ ] 독립된 두 커밋으로 정리한다: `fix: Prefer fresh observations after stream failures`, `fix: Align service and owner log limits`.
+- [x] SSE 오류/종료/탭 숨김 때 기존 liveSummary를 무효화한다. 모든 연결 상태에서 수신 순서만 믿지 않고 관측 시각으로 polling/SSE의 최신성을 판단한다. 연결 실패 시 새 polling 값으로 제목·favicon·배지가 회복되어야 한다.
+- [x] critical→연결 실패→normal과 반대 순서, polling/SSE 응답 역전, 재연결, 오래된 데이터, 숨김 탭 복귀를 검사한다. 오래된 정상값을 현재 정상으로 표시하지 않는다.
+- [x] 로그 최대 줄 수를 2000으로 통일한다. 컨트롤러의 고정 연산과 worker가 같은 상수를 사용하며 정규 파일·byte/output/time 상한은 유지한다. UI의 50/200/500/1000 옵션은 그대로 동작한다.
+- [x] OpenCode의 500/501/1000/2000, API 상한 초과·비정수, 보조 로그 부재/권한 거부와 journal 정상 결과 조합을 검사한다. 보조 로그 실패를 숨기지 않고 부분 실패 표시와 정상 journal 내용을 함께 전달한다.
+- [x] 독립된 두 커밋으로 정리한다: `fix: Prefer fresh observations after stream failures`, `fix: Align service and owner log limits`.
 
 ```javascript
 // error/disconnect 공통 처리 후 polling 결과를 다시 표시한다.
@@ -168,13 +168,13 @@ updateBadges();
 **수정:** `guard_install.py`, `installer.py`, `packaging/wsl-resource-guard.service`, 필요한 owner 고정 연산 및 설정 검사.
 **검사:** `tests/test_guard_install.py`, `test_installer.py`, `test_owner_worker.py`와 새 격리 systemd 수명주기 시험.
 
-- [ ] owner 잠금 획득 후 owner/origin/설치 모드 충돌을 다시 검사한다. root/owner 잠금 획득 순서를 모든 설치 경로에서 통일하고 교착·대기 timeout을 검사한다.
-- [ ] 사용자 권한에서 유효 설정의 state_dir를 읽고 기존 상대 경로 해석은 명확히 거부하거나 기존 HOME 기준 절대 경로로 정규화한다. 시스템 모드의 새 지원 범위는 소유자 HOME 안의 정규 디렉터리로 제한하고, HOME 밖·보호 경로·링크로 이탈하는 값은 서비스 변경 전에 명시적으로 거부한다. 사용자 guard의 기존 경로 동작은 보존한다.
-- [ ] 사용자 경로 생성/쓰기 검사도 소유자 UID·기본 GID로 수행한다. systemd unit의 경로 quoting/escaping을 중앙화하고 제어문자·개행·specifier 주입을 거부한다. root가 사용자 경로를 따라 chown/덮어쓰지 않는다.
-- [ ] 사용자 지정 상태 경로를 daemon lock, snapshot_state/restore_state, 첫 실행 확인 모두에 전달한다. 설치 중 설정 파일 변경을 감지하면 전환 전에 중단한다. guard의 실행 중 state_dir 변경은 자동 적용하지 않고 설치 재생성 필요 상태로 명시한다.
-- [ ] 단순 is-active 뒤 성공을 반환하지 않는다. 새 프로세스 시작 이후 올바른 state 경로의 첫 성공 수집을 최대 180초 내 확인하고, 실패 시 이번 작업의 코드·유닛·active/enabled·데이터만 복구한다. 경보 severity가 normal이어야 한다는 조건은 두지 않는다.
-- [ ] 격리된 systemd 환경에서 기본/사용자 지정 경로 신규 설치, 사용자→시스템 전환, 반대 순서 거부, 설치 경쟁, 권한 오류, 최초 수집 실패, 롤백 후 기존 guard 수집을 시험한다. 운영 WSL에 fixture 유닛을 설치하거나 별도 WSL 배포판을 기동하지 않는다. GitHub-hosted disposable VM 등 독립된 환경에서 실제 namespace 시험을 수행한다.
-- [ ] `fix: Serialize guard installation and validate writable state paths`로 커밋한다.
+- [x] owner 잠금 획득 후 owner/origin/설치 모드 충돌을 다시 검사한다. root/owner 잠금 획득 순서를 모든 설치 경로에서 통일하고 교착·대기 timeout을 검사한다.
+- [x] 사용자 권한에서 유효 설정의 state_dir를 읽고 기존 상대 경로 해석은 명확히 거부하거나 기존 HOME 기준 절대 경로로 정규화한다. 시스템 모드의 새 지원 범위는 소유자 HOME 안의 정규 디렉터리로 제한하고, HOME 밖·보호 경로·링크로 이탈하는 값은 서비스 변경 전에 명시적으로 거부한다. 사용자 guard의 기존 경로 동작은 보존한다.
+- [x] 사용자 경로 생성/쓰기 검사도 소유자 UID·기본 GID로 수행한다. systemd unit의 경로 quoting/escaping을 중앙화하고 제어문자·개행·specifier 주입을 거부한다. root가 사용자 경로를 따라 chown/덮어쓰지 않는다.
+- [x] 사용자 지정 상태 경로를 daemon lock, snapshot_state/restore_state, 첫 실행 확인 모두에 전달한다. 설치 중 설정 파일 변경을 감지하면 전환 전에 중단한다. guard의 실행 중 state_dir 변경은 자동 적용하지 않고 설치 재생성 필요 상태로 명시한다.
+- [x] 단순 is-active 뒤 성공을 반환하지 않는다. 새 프로세스 시작 이후 올바른 state 경로의 첫 성공 수집을 최대 180초 내 확인하고, 실패 시 이번 작업의 코드·유닛·active/enabled·데이터만 복구한다. 경보 severity가 normal이어야 한다는 조건은 두지 않는다.
+- [x] 격리된 systemd 환경에서 기본/사용자 지정 경로 신규 설치, 사용자→시스템 전환, 반대 순서 거부, 설치 경쟁, 권한 오류, 최초 수집 실패, 롤백 후 기존 guard 수집을 시험한다. 운영 WSL에 fixture 유닛을 설치하거나 별도 WSL 배포판을 기동하지 않는다. GitHub-hosted disposable VM 등 독립된 환경에서 실제 namespace 시험을 수행한다.
+- [x] 설치 경합과 상태 경로를 별도 검증 단위로 커밋했다: `ba8e954`와 `a49f1f4`. 실제 수명주기 수용 시험 보강은 `cbc7598`이다.
 
 ```python
 with owner_install_lock(owner):
@@ -188,12 +188,12 @@ with owner_install_lock(owner):
 **수정:** `scripts/security_gate.py`, `.github/workflows/checks.yml`, `release.yml`.
 **검사:** `tests/test_release_gate.py`, `test_release.py`, 워크플로 정적 검사.
 
-- [ ] Python/JavaScript 각각 예상 SARIF가 존재하고 올바른 버전/run/CodeQL 도구 식별/성공 invocation을 가진 경우만 허용한다. invocation 누락·실패·불명확 상태는 거부한다.
-- [ ] driver와 extensions 전체에서 규칙 목록·결과의 rule reference를 검증한다. 규칙 0건, 실행/설정 알림의 error, 결과 error 및 High/Critical, 비정상 score를 차단한다. 실제 extension-only 결과는 허용한다.
-- [ ] 분석의 예상 언어와 검사 commit을 워크플로에서 고정하고 생성 결과를 그 실행의 산출물로 검사한다. 다른 커밋이나 임의 이전 artifact를 가져와 통과시키지 않는다.
-- [ ] 리뷰의 빈 SARIF, invocation 성공+오류 알림, 한 언어 누락, extension-only 정상 결과, 낮은 등급 결과, rule reference 손상을 모두 검사한다. 43/87처럼 특정 규칙 개수를 영구 상수로 고정하지 않는다.
+- [x] Python/JavaScript 각각 예상 SARIF가 존재하고 올바른 버전/run/CodeQL 도구 식별/성공 invocation을 가진 경우만 허용한다. invocation 누락·실패·불명확 상태는 거부한다.
+- [x] driver와 extensions 전체에서 규칙 목록·결과의 rule reference를 검증한다. 규칙 0건, 실행/설정 알림의 error, 결과 error 및 High/Critical, 비정상 score를 차단한다. 실제 extension-only 결과는 허용한다.
+- [x] 분석의 예상 언어와 검사 commit을 워크플로에서 고정하고 생성 결과를 그 실행의 산출물로 검사한다. 다른 커밋이나 임의 이전 artifact를 가져와 통과시키지 않는다.
+- [x] 리뷰의 빈 SARIF, invocation 성공+오류 알림, 한 언어 누락, extension-only 정상 결과, 낮은 등급 결과, rule reference 손상을 모두 검사한다. 43/87처럼 특정 규칙 개수를 영구 상수로 고정하지 않는다.
 - [ ] 실패 조건이면 publish job이 실행되지 않음을 disposable 검증으로 확인한다. 공개 Release를 일부러 생성/삭제하는 시험은 하지 않는다.
-- [ ] `fix: Require complete CodeQL evidence before release`로 커밋한다.
+- [x] `fix: Require complete CodeQL evidence before release`로 커밋한다.
 
 ```python
 assert all(i.get("executionSuccessful") is True for i in invocations)
@@ -206,15 +206,15 @@ assert not any(n.get("level") == "error" for n in analysis_notifications)
 **수정:** `pyproject.toml`, 신규 `uv.lock`, `uv_environment.py`, `service_install.py`, CI 4개 workflow, `.github/dependabot.yml`, `scripts/release.py`, `scripts/ci_unit.py`, 관련 설치·패키징 시험과 `tests/uv_install_smoke.py`.
 **제거:** `requirements-web.in`, `requirements-web.txt`, `requirements-dev.in`, `requirements-dev.txt`.
 
-- [ ] CLI/guard의 기본 dependencies=[]는 유지하고 웹은 `project.optional-dependencies.web`, 검사 도구는 `dependency-groups.dev`에 선언한다. cryptography는 개발 시험에 포함하고 현재 시스템 Python을 사용하는 guard/컨트롤러의 선택적 의존성 설치 구조는 유지한다. 시스템 cryptography 검증은 웹 venv 검사와 별도로 남긴다.
-- [ ] 현재 승인 버전을 제약으로 가져와 uv.lock을 생성한다. 운영/개발 공통 버전을 일치시키고 불필요한 일괄 업그레이드를 하지 않는다. MarkupSafe 차이는 운영 3.0.3을 초기 공통 기준으로 삼아 회귀·취약점 검사를 통과시킨다. 호환상 필요한 변경만 별도로 설명한다.
-- [ ] 개발/CI는 `uv sync --locked --extra web --group dev --no-build --no-install-project`로 동기화한다. 실행에서 잠금을 묵시적으로 바꾸지 않게 한다. Python 3.11–3.14 각각 웹 공통 패키지 버전이 운영 profile과 같은지 검사한다.
-- [ ] 설치기는 검증한 uv와 root 소유 임시 manifest/lock으로 `uv sync --locked --extra web --no-dev --no-install-project --no-build --python /usr/bin/python3`를 실행한다. `UV_PROJECT_ENVIRONMENT`는 설치기만 정한 기존 `.venvs/<install-id>` 최종 경로에 연결한다. 환경을 만든 뒤 이동하지 않는다.
-- [ ] env whitelist, 명시적 CA/TLS, 사용자 인덱스·프록시·설정 무시, Python 자동 다운로드 금지, 고정 PyPI 출처와 artifact 해시 확인을 보존한다. 프로젝트 sources/workspace/path/VCS/build hook을 이 root 설치 경로에서 허용하지 않는다. corrupt lock/artifact가 반드시 실패하는 시험을 둔다.
-- [ ] pip-audit에는 같은 uv.lock에서 web/dev profile을 각각 해시 포함 임시 requirements로 export한다. 출력은 임시 검사 입력이며 Git에 추적하거나 수동 관리하지 않는다. 각 profile을 독립 감사하고 공통 버전 일치를 검사한다.
+- [x] CLI/guard의 기본 dependencies=[]는 유지하고 웹은 `project.optional-dependencies.web`, 검사 도구는 `dependency-groups.dev`에 선언한다. cryptography는 개발 시험에 포함하고 현재 시스템 Python을 사용하는 guard/컨트롤러의 선택적 의존성 설치 구조는 유지한다. 시스템 cryptography 검증은 웹 venv 검사와 별도로 남긴다.
+- [x] 현재 승인 버전을 제약으로 가져와 uv.lock을 생성한다. 운영/개발 공통 버전을 일치시키고 불필요한 일괄 업그레이드를 하지 않는다. MarkupSafe 차이는 운영 3.0.3을 초기 공통 기준으로 삼아 회귀·취약점 검사를 통과시킨다. 호환상 필요한 변경만 별도로 설명한다.
+- [x] 개발/CI는 `uv sync --locked --extra web --group dev --no-build --no-install-project`로 동기화한다. 실행에서 잠금을 묵시적으로 바꾸지 않게 한다. Python 3.11–3.14 각각 웹 공통 패키지 버전이 운영 profile과 같은지 검사한다.
+- [x] 설치기는 검증한 uv와 root 소유 임시 manifest/lock으로 `uv sync --locked --extra web --no-dev --no-install-project --no-build --python /usr/bin/python3`를 실행한다. `UV_PROJECT_ENVIRONMENT`는 설치기만 정한 기존 `.venvs/<install-id>` 최종 경로에 연결한다. 환경을 만든 뒤 이동하지 않는다.
+- [x] env whitelist, 명시적 CA/TLS, 사용자 인덱스·프록시·설정 무시, Python 자동 다운로드 금지, 고정 PyPI 출처와 artifact 해시 확인을 보존한다. 프로젝트 sources/workspace/path/VCS/build hook을 이 root 설치 경로에서 허용하지 않는다. corrupt lock/artifact가 반드시 실패하는 시험을 둔다.
+- [x] pip-audit에는 같은 uv.lock에서 web/dev profile을 각각 해시 포함 임시 requirements로 export한다. 출력은 임시 검사 입력이며 Git에 추적하거나 수동 관리하지 않는다. 각 profile을 독립 감사하고 공통 버전 일치를 검사한다.
 - [ ] Dependabot의 pip 항목을 `package-ecosystem: uv`로 변경하고 Actions 항목을 유지한다. 실제 봇이 생성하는 lock 변경을 `uv lock --check`와 전체 CI로 검증한다. 봇 실행 전에는 실제 봇 갱신 확인 완료라고 쓰지 않는다.
-- [ ] release allowlist/필수 파일을 pyproject+uv.lock 기준으로 갱신한다. Git 없는 압축본에서 uv 동기화·설치 준비가 동작하고 낡은 requirements 참조가 남지 않는지 확인한다.
-- [ ] manifest/lock 불일치, wheel 부재, hash 변조, 다운로드 실패, 오염 환경, 웹 UID 접근 실패에서 기존 운영 설치·유닛이 바뀌지 않는지 검사한다.
+- [x] release allowlist/필수 파일을 pyproject+uv.lock 기준으로 갱신한다. Git 없는 압축본에서 uv 동기화·설치 준비가 동작하고 낡은 requirements 참조가 남지 않는지 확인한다.
+- [x] manifest/lock 불일치, wheel 부재, hash 변조, 다운로드 실패, 오염 환경, 웹 UID 접근 실패에서 기존 운영 설치·유닛이 바뀌지 않는지 검사한다.
 - [ ] 개발 잠금 통합과 설치/CI/패키징 연결을 검증 가능한 커밋으로 나누되, main에는 모든 전환이 끝난 상태로 통합한다.
 
 선언 구조:
@@ -242,12 +242,12 @@ uv run --locked --no-sync python scripts/ci_unit.py
 
 **수정:** README, CONTRIBUTING, CHANGELOG, `docs/installation.md`, `configuration.md`, `architecture.md`, `operations.md`, `usage.md`, 이 기록. 새 문서 묶음을 추가하지 않는다.
 
-- [ ] VHD 경로 빈 값은 자동 탐색이 아니라 not-configured라고 정정한다. 이번 범위에서 자동 탐색 기능을 새로 만들지 않는다.
-- [ ] pidfd 미지원 시 종료 제한, 수집 공백/heartbeat 의미, 큰 이력 오류, 푸시 등록/수신 차이, 시스템 state_dir 지원 범위·재설치 조건, uv 사용법과 복구 절차를 구현과 맞춘다.
-- [ ] 기존 실패 재현을 모두 회귀 검사로 남기고 R1–R13 각각 구현 commit·관련 테스트·실제 확인/미확인 상태를 이 문서에 연결한다.
+- [x] VHD 경로 빈 값은 자동 탐색이 아니라 not-configured라고 정정한다. 이번 범위에서 자동 탐색 기능을 새로 만들지 않는다.
+- [x] pidfd 미지원 시 종료 제한, 수집 공백/heartbeat 의미, 큰 이력 오류, 푸시 등록/수신 차이, 시스템 state_dir 지원 범위·재설치 조건, uv 사용법과 복구 절차를 구현과 맞춘다.
+- [x] 기존 실패 재현을 모두 회귀 검사로 남기고 R1–R13 각각 구현 commit·관련 테스트·실제 확인/미확인 상태를 이 문서에 연결한다.
 - [ ] 최종 main 후보에서 Python 3.11–3.14 전체 검사, JS/shell/workflow 검사, root fixture, 실제 systemd 격리 설치/복구, web-only transport, 고정 Playwright PC/모바일 오류 시나리오를 실행한다. 예상하지 못한 skip은 실패다.
 - [ ] 최신 의존성 감사, 비밀값/공개 문자열 검사, Python/JS CodeQL SARIF 검사, 같은 commit의 재현 가능한 archive 생성·검증·추출본 설치 준비를 통과시킨다.
-- [ ] 권한/종료, 감시/알림/UI, 설치/uv/릴리스를 독립 읽기 전용 교차 검토한다. 확정된 P1/P2를 남긴 채 완료·배포하지 않는다. 실제 환경 검증이 막히면 미검증 상태를 기록하고 관련 완료 표시를 하지 않는다.
+- [x] 권한/종료, 감시/알림/UI, 설치/uv/릴리스를 독립 읽기 전용 교차 검토한다. 확정된 P1/P2를 남긴 채 완료·배포하지 않는다. 실제 환경 검증이 막히면 미검증 상태를 기록하고 관련 완료 표시를 하지 않는다.
 - [ ] diff·staging과 main의 새 변경을 확인한 뒤 `--no-ff` 병합한다. 통합으로 코드가 달라지면 해당 검사를 다시 수행한다. 최종 SHA를 push하고 그 SHA의 CI 결과를 확인한다.
 
 ## 단계 10 — 기존 운영에 반영하고 정리
@@ -272,4 +272,156 @@ git worktree list
 
 ## 실행 결과 기록
 
-현재는 계획 수립만 완료했다. 위 체크박스는 구현·검증·배포 완료를 뜻하지 않는다. 실행 시 각 단계 아래에 commit, 검사 명령/결과, 운영 영향, 정리 결과를 추가한다. 계획 검토를 위해 제품 코드나 운영 상태를 변경하지 않았다.
+계획에 따라 작업 브랜치에서 구현 중이다. 체크된 항목만 해당 단계의 검증을 완료했으며, 운영 배포·최종 통합 완료는 단계 9–10의 별도 증거가 필요하다. 아래 실행 기록에 실제 결과를 누적한다.
+
+### 실행 기록 — 준비와 R1
+
+- 기준선: 실행 서비스 24개와 Docker 컨테이너 6개, 설정/registry/접근 정책 해시, 실제 설치 코드와 BUILD stamp를 권한 제한된 단일 임시 검증 디렉터리에 기록했다. 운영 3개 유닛은 기존 PID와 재시작 0을 유지했다.
+- uv 0.12.23/Python 3.14.4로 기존 dev 해시 잠금 44개를 설치했고 의존성 호환 검사를 통과했다.
+- Ruling: 사용자 요구에 따라 추가 worktree/프로젝트 사본/스킬별 기록 디렉터리를 만들지 않는다. 이 문서를 진행 기록으로 사용한다. 편집은 단일 작업자가 수행하고 최종 독립 검토를 실행한다.
+- Pre-flight: R1→R4/R5는 저장된 실패/시도 상태를 보존해야 한다. R2→R12는 실제 state 경로를 동일하게 사용해야 한다. R6/R8은 서버 구독 상태 계약을 함께 바꾼다. R13→uv/CI 전환은 동일 커밋 검증을 유지한다. 충돌하는 외부 인터페이스는 발견하지 않았다.
+- R1 RED: 잘못된 Gmail 헤더/URL, UnicodeError/RuntimeError와 실제 sample 저장 시험이 기존 코드에서 예외로 실패했다.
+- R1 GREEN: 채널별 메시지 구성부터 전송까지 예외를 실패 결과로 격리했다. 오류 세부에는 비밀값을 포함하지 않으며 KeyboardInterrupt는 전파한다.
+- 실제 Notifier를 사용하는 sample 2회에서 상태 timestamp 100/115 및 이력 2건을 보존하고 Discord는 재알림 간격 안에서 한 번만 전송 시도했다. 외부 전송은 mock했다.
+- 관련 notification/daemon/reporting 54개 통과. 전체 CI 단위 profile 348개 통과, 예상 밖 skip 없음. 제품 운영 적용은 아직 하지 않았다.
+
+### 실행 기록 — R3
+
+- R3 RED: snapshot 후 PID의 시작 시각/UID/서비스가 교체된 재현에서 기존 컨트롤러가 종료를 허용했다. 새 helper 시험은 토큰/함수 부재로 실패했고, 추가 CLI 시험은 timeout=0에서 잘못된 성공 및 이미 종료된 MCP에 신호 전송을 주장하는 실패를 확인했다.
+- R3 GREEN: snapshot에 시작 토큰을 보존하고 일관되지 않은 /proc 읽기를 제외한다. 웹/CLI TERM/KILL은 pidfd를 연 뒤 현재 신원과 서비스 분류를 재검증한다. 미지원 환경은 숫자 PID 방식으로 후퇴하지 않는다.
+- Ruling: root는 고정된 표준 라이브러리 subprocess에 열린 pidfd를 전달하고 owner UID/기본 GID/빈 보조 그룹으로 신호를 보낸다. pidfd만으로는 검사 이후 setuid exec의 권한 변경을 막지 못하므로 실제 신호 시점의 커널 권한 검사도 owner로 제한한다. 추가 프로세스 생성 비용이 발생한다.
+- 서비스 하위 cgroup도 보호하고, 대기 시간 0에도 생존 여부를 확인한다. 이미 사라진 MCP에는 전송 성공 대신 종료된 상태를 알린다.
+- 실제 커널 시험에서는 직접 생성한 /bin/sleep 자식만 pidfd로 종료했다. 시스템 서비스나 사용자 세션에는 신호를 보내지 않았다.
+- 전체 CI 단위 profile 359개 통과, 예상 밖 skip 없음. 기존 dispatch 확인 시험은 새 공통 신호 경계로 mock을 갱신했으며 신원 검사는 별도 실제 helper 시험이 담당한다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R2
+
+- R2 RED: 16 MiB를 넘는 정상 세션 5개 × 8,640행에서 원시 이력이 0건이었다. FIFO 읽기가 정상 빈 결과로 반환됐고 동일 크기/mtime의 파일 교체가 캐시를 갱신하지 않았다. 새 제한 iterator/원시 예산 인터페이스도 기존 코드에서는 없었다.
+- R2 GREEN: 소유자 권한으로 연 정규 파일을 최초 크기까지 청크로 읽고 줄당 1 MiB/전체 조회 10초를 제한한다. 추가 기록은 다음 조회에서 읽으며 조회 중 파일 축소는 실패다. 잘린 JSON·비객체·비유한 timestamp는 건너뛰고 읽기 실패는 숨기지 않는다.
+- Ruling: 원시/집계 응답은 8 MiB, 원시 레코드는 100,000개를 상한으로 두어 worker의 기존 16 MiB보다 먼저 명시적으로 실패한다. 웹 최근 1,800개와 CLI 요청 limit은 최소 heap으로 유지하며 전체 입력을 목록으로 만들지 않는다. 이 제한은 미관측을 빈 정상 값으로 반환하지 않는 대신 큰 원시 요청에 오류를 낸다.
+- 집계/프로젝트 귀속/세션/경보는 점진적으로 누적한다. 캐시는 inode/ctime/mtime/크기를 확인하고 16항목으로 제한한다. 스트리밍 도입 후 역행 시각이 최신 외부 관측을 덮어쓰는 회귀도 시험 후 수정했다.
+- 16 MiB 미만/동일/초과, 큰 한 줄, FIFO/장치/디렉터리, 읽을 수 있는 링크, 부분 줄, 추가 기록, 파일 교체·축소, 원시 출력 제한을 검증했다. 실제 worker의 큰 날짜 이력·세션·귀속·경보 왕복, 주간 보고서, 출력 초과 및 timeout 오류를 확인했다.
+- 전체 CI 단위 profile 372개 통과. 실제 root fixture 1개 통과: 소유자 자격으로 root 전용 fixture 링크를 읽지 못하며 이력 조회는 명시적 실패다. 기존 CLI 날짜 fixture는 실제 timestamp와 같은 날짜로 정정했고 lock 시험은 스트리밍 호출 경계를 추가했다.
+- 운영 설치본·설정·서비스는 변경하지 않았다. R3 구현 커밋은 ec0b47b다.
+
+### 실행 기록 — R4/R5
+
+- R4 RED: RAM/swap/세션/MCP의 t=100→1000 관측 공백에서 즉시 경보가 성숙하고, 정상 관측 공백에서 기존 경보가 회복했다. 디스크 회복 타이머·시계 역행·수집 주기 축소에도 이전 시각이 남았다.
+- R4 GREEN: 현재 주기의 두 배 초과·시계 역행·유효한 이전 metrics 부재 시 지속/일반 회복/PSI 회복/디스크 회복 시각을 초기화한다. 기존 경보는 새 정상 구간까지 유지한다. 디스크 오류만 반복돼도 회복하지 않으며 설정에서 제거한 드라이브와 관측 실패를 구분한다.
+- Ruling: 이전 정상 관측 근거 없이 타이머만 저장된 상태로 즉시 회복할 수 없다. 회복 메시지 기존 fixture 2개에 실제 직전 정상 metrics를 추가했다. 디스크 회복 fixture 2개도 기존의 119/120초 공백 대신 주기적인 정상 표본을 넣어 같은 회복 요구를 검증한다.
+- R5 RED: 120초 주기로 예정 분을 건너뛰면 발송이 없었고, 늦게 재시작한 sample도 예정 메일을 처리하지 않았다. 시도/성공 분리 표시는 없었다.
+- R5 GREEN: 가장 최근 예정 시각의 epoch 슬롯만 처리한다. 기존 지역 시간 문자열을 읽고 새 기록은 epoch로 쓴다. 미래 슬롯은 관측 경고와 함께 재평가한다. 처리 슬롯, 실제 시도 last_email_status, 확인된 성공 last_email_success를 분리하고 CLI에서도 구분한다. 같은 sample의 Gmail 경보와 heartbeat를 합친다.
+- 5/15/60/120/600초 주기, 실패 후 재시작·동일 슬롯·미래 기록·미설정 채널, 미국 DST 반복/누락과 호주 30분 반복을 검증했다. SMTP 실제 발송 없이 채널 경계 fixture만 사용했다.
+- 전체 CI 단위 profile 386개 통과. R2 커밋은 a275cd3이며 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R6/R7/R8
+
+- R6 RED: 서로 다른 컨트롤러 인스턴스의 barrier 동시 최초 요청에서 키 4개가 달랐고, 동시 등록 4건 중 일부가 덮어써졌다. R7 RED: 곡선상 유효하지 않은 EC 점이 등록 검증을 통과했으며 malformed endpoint가 전송 루프 전에 예외를 냈다.
+- R6/R7 GREEN: 기존 root registry의 operation.lock을 키 생성·등록·해제에 공유하고, 내부 locked helper로 중복 획득을 피한다. 검증 실패/쓰기 실패 후 잠금도 해제한다. 등록 시 실제 P-256 파싱, 발송 시 구독별 검증·예외 격리를 적용했다. 기존 정상 VAPID 키는 유지한다.
+- R8 RED: 실제 Chromium에서 서버 등록 실패 후 등록 미완료/재등록 표시가 없었고, 고정 상태 조회 API도 존재하지 않았다.
+- R8 GREEN: 인증/CSRF가 적용되는 POST /api/push/status로 현재 기기의 endpoint+키만 비교한다. 다른 구독 목록은 반환하지 않고 URL query에 endpoint를 넣지 않는다. 화면은 서버 등록과 실제 수신을 구분하며 등록 실패 시 기존 로컬 구독을 재사용한다. 키 변경/만료 시 사용자의 등록 버튼 동작에서만 재생성한다.
+- PC/모바일에서 실패→새로고침→재등록, 서버만 삭제, 로컬만 삭제, 상태 조회 실패, 키 변경·만료, 권한 거부·서비스워커 준비 실패·지원 불가를 검증했다. 조회 실패만으로 자동 등록하거나 알림을 발송하지 않는다.
+- Ruling: 저장소의 고정 Python Playwright 회귀 파일을 확장한다. 별도 JS 테스트 프로젝트/CLI 설치/상시 브라우저 산출물 디렉터리는 만들지 않는다. 네트워크는 fixture origin에서만 처리한다.
+- 전체 CI 단위 profile 393개 통과, node --check 통과, 전체 offline dashboard 검사 통과. 실제 외부 Push/SMTP 수신 시험은 수행하지 않았다.
+- 운영 3개 유닛은 active, 최초 기준선 PID 및 NRestarts=0을 유지한다. R4/R5 커밋은 6f9a4fe다.
+
+### 실행 기록 — R9
+
+- SSE 오류가 CONNECTING 상태여도 liveSummary를 즉시 무효화하고, polling과 SSE의 관측 시각을 비교해 자원 경보·제목·favicon을 선택한다. 오래된 관측은 상태 미확인으로 표시한다.
+- PC/모바일에서 critical→연결 실패→normal과 역방향, 늦게 도착한 SSE/polling, 재연결, 오래된 정상값, 숨김 탭 복귀를 검증했다. 실제 EventSource가 유한 fixture 스트림 종료 시 live 표시를 해제하는 것도 확인했다.
+- 전체 offline dashboard 검사와 node --check 통과. 네이티브 스트림 시험은 CSP가 허용하는 함수형 wait predicate로 수정했다. 운영 서비스는 변경하지 않았다.
+
+### 실행 기록 — R10
+
+- 501/1000/2000줄의 정상 보조 로그가 worker에서 거부되는 실패를 재현했다. worker/컨트롤러는 MAX_LOG_LINES=2000을 공유하고 직접 호출도 같은 상한을 적용한다. 비정수 입력은 기본 80줄, 범위 밖 정수는 1–2000으로 제한한다. 웹의 잘못된 query 기본값 200은 유지한다.
+- 보조 파일 부재·권한 거부·FIFO 및 worker timeout/출력 실패는 예외 종류만 표시하며 정상 journal을 보존한다. 기존 문자열 응답을 유지해 새 UI 계약은 필요하지 않다. UTF-8 응답도 최종 100,000바이트 이내로 제한한다.
+- 전체 CI 단위 profile 396개, 실제 root 권한 분리 fixture 1개, 전체 offline dashboard 검사 통과. PC/모바일 로그 1000줄 선택에서 정상 journal과 부분 실패 안내를 함께 확인했다.
+- 운영 설치본은 변경하지 않았다. R9 커밋은 3c6ed73이다.
+
+### 실행 기록 — R11
+
+- 잠금 진입 시 다른 설치가 끝난 조건에서 사용자 모드/시스템 owner 검사가 잠금보다 먼저 실행되는 두 실패를 재현했다. 검사를 owner 잠금 내부로 옮겨 apply 전에 거부하도록 수정했다.
+- 관리자 guard/웹 entrypoint는 root 잠금→owner 잠금, 사용자 entrypoint는 owner 잠금만 사용하며 역순 획득은 없다. 경합은 기다리지 않고 명시적으로 실패하는 기존 정책을 유지한다.
+- 별도 Python 프로세스로 동일 owner 잠금의 경합을 확인했고 예외 후 재획득도 성공했다. 전체 CI 단위 profile 399개 통과. 실제 systemd 설치/복구 수명주기는 R12와 함께 별도 검증할 예정이며 아직 완료가 아니다.
+- R10 커밋은 e000c00이다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R12 구현과 로컬 검증
+
+- 소유자 권한의 제한된 query로 state 경로·설정 해시만 돌려받는다. 최대 4096바이트/10초, root 호출의 보조 그룹 제거를 적용했고 timeout 후 자식 회수와 FD 해제를 시험했다. 웹 설치도 owner 잠금 안에서 identity를 재검사한다.
+- 시스템 state는 HOME 아래 절대/~/ 정규 디렉터리만 허용하며 상대 경로·HOME 밖·링크·비디렉터리·제어문자를 사전 거부한다. 쓰기 probe는 owner로만 수행하고 준비 중 설정 변경이면 서비스 전환 전에 실패한다. 사용자 guard의 HOME 기준 상대 경로와 외부 경로는 보존한다.
+- systemd 지시문은 같은 따옴표 규칙을 사용하지 않는다. 실제 systemd 259 parser에서 WorkingDirectory 인용 실패를 확인한 뒤 단일 경로와 인용 목록/명령을 구분했다. ExecStart는 환경 확장을 끄고 %, $를 리터럴로 처리한다. systemd 자체가 허용하지 않는 따옴표/역슬래시 HOME은 사전 거부한다. 공백/%/$ HOME과 따옴표를 가진 상태 경로의 세 템플릿은 systemd-analyze verify를 통과했다. 검증용 파일만 사용했고 서비스에 등록하지 않았다.
+- 유닛의 설치 경로를 guard에 전달해 재시작/복구 후에도 해당 경로를 유지하며 변경은 재설치 필요 경고로 남긴다. state에 writer PID/start token을 기록하고 설치기는 새 프로세스의 첫 상태 기록을 최대 180초 내 확인한다. active만으로 성공하지 않는다.
+- 사용자 지정 경로의 snapshot/복구, 새 실패 기록 보존, 준비 중 설정 변경 시 서비스 명령 0, 새 PID/토큰/시각 불일치 거부, 실제 sample 저장→readiness 연결을 검사했다. 전체 CI 단위 profile 411개와 실제 root fixture 2개가 통과했다.
+- tests/guard_install_smoke.py와 guard-lifecycle CI job을 추가했다. 일회용 GitHub-hosted systemd VM만 허용하며 WSL/기존 설치에서는 거부한다. 사용자 신규 설치·전환 실패 복구·시스템 전환·역순 거부·잠금 경합·사용자 지정 mount 쓰기·업데이트 실패 복구를 실제 유닛으로 시험한다. **이 CI 수명주기 실행은 아직 미검증**이며 단계 6 완료 조건은 남아 있다.
+- 운영 설치본은 변경하지 않았다. R11 커밋은 ba8e954이다.
+
+### 실행 기록 — 첫 원격 통합 검증
+
+- a49f1f4548004cf1d81c6b9f31b88db2d4d32b20 작업 브랜치를 push하고 [CI 37705103362](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37705103362)를 수동 실행했다. 13개 job 모두 success다. main 병합·운영 배포는 아직 아니다.
+- Python 3.11–3.14, PC/모바일·transport·workflow 정적 검사, root 격리, 의존성 감사, 공개정보/Gitleaks, Python/JS CodeQL, 재현 가능한 압축본과 artifact roundtrip을 통과했다. 이는 해당 커밋의 결과이며 이후 변경은 최종 SHA에서 다시 확인한다.
+- 실제 GitHub-hosted VM의 guard-lifecycle 로그에서 사용자 신규 설치, 첫 수집 실패 시 사용자 guard 복구, 시스템 전환, 역순 설치 거부, 잠금 경합, HOME의 공백/%/$ 및 사용자 지정 상태 경로 쓰기, 시스템 업데이트 실패 복구, 마지막 fixture 제거가 통과했음을 확인했다.
+- 추가로 권한 거부의 서비스 전환 전 실패와 사용자 지정 경로의 완전 신규 설치를 CI fixture에 보강했다. 이 두 추가 시나리오는 다음 CI에서 확인해야 한다.
+
+### 실행 기록 — R13
+
+- RED: 성공 invocation 누락/불명확 값, 성공 표시+오류 알림, 규칙 0개, 다른 분석기, 구성요소/규칙 index 불일치, 잘못된 보안 점수의 17개 하위 사례가 기존 게이트를 통과했다.
+- GREEN: CodeQL 식별, 모든 invocation의 명시적 true, driver/extensions 전체 규칙, 실행/설정 알림과 결과의 error, High/Critical 점수 및 잘못된 메타데이터를 검사한다. 언어별 고정 파일명과 query pack을 확인하고 매트릭스에서 한 언어가 빠지면 계약 검사가 실패한다. 코드 체크아웃 SHA도 workflow의 github.sha와 대조한다.
+- 첫 원격 CI의 실제 Python/JavaScript SARIF를 새 게이트로 재검사했다. extension 규칙 43/87개, 정상 invocation을 가진 두 결과가 통과했다. 규칙 개수를 상수로 강제하지 않는다.
+- 릴리스 package는 검사 workflow에서 만든 checked-release-assets를 그대로 받아 검증·게시 단계로 전달한다. 새 압축본을 다시 만들지 않으며 두 다운로드 단계 모두 artifact digest 불일치에서 실패한다.
+- 게이트 CLI 실패 시 이어지는 게시 sentinel이 실행되지 않는 shell fixture와 release jobs의 needs/default success 조건을 검증했다. 실제 GitHub의 실패 태그→publish job skip을 발생시키는 시험은 아직 수행하지 않았으며 공개 Release는 생성하지 않았다.
+- 보안 게이트 관련 15개 시험과 전체 CI 단위 profile 419개 통과. 최종 workflow 수정 후 관련 15개를 다시 통과했다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — R12/R13 원격 검증과 uv 선언 통합 시작
+
+- cfb29d01e0d3596e8c0013a28f405cb61fbc98bb의 [CI 37705664235](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37705664235) 13개 job이 모두 통과했다. 새 CodeQL 게이트가 두 실제 언어 분석을 검사했다. guard-lifecycle의 권한 거부와 완전 신규 custom 경로 시험, 실제 수집과 복구·정리 로그도 확인했다.
+- pyproject의 web extra/dev group, package=false와 uv.lock을 추가했다. 초기 생성에만 기존 승인 버전 제약을 사용한 뒤 제거했고 다시 lock/check를 수행했다. 영구적인 중복 버전 제약은 남기지 않는다. 44개 의존성이 기존 승인 목록과 일치하며 MarkupSafe는 운영 3.0.3 기준이다.
+- 동일 임시 개발 환경을 uv sync --locked --extra web --group dev --no-build --no-install-project로 동기화했다. 전체 CI 단위 profile 419개 통과. 운영 가상환경이나 저장소의 기존 .venv는 바꾸지 않았다.
+- GitHub의 현재 열린 Dependabot PR 조회 결과는 0건이다. uv ecosystem 전환과 이후 실제 봇 갱신 확인은 아직 남아 있다.
+- 이 커밋은 선언/잠금 추가 단계다. 기존 설치기·CI를 다음 단계에서 전환하고 requirements 네 파일을 제거한다. 이 중간 상태를 main이나 운영에 적용하지 않는다.
+
+### 실행 기록 — uv 설치기 전환
+
+- 이전 계획 정리 턴은 구현 진전이 없었으므로 현재 브랜치/HEAD와 실제 파일을 다시 확인하고 단계 8을 재개했다. 단일 체크아웃·기존 작업 브랜치를 유지했다.
+- 설치기는 bounded 정규 파일로 읽은 pyproject/uv.lock을 private 작업 경로에 고정하고 native sync --locked로 최종 .venvs 경로를 준비한다. 사용자 UV_PROJECT_ENVIRONMENT/CA/프록시를 상속하지 않고 시스템 CA를 명시한다. project sources/workspace/custom index/build backend와 비-PyPI lock 출처·잘못된 hash 메타데이터를 다운로드 전에 거부한다.
+- RED: 기존 requirements 전용 인터페이스와 CA 설정 누락으로 새 native 계약 검사가 실패했다. GREEN: 관련 8개, 설치 복구 12개, 전체 CI 단위 profile 422개를 통과했다. 실제 uv 호출 전 snapshot을 바꿔도 원래 잠금 입력을 사용하는 것을 검사했다.
+- 실제 root 임시 /var/lib 경로에서 신규/교체 환경을 각각 준비했고 nobody UID import/실행·최종 shebang·web-only 패키지 버전을 확인했다. hash mismatch, stale lock(--locked), wheel 부재(--no-build)를 실제 오류 원인까지 확인하고 이전 두 환경의 Gunicorn 실행을 재확인했다. 시험 경로는 context 종료 시 제거됐으며 서비스 제어는 하지 않았다.
+- 설치기/CI/패키징 전환 중간 단계다. requirements 제거와 native CI, Git 없는 공식 압축본 설치 검증은 이어서 수행한다. 운영 설치본은 변경하지 않았다.
+
+### 실행 기록 — native uv CI·감사·Dependabot 연결
+
+- CI 환경 생성은 sync --locked --extra web --group dev로 전환했다. 같은 uv.lock에서 web/dev를 임시 export하여 공통 버전과 실제 설치 버전을 검사하고, 보안 감사도 각 profile에 따로 적용한다. 감사 입력/캐시는 종료 시 제거한다. 운영 web 8개·개발 44개 버전 일치와 알려진 취약점 0을 확인했다.
+- 프로필 marker 선택, 비고정/충돌 버전 거부, web/dev/실제 설치 불일치의 3개 회귀 검사와 전체 CI 단위 profile 425개 통과. actionlint·shellcheck·bash -n·JS 문법·공개 파일/문서 링크 검사도 통과했다.
+- requirements 네 파일을 제거하고 현재 설치·검사·패키징·CONTRIBUTING 참조를 pyproject/uv.lock으로 바꿨다. 과거 작업 기록의 당시 requirements 설명은 역사적 기록으로 남긴다. Dependabot을 uv ecosystem으로 바꾸고 Actions 항목은 보존했다. 현재 열린 Dependabot PR은 다시 조회해 0건이며, 실제 봇 갱신 확인은 아직 아니다.
+- artifact-roundtrip에 검증된 압축본을 풀어 Git 없이 실제 root dependency preparation을 수행하도록 추가했다. 이 커밋의 원격 전체 CI와 압축본 검증 결과는 다음 실행 기록에서 확인한다. 운영 배포·main 병합은 아직 하지 않았다.
+
+
+### 실행 기록 — uv 원격 수용 결과와 릴리스 리허설 준비
+
+- b771a4b63049f72f02b103d5ab367e271573f326의 [CI 37706970812](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37706970812)는 13개 job 모두 success다. Python 3.11–3.14 각각 425개 단위 검사, web 8/dev 44 버전 일치, 취약점 감사, 실제 CodeQL과 브라우저, guard 수명주기를 확인했다.
+- artifact-roundtrip 로그에서 전달된 공식 압축본의 SHA/재현성 확인 후 Git 없는 추출본으로 실제 root uv 설치 준비·web UID·해시 변조·잠금 불일치·wheel 부재 차단까지 통과했음을 확인했다. 로컬에서도 같은 커밋의 두 압축본이 바이트 단위로 일치하고 검증을 통과했다.
+- R13의 실제 job 차단 확인을 위해 Release에 게시 없는 workflow_dispatch 경로를 추가했다. main 포함 여부·버전·전체 검사·동일 산출물 검증은 유지하고, 실제 gh release create는 tag push 이벤트에서만 실행한다. 수동 실패 주입은 해당 run이 다운로드한 SARIF 사본만 변경한다. 정상/일반 검사 실패/분석 누락/고위험 결과와 잘못된 태그를 main 통합 후 실제 Actions에서 확인한다. 이 실제 리허설은 아직 실행 전이다.
+- 리허설 fixture는 실제 보안 게이트를 호출해 성공/실패를 확인했고, 수동 게시 제한이 없던 RED 이후 관련 17개 검사를 통과했다. 새 리허설·문서 변경은 이전 b771a4b CI 결과와 별도로 검증한다.
+- README·사용법·설정·구조·운영·CHANGELOG를 현재 구현에 맞췄다. VHD 빈 값은 미설정으로 정정했고, pidfd 제한·관측 공백·heartbeat·푸시 등록/수신·이력 오류·상태 경로와 개발/운영 사본 역할을 명시했다. 릴리스에는 현재 검증 기록과 그 상대 링크 대상도 명시적으로 포함한다.
+- 추가 수용 확인: 다운로드 오류 후 기존 환경 보존 단위 검사와 실제 root-only 환경의 web UID 접근 거부를 보강했다. 전체 428개 단위 검사, 실제 uv smoke, actionlint·공개정보/문서 링크 검사를 통과했다.
+
+### 실행 기록 — 최종 독립 교차 검토와 수정
+
+- a713dc60bd88cc496fd13de4b4e5e25c5b93c633을 세 읽기 전용 검토자가 독립 검토했다. 보안/서비스는 150개 실행(실제 root 전용 2개 제외), 감시/알림/UI는 135개, 설치/uv/릴리스는 71개 관련 검사를 통과했다. 서로 겹치는 검사는 전체 고유 검사 수에 합산하지 않는다.
+- 보안 P2: kill_stale의 최초 판정 뒤 kill_tree가 새 snapshot을 채택해 PID 재사용 또는 신규 활동을 놓쳤다. 실제 함수들을 연결한 무신호 fixture에서 두 실패를 확인한 뒤, 최초 start_ticks 전달·일치 확인과 최신 stale 판정을 추가했다. 유지된 대상만 신호를 보내며 PID 교체/신규 활동은 skip한다. 관련 74개 검사 통과.
+- UI P2: 시스템 시계 역행 후 미래 cached timestamp가 새 polling/SSE를 무시했다. 실제 PC/모바일 브라우저에서 RED 확인 후 미래 캐시를 대체하고 유효한 최신 관측을 선택하도록 수정했다. 늦게 도착한 이전 시각 체계의 미래 응답도 다시 캐시를 고정하지 않는다. 해당 브라우저 시나리오와 전체 offline dashboard 검사가 통과했다.
+- R13 검증 범위 보완: check-failure가 package 안에서만 실패하던 리허설은 checks 실패 증거가 아니었다. 수동 check-failure에서만 재사용 검사의 dependencies job을 실패시키도록 연결했다. 정상/태그 실행에서 검사를 생략하는 옵션은 없다. 관련 계약 RED→GREEN, 보안 게이트 17개와 actionlint 통과. 실제 job skip은 main 통합 후 리허설로 확인한다.
+- 최종 수정 후 전체 CI 단위 profile 428개, 실제 root 격리 2개, 전체 PC/모바일 offline suite, JS 문법·workflow 검사를 통과했다. a713dc6의 [CI 37707495614](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37707495614)도 success지만, 이 최종 수정 커밋의 원격 CI와 혼동하지 않는다.
+- 운영 비교: Resource Guard 세 서비스는 기존 PID와 NRestarts=0, 설치 파일 30/22개 및 사용자 설정·registry·접근 정책 해시가 그대로다. 컨테이너 6개도 동일하다. 최초 기준선의 무관한 서비스 3개는 실행 정보가 달라졌으므로 전체 작업 기간의 모든 서비스 불변을 주장하지 않는다. 이 작업은 해당 서비스를 제어하지 않았고 변경 원인은 확인하지 않았다. 배포 직전 새 기준선을 별도로 기록해 이번 배포 영향과 구분한다.
+
+| 항목 | 주 수정 커밋 | 검증 근거 |
+| --- | --- | --- |
+| R1 | da6ca84 | 채널 구성/전송 실패, 연속 sample 저장 및 재알림 간격 |
+| R2 | a275cd3 | 큰 정상 JSONL·worker 왕복·집계·출력 한도 |
+| R3 | ec0b47b 및 최종 리뷰 수정 | pidfd/UID/start token, CLI TERM/KILL, 일괄 종료 신원/활동 재확인 |
+| R4/R5 | 6f9a4fe | 관측 공백·회복·epoch heartbeat·DST/재시작 |
+| R6/R7/R8 | 2a4b91f | 등록 경합·EC 키·구독별 실패·PC/모바일 재등록 |
+| R9 | 3c6ed73 및 최종 리뷰 수정 | 연결 단절·응답 역전·시계 역행 PC/모바일 |
+| R10 | e000c00 | 500/501/1000/2000·부분 로그 오류·UTF-8 출력 한도 |
+| R11/R12 | ba8e954/a49f1f4/cbc7598 | 잠금·경로·첫 sample·실제 격리 systemd 전환/복구 |
+| R13 | cfb29d0/da6d6f0 및 리허설 보완 | 실제 양 언어 SARIF·오류 fixture·동일 archive; Actions 리허설은 통합 후 확인 |
+| uv | 559701f/b4ba555/b771a4b | shared lock·native 설치·4개 requirements 제거·Python 3.11–3.14·Git 없는 archive |
