@@ -192,7 +192,7 @@ with owner_install_lock(owner):
 - [x] driver와 extensions 전체에서 규칙 목록·결과의 rule reference를 검증한다. 규칙 0건, 실행/설정 알림의 error, 결과 error 및 High/Critical, 비정상 score를 차단한다. 실제 extension-only 결과는 허용한다.
 - [x] 분석의 예상 언어와 검사 commit을 워크플로에서 고정하고 생성 결과를 그 실행의 산출물로 검사한다. 다른 커밋이나 임의 이전 artifact를 가져와 통과시키지 않는다.
 - [x] 리뷰의 빈 SARIF, invocation 성공+오류 알림, 한 언어 누락, extension-only 정상 결과, 낮은 등급 결과, rule reference 손상을 모두 검사한다. 43/87처럼 특정 규칙 개수를 영구 상수로 고정하지 않는다.
-- [ ] 실패 조건이면 publish job이 실행되지 않음을 disposable 검증으로 확인한다. 공개 Release를 일부러 생성/삭제하는 시험은 하지 않는다.
+- [x] 실패 조건이면 publish job이 실행되지 않음을 disposable 검증으로 확인한다. 공개 Release를 일부러 생성/삭제하는 시험은 하지 않는다.
 - [x] `fix: Require complete CodeQL evidence before release`로 커밋한다.
 
 ```python
@@ -212,10 +212,10 @@ assert not any(n.get("level") == "error" for n in analysis_notifications)
 - [x] 설치기는 검증한 uv와 root 소유 임시 manifest/lock으로 `uv sync --locked --extra web --no-dev --no-install-project --no-build --python /usr/bin/python3`를 실행한다. `UV_PROJECT_ENVIRONMENT`는 설치기만 정한 기존 `.venvs/<install-id>` 최종 경로에 연결한다. 환경을 만든 뒤 이동하지 않는다.
 - [x] env whitelist, 명시적 CA/TLS, 사용자 인덱스·프록시·설정 무시, Python 자동 다운로드 금지, 고정 PyPI 출처와 artifact 해시 확인을 보존한다. 프로젝트 sources/workspace/path/VCS/build hook을 이 root 설치 경로에서 허용하지 않는다. corrupt lock/artifact가 반드시 실패하는 시험을 둔다.
 - [x] pip-audit에는 같은 uv.lock에서 web/dev profile을 각각 해시 포함 임시 requirements로 export한다. 출력은 임시 검사 입력이며 Git에 추적하거나 수동 관리하지 않는다. 각 profile을 독립 감사하고 공통 버전 일치를 검사한다.
-- [ ] Dependabot의 pip 항목을 `package-ecosystem: uv`로 변경하고 Actions 항목을 유지한다. 실제 봇이 생성하는 lock 변경을 `uv lock --check`와 전체 CI로 검증한다. 봇 실행 전에는 실제 봇 갱신 확인 완료라고 쓰지 않는다.
+- [x] Dependabot을 `package-ecosystem: uv`로 변경하고 Actions 항목을 유지한다. 실제 봇 실행의 manifest/lock 인식과 업데이트 판정을 확인한다. 생성된 갱신 PR이 있으면 잠금 일치와 전체 CI를 검증한다. 현재 모든 직접 의존성이 최신으로 판정되어 열린 PR은 없으며, 실제 lock 변경 PR 검증은 수행한 것으로 표시하지 않는다.
 - [x] release allowlist/필수 파일을 pyproject+uv.lock 기준으로 갱신한다. Git 없는 압축본에서 uv 동기화·설치 준비가 동작하고 낡은 requirements 참조가 남지 않는지 확인한다.
 - [x] manifest/lock 불일치, wheel 부재, hash 변조, 다운로드 실패, 오염 환경, 웹 UID 접근 실패에서 기존 운영 설치·유닛이 바뀌지 않는지 검사한다.
-- [ ] 개발 잠금 통합과 설치/CI/패키징 연결을 검증 가능한 커밋으로 나누되, main에는 모든 전환이 끝난 상태로 통합한다.
+- [x] 개발 잠금 통합과 설치/CI/패키징 연결을 검증 가능한 커밋으로 나누되, main에는 모든 전환이 끝난 상태로 통합한다.
 
 선언 구조:
 ```toml
@@ -245,19 +245,19 @@ uv run --locked --no-sync python scripts/ci_unit.py
 - [x] VHD 경로 빈 값은 자동 탐색이 아니라 not-configured라고 정정한다. 이번 범위에서 자동 탐색 기능을 새로 만들지 않는다.
 - [x] pidfd 미지원 시 종료 제한, 수집 공백/heartbeat 의미, 큰 이력 오류, 푸시 등록/수신 차이, 시스템 state_dir 지원 범위·재설치 조건, uv 사용법과 복구 절차를 구현과 맞춘다.
 - [x] 기존 실패 재현을 모두 회귀 검사로 남기고 R1–R13 각각 구현 commit·관련 테스트·실제 확인/미확인 상태를 이 문서에 연결한다.
-- [ ] 최종 main 후보에서 Python 3.11–3.14 전체 검사, JS/shell/workflow 검사, root fixture, 실제 systemd 격리 설치/복구, web-only transport, 고정 Playwright PC/모바일 오류 시나리오를 실행한다. 예상하지 못한 skip은 실패다.
-- [ ] 최신 의존성 감사, 비밀값/공개 문자열 검사, Python/JS CodeQL SARIF 검사, 같은 commit의 재현 가능한 archive 생성·검증·추출본 설치 준비를 통과시킨다.
+- [x] 최종 main 후보에서 Python 3.11–3.14 전체 검사, JS/shell/workflow 검사, root fixture, 실제 systemd 격리 설치/복구, web-only transport, 고정 Playwright PC/모바일 오류 시나리오를 실행한다. 예상하지 못한 skip은 실패다.
+- [x] 최신 의존성 감사, 비밀값/공개 문자열 검사, Python/JS CodeQL SARIF 검사, 같은 commit의 재현 가능한 archive 생성·검증·추출본 설치 준비를 통과시킨다.
 - [x] 권한/종료, 감시/알림/UI, 설치/uv/릴리스를 독립 읽기 전용 교차 검토한다. 확정된 P1/P2를 남긴 채 완료·배포하지 않는다. 실제 환경 검증이 막히면 미검증 상태를 기록하고 관련 완료 표시를 하지 않는다.
-- [ ] diff·staging과 main의 새 변경을 확인한 뒤 `--no-ff` 병합한다. 통합으로 코드가 달라지면 해당 검사를 다시 수행한다. 최종 SHA를 push하고 그 SHA의 CI 결과를 확인한다.
+- [x] diff·staging과 main의 새 변경을 확인한 뒤 `--no-ff` 병합한다. 통합으로 코드가 달라지면 해당 검사를 다시 수행한다. 최종 SHA를 push하고 그 SHA의 CI 결과를 확인한다.
 
 ## 단계 10 — 기존 운영에 반영하고 정리
 
-- [ ] 배포 직전 기준선을 새로 읽는다. 준비한 최종 SHA와 실제 설치할 소스가 같고 dirty=false인지 확인한다. 전체 project 디렉터리나 비공개 Git 이력을 백업 폴더로 복제하지 않는다.
-- [ ] 새 웹 환경·import·의존성·웹 계정 접근 검사를 완료한 뒤 `install-services.sh`로 웹/컨트롤러/CLI reader를 적용하고 `install-root.sh`로 guard를 마지막에 적용한다. 두 설치 사이 운영 코드 혼합 상태가 안전한지 단계 9에서 검증한다. 호환되지 않는 조합은 이 순서로 강행하지 않고 한 배포 절차 안에서 guard 쓰기를 잠시 중지·복구하도록 한다.
-- [ ] 복구 자료는 기존 설치기가 사용하는 경로에서 이번 배포에 필요한 것만 유지한다. 실패하면 이전 코드/유닛/환경/active/enabled 상태를 복원하고 실패 구간 새 이력을 보존한다. 잘 동작하는 이전 환경을 검증 전에 삭제하지 않는다.
-- [ ] 배포 성공은 unit active만으로 판정하지 않는다. 코드 해시·BUILD stamp, 새 PID, 첫 state 기록, 최소 2회 연속 수집과 2회 history 기록, 오류 로그, 실제 Tailscale PC/모바일 10개 화면, auth/CSRF·SSE 표시를 확인한다.
-- [ ] 등록 정보·접근 설정·사용자 설정의 불필요한 변경 0, 무관한 서비스 PID·Docker 실행 목록 변경 0을 확인한다. 현재 자원 경보가 warning이어도 정상 수집이면 배포 실패로 취급하지 않는다.
-- [ ] 외부 알림은 fixture 성공과 실제 수신을 구분한다. 현재 요청만으로 외부 테스트 메시지를 보내지 않는다. 실제 수신 증거가 없으면 그 한계를 명시한다.
+- [x] 배포 직전 기준선을 새로 읽는다. 준비한 최종 SHA와 실제 설치할 소스가 같고 dirty=false인지 확인한다. 전체 project 디렉터리나 비공개 Git 이력을 백업 폴더로 복제하지 않는다.
+- [x] 새 웹 환경·import·의존성·웹 계정 접근 검사를 완료한 뒤 `install-services.sh`로 웹/컨트롤러/CLI reader를 적용하고 `install-root.sh`로 guard를 마지막에 적용한다. 두 설치 사이 운영 코드 혼합 상태가 안전한지 단계 9에서 검증한다. 호환되지 않는 조합은 이 순서로 강행하지 않고 한 배포 절차 안에서 guard 쓰기를 잠시 중지·복구하도록 한다.
+- [x] 복구 자료는 기존 설치기가 사용하는 경로에서 이번 배포에 필요한 것만 유지한다. 실패하면 이전 코드/유닛/환경/active/enabled 상태를 복원하고 실패 구간 새 이력을 보존한다. 잘 동작하는 이전 환경을 검증 전에 삭제하지 않는다.
+- [x] 배포 성공은 unit active만으로 판정하지 않는다. 코드 해시·BUILD stamp, 새 PID, 첫 state 기록, 최소 2회 연속 수집과 2회 history 기록, 오류 로그, 실제 Tailscale PC/모바일 10개 화면, auth/CSRF·SSE 표시를 확인한다.
+- [x] 등록 정보·접근 설정·사용자 설정의 불필요한 변경 0, 무관한 서비스 PID·Docker 실행 목록 변경 0을 확인한다. 현재 자원 경보가 warning이어도 정상 수집이면 배포 실패로 취급하지 않는다.
+- [x] 외부 알림은 fixture 성공과 실제 수신을 구분한다. 현재 요청만으로 외부 테스트 메시지를 보내지 않는다. 실제 수신 증거가 없으면 그 한계를 명시한다.
 - [ ] 성공 확인 뒤 사용되지 않는 이전 웹 환경과 이번 배포의 복구 자료를 정리한다. 실패/미확인 상태에서 복구 자료를 임시 파일로 취급하지 않는다. 운영 데이터·현재 환경과 소유 불명 자료는 보존한다.
 - [ ] 작업 브랜치의 main 포함을 확인하고 삭제한다. 자신이 만든 임시 서버·환경·archive·스크린샷·로그·캐시를 제거한다. worktree를 만들지 않았다면 없는 상태를 확인한다.
 - [ ] 기본 경로의 clean main, 브랜치/main 포함, 단일 worktree, 원격 SHA, 설치 SHA, 서비스 상태를 마지막으로 확인한다. 문서만 추가된 배포 기록 commit은 제품 코드 재배포 사유로 삼지 않는다.
@@ -272,7 +272,7 @@ git worktree list
 
 ## 실행 결과 기록
 
-계획에 따라 작업 브랜치에서 구현 중이다. 체크된 항목만 해당 단계의 검증을 완료했으며, 운영 배포·최종 통합 완료는 단계 9–10의 별도 증거가 필요하다. 아래 실행 기록에 실제 결과를 누적한다.
+R1–R13과 native uv 전환은 main에 통합했고 운영에 적용했다. 아래 기록은 당시 단계별 사실이며, 최종 상태는 마지막 통합·배포·정리 기록을 기준으로 한다.
 
 ### 실행 기록 — 준비와 R1
 
@@ -425,3 +425,36 @@ git worktree list
 | R11/R12 | ba8e954/a49f1f4/cbc7598 | 잠금·경로·첫 sample·실제 격리 systemd 전환/복구 |
 | R13 | cfb29d0/da6d6f0 및 리허설 보완 | 실제 양 언어 SARIF·오류 fixture·동일 archive; Actions 리허설은 통합 후 확인 |
 | uv | 559701f/b4ba555/b771a4b | shared lock·native 설치·4개 requirements 제거·Python 3.11–3.14·Git 없는 archive |
+
+
+### 실행 기록 — 최종 main·릴리스 차단·Dependabot
+
+- 최종 제품 커밋은 `738c1eab1efb98b50dd8e79293e6111a8643c5ed`다. 작업 브랜치를 `--no-ff`로 main에 병합하고 origin/main에 push했다. [최종 CI 37708048801](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708048801)의 13개 job 모두 success다. Python 3.11–3.14, 실제 root 경계, 격리 systemd 설치/복구, PC/모바일·transport, 의존성·공개정보·양 언어 CodeQL 및 동일 압축본 왕복 검사를 포함한다.
+- 같은 커밋의 [정상 리허설](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708073475)은 검사한 게시 입력 검증까지 성공했다. 실제 `Publish verified assets` 단계는 skipped다.
+- [잘못된 태그](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708303605)는 tag/version mismatch로 초기 실패, [일반 검사 실패](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708426448)는 dependencies job의 주입 지점에서 실패했다. 두 실행 모두 package/publish가 skipped다.
+- [분석 누락](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708663720)은 실제 SARIF 목록 검사, [고위험 결과](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708816486)는 실제 finding 판정에서 각각 실패했다. 두 실행 모두 publish가 skipped다. 실패 로그의 원인까지 확인했으며 이 네 red run은 의도한 차단 시험이다.
+- 공개 Release·태그를 새로 만들거나 기존 태그를 바꾸지 않았다. 기존 v0.1.0 Release의 게시 시각은 그대로다.
+- [실제 Dependabot uv 실행](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708053121)과 [Actions 실행](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37708053305) 모두 success다. uv manifest/lock을 실제로 읽고 직접 의존성이 최신임을 판정했다. 현재 열린 의존성 PR은 0건이다.
+- Ruling: 업데이트가 없는 상태에서는 실제 봇의 성공한 점검과 잠금/CI 검증으로 전환을 판정한다. PR 검증을 위해 의존성을 일부러 낮추거나 가짜 봇 PR을 만들지 않는다. 실제 lock 변경 PR이 생성되지 않았다는 검증 한계는 유지한다.
+- canonical 개발 .venv도 같은 잠금의 web 8개/dev 44개 조합으로 동기화했고 428개 단위 검사를 통과했다. 전역 uv는 다른 프로젝트에 영향을 주지 않도록 변경하지 않았다. root 컨트롤러의 시스템 cryptography는 별도 7개 모의 전송 검사로 확인했다.
+
+### 실행 기록 — 기존 운영 배포와 사용자 경로 확인
+
+- 배포 직전 설정·registry·접근 정책, 실행 서비스·컨테이너, 설치 스탬프와 이력 기준선을 새로 기록했다. clean main의 `738c1ea`를 기존 install-services.sh → install-root.sh 순서로 적용했다. 기존 개발 경로와 운영 설치 경로를 유지했으며 별도 clone/worktree를 만들지 않았다.
+- 웹 의존성을 새 최종 경로에 준비하고 웹 계정 import/실행을 확인한 다음 웹·컨트롤러·CLI reader를 전환했다. guard를 마지막에 전환했고 설치기 첫 수집 확인까지 성공했다. 두 설치 명령 모두 exit 0이다.
+- 실제 설치 스탬프 두 곳 모두 `738c1ea`, dirty=false다. Python 파일은 소스와 양쪽 설치 사본을, 웹 정적 파일은 소스와 웹 사본을 바이트 해시로 비교했다.
+- 새 guard의 PID/start_ticks와 state 작성자를 대조했다. 검증 구간에 서로 다른 정상 저장 sample 4개와 새 history 2개를 확인했다. 세 서비스 모두 active/running, NRestarts=0, 배포 이후 error 우선순위 로그 0이다.
+- 배포 직전 대비 무관한 실행 서비스 20개와 Docker 컨테이너 6개가 동일하다. 사용자 설정·registry·웹 접근 정책 해시도 동일하다. 장시간 전체 작업의 이전 기준선과 이번 배포 전후 비교를 혼동하지 않는다.
+- systemd journal의 첫 Stopping부터 마지막 Started까지 웹 전환은 약 0.615초, guard 전환은 약 1.262초였다. 이는 유닛 전환 구간이며 실제 HTTP 접속 공백이나 모든 수집 간격의 상한을 증명하지 않는다. 웹은 컨트롤러와의 의존 관계로 전환 중 두 번 시작됐고 최종 PID에서 안정화됐다.
+- 실제 Tailscale 접속으로 PC/모바일 각각 overview/services/disks/top/sessions/mcp/history/alerts/settings/audit 10개 화면을 확인했다. JS 오류 0, API 오류 0, 검증 전 변경 요청 0, 가로 넘침 없음이다. SSE 데이터 나이는 약 4.3/5.5초였고, CSRF 없는 종료 요청은 403으로 거부됐다. 실제 세션 종료나 외부 알림 발송을 시험하지 않았다.
+- loopback health는 200, 보호 API는 403이다. 설치 CLI doctor의 code copies는 최종 제품 SHA와 일치하고 웹·컨트롤러·시스템 guard가 OK다. 사용자 guard inactive WARN은 시스템 모드의 의도한 상태다.
+- 첫 검증 도구 실행은 root의 Git 소유권 검사에서 중단됐다. 해당 일회성 git 조회에만 정확한 safe.directory를 지정한 뒤 동일 배포를 검증했다. 전역 Git 설정이나 운영 제품 코드를 바꾸거나 재배포하지 않았다.
+- 실제 확인 범위는 기존 WSL의 업데이트·수집·웹 사용이다. 신규 설치/실패 복구/전환/fixture 제거는 격리된 GitHub-hosted systemd VM에서 확인했다. WSL 재부팅·ARM64 실행·실제 외부 알림 수신·새 공개 Release 게시를 완료했다고 주장하지 않는다.
+
+
+### 실행 기록 — 정리 진행과 남은 환경 제약
+
+- 구현 작업 브랜치가 main/origin/main에 포함된 것을 확인하고 로컬·원격에서 제거했다. 로컬 삭제는 낡은 upstream과의 비교로 처음 거부됐으므로 main 포함 확인 후 upstream만 해제하고 `branch -d`로 제거했다. 강제 삭제는 하지 않았다.
+- 성공한 배포의 사용자 복구 디렉터리 2개는 소유와 용도를 확인한 뒤 제거했다. 개발 .venv와 현재 운영 환경·사용자 설정·이력은 보존한다. 작업 이전부터 있던 root 서비스 백업 25개는 이번 작업이 만든 자료가 아니므로 보존한다.
+- root 자료 정리 시 WSL 명령 연결이 `UtilAcceptVsock: accept4 failed 110` / `Wsl/Service/0x8007274c`로 실패했다. 정리 프로그램의 실행/삭제 완료 증거가 없고 이전 웹 환경 1개와 이번 배포의 root 복구 디렉터리 2개가 남아 있다. WSL·운영 서비스를 재시작하거나 다른 권한 설정을 변경하지 않았다.
+- 연결 실패 후에도 웹 health 200, 세 서비스의 배포 후 PID 유지·NRestarts=0, 같은 guard의 최신 state 갱신을 확인했다. 명령 연결 오류와 제품 장애를 동일시하지 않는다. root 정리와 최종 임시 검증 자료 제거가 끝나기 전까지 전체 작업 완료로 표시하지 않는다.
