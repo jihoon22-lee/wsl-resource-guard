@@ -188,12 +188,12 @@ with owner_install_lock(owner):
 **수정:** `scripts/security_gate.py`, `.github/workflows/checks.yml`, `release.yml`.
 **검사:** `tests/test_release_gate.py`, `test_release.py`, 워크플로 정적 검사.
 
-- [ ] Python/JavaScript 각각 예상 SARIF가 존재하고 올바른 버전/run/CodeQL 도구 식별/성공 invocation을 가진 경우만 허용한다. invocation 누락·실패·불명확 상태는 거부한다.
-- [ ] driver와 extensions 전체에서 규칙 목록·결과의 rule reference를 검증한다. 규칙 0건, 실행/설정 알림의 error, 결과 error 및 High/Critical, 비정상 score를 차단한다. 실제 extension-only 결과는 허용한다.
-- [ ] 분석의 예상 언어와 검사 commit을 워크플로에서 고정하고 생성 결과를 그 실행의 산출물로 검사한다. 다른 커밋이나 임의 이전 artifact를 가져와 통과시키지 않는다.
-- [ ] 리뷰의 빈 SARIF, invocation 성공+오류 알림, 한 언어 누락, extension-only 정상 결과, 낮은 등급 결과, rule reference 손상을 모두 검사한다. 43/87처럼 특정 규칙 개수를 영구 상수로 고정하지 않는다.
+- [x] Python/JavaScript 각각 예상 SARIF가 존재하고 올바른 버전/run/CodeQL 도구 식별/성공 invocation을 가진 경우만 허용한다. invocation 누락·실패·불명확 상태는 거부한다.
+- [x] driver와 extensions 전체에서 규칙 목록·결과의 rule reference를 검증한다. 규칙 0건, 실행/설정 알림의 error, 결과 error 및 High/Critical, 비정상 score를 차단한다. 실제 extension-only 결과는 허용한다.
+- [x] 분석의 예상 언어와 검사 commit을 워크플로에서 고정하고 생성 결과를 그 실행의 산출물로 검사한다. 다른 커밋이나 임의 이전 artifact를 가져와 통과시키지 않는다.
+- [x] 리뷰의 빈 SARIF, invocation 성공+오류 알림, 한 언어 누락, extension-only 정상 결과, 낮은 등급 결과, rule reference 손상을 모두 검사한다. 43/87처럼 특정 규칙 개수를 영구 상수로 고정하지 않는다.
 - [ ] 실패 조건이면 publish job이 실행되지 않음을 disposable 검증으로 확인한다. 공개 Release를 일부러 생성/삭제하는 시험은 하지 않는다.
-- [ ] `fix: Require complete CodeQL evidence before release`로 커밋한다.
+- [x] `fix: Require complete CodeQL evidence before release`로 커밋한다.
 
 ```python
 assert all(i.get("executionSuccessful") is True for i in invocations)
@@ -361,3 +361,12 @@ git worktree list
 - Python 3.11–3.14, PC/모바일·transport·workflow 정적 검사, root 격리, 의존성 감사, 공개정보/Gitleaks, Python/JS CodeQL, 재현 가능한 압축본과 artifact roundtrip을 통과했다. 이는 해당 커밋의 결과이며 이후 변경은 최종 SHA에서 다시 확인한다.
 - 실제 GitHub-hosted VM의 guard-lifecycle 로그에서 사용자 신규 설치, 첫 수집 실패 시 사용자 guard 복구, 시스템 전환, 역순 설치 거부, 잠금 경합, HOME의 공백/%/$ 및 사용자 지정 상태 경로 쓰기, 시스템 업데이트 실패 복구, 마지막 fixture 제거가 통과했음을 확인했다.
 - 추가로 권한 거부의 서비스 전환 전 실패와 사용자 지정 경로의 완전 신규 설치를 CI fixture에 보강했다. 이 두 추가 시나리오는 다음 CI에서 확인해야 한다.
+
+### 실행 기록 — R13
+
+- RED: 성공 invocation 누락/불명확 값, 성공 표시+오류 알림, 규칙 0개, 다른 분석기, 구성요소/규칙 index 불일치, 잘못된 보안 점수의 17개 하위 사례가 기존 게이트를 통과했다.
+- GREEN: CodeQL 식별, 모든 invocation의 명시적 true, driver/extensions 전체 규칙, 실행/설정 알림과 결과의 error, High/Critical 점수 및 잘못된 메타데이터를 검사한다. 언어별 고정 파일명과 query pack을 확인하고 매트릭스에서 한 언어가 빠지면 계약 검사가 실패한다. 코드 체크아웃 SHA도 workflow의 github.sha와 대조한다.
+- 첫 원격 CI의 실제 Python/JavaScript SARIF를 새 게이트로 재검사했다. extension 규칙 43/87개, 정상 invocation을 가진 두 결과가 통과했다. 규칙 개수를 상수로 강제하지 않는다.
+- 릴리스 package는 검사 workflow에서 만든 checked-release-assets를 그대로 받아 검증·게시 단계로 전달한다. 새 압축본을 다시 만들지 않으며 두 다운로드 단계 모두 artifact digest 불일치에서 실패한다.
+- 게이트 CLI 실패 시 이어지는 게시 sentinel이 실행되지 않는 shell fixture와 release jobs의 needs/default success 조건을 검증했다. 실제 GitHub의 실패 태그→publish job skip을 발생시키는 시험은 아직 수행하지 않았으며 공개 Release는 생성하지 않았다.
+- 보안 게이트 관련 15개 시험과 전체 CI 단위 profile 419개 통과. 최종 workflow 수정 후 관련 15개를 다시 통과했다. 운영 설치본은 변경하지 않았다.

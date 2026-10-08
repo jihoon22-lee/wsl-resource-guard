@@ -170,7 +170,13 @@ jobs:
           output: sarif
           upload: never
           upload-database: false
-      - run: python3 scripts/security_gate.py sarif
+      - name: Require complete analysis of the checked-out commit
+        env:
+          EXPECTED_SHA: '${{ github.sha }}'
+          CODEQL_LANGUAGE: '${{ matrix.language }}'
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/security_gate.py sarif --language "$CODEQL_LANGUAGE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
