@@ -544,9 +544,9 @@ class Controller:
         docker_error = ''
         try:
             containers = self.containers() if any(s['kind'] == 'compose' for s in data['services']) else []
-        except (ControlError, subprocess.TimeoutExpired) as exc:
+        except (ControlError, subprocess.TimeoutExpired):
             containers = []
-            docker_error = str(exc)
+            docker_error = 'Docker 상태를 조회하지 못했습니다. 서비스 제어 로그를 확인하세요.'
         rows = []
         for entry in data['services']:
             row = dict(entry)
@@ -598,8 +598,9 @@ class Controller:
                                 pass
                     row['memory_bytes'] = memory if found else None
                     row['autostart_label'] = 'enabled' if entry['autostart'] else 'disabled'
-            except (ControlError, subprocess.TimeoutExpired) as exc:
-                row.update(state='unknown', error=str(exc), detail='상태 조회 실패')
+            except (ControlError, subprocess.TimeoutExpired):
+                row.update(state='unknown', error='서비스 상태를 조회하지 못했습니다. 서비스 제어 로그를 확인하세요.',
+                           detail='상태 조회 실패')
             health = self._health.get(entry['id'])
             if health and health.get('url') == entry.get('url'):
                 row['health'] = {k: v for k, v in health.items() if k != 'url'}

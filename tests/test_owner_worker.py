@@ -196,9 +196,9 @@ class RootIsolationTests(unittest.TestCase):
                                     ('logs', {'target': 'opencode-web.service', 'lines': 10}),
                                     ('disks', {})):
                 with self.subTest(operation=operation):
-                    if operation in ('history', 'attribution', 'session-history', 'alerts'):
-                        # Unreadable history is now an explicit failed read,
-                        # never a healthy-looking empty history response.
+                    if operation in ('config-result', 'history', 'attribution', 'session-history', 'alerts'):
+                        # Unreadable history and configuration results must
+                        # fail explicitly rather than appear empty or pending.
                         with self.assertRaises(OSError):
                             worker.call_owner(owner, operation, args)
                         continue
