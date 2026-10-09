@@ -58,6 +58,21 @@ class DiskCollectionTests(unittest.TestCase):
         self.assertEqual(row['observed_at'],100)
         self.assertEqual(disks.disk_severity(row),'critical')
 
+    def test_disk_errors_do_not_expose_exception_details(self):
+        marker = 'private-exception-detail'
+        with patch.object(disks, 'mount_table', return_value={'/mnt/c': ('9p', 'C:')}), \
+             patch.object(disks.os, 'statvfs', side_effect=OSError(marker)), \
+             patch.object(Path, 'stat', side_effect=OSError(marker)):
+            rows = disks.collect_disks(['C'], vhd_path='/mnt/c/example.vhdx')
+        self.assertNotIn(marker, json.dumps(rows))
+        for row in rows:
+            self.assertEqual(row['status'], 'error')
+            self.assertTrue(row['error'])
+            self.assertIsNone(row['available_bytes'])
+        self.assertEqual(rows[-1]['vhd']['status'], 'error')
+        self.assertTrue(rows[-1]['vhd']['error'])
+        self.assertIsNone(rows[-1]['vhd']['file_bytes'])
+
     def test_cache_and_manual_refresh_rate_limit(self):
         with patch.object(disks,'collect_disks',return_value=[disk()]) as collect:
             with patch.object(disks.time,'monotonic',side_effect=[100,101,106,160]):

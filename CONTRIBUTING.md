@@ -66,7 +66,7 @@ Release 워크플로의 수동 실행은 게시 없는 리허설입니다. main�
 
 ```bash
 python3 scripts/release.py build dist
-python3 scripts/release.py verify dist/wsl-resource-guard-0.1.1.tar.gz
+python3 scripts/release.py verify dist/wsl-resource-guard-0.1.2.tar.gz
 ```
 
 빌드는 Git의 커밋된 파일을 사용하므로 미커밋 변경은 배포 파일에 포함되지 않습니다.

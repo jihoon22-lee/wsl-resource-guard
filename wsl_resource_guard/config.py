@@ -362,8 +362,8 @@ class Settings:
                 continue
             try:
                 setattr(settings, key, coerce_config_value(key, value))
-            except ValueError as exc:
-                settings.load_warnings.append(f"{key}: {exc} 기본값 {getattr(defaults, key)!r}을 사용합니다.")
+            except ValueError:
+                settings.load_warnings.append(f"{key}: 값의 형식 또는 범위가 올바르지 않습니다. 기본값 {getattr(defaults, key)!r}을 사용합니다.")
         for bigger, smaller in CONFIG_RELATIONS:
             if getattr(settings, bigger) <= getattr(settings, smaller):
                 for key in (bigger, smaller):
@@ -393,5 +393,5 @@ def load_daemon_settings(path: Path | None = None) -> Settings:
     except (OSError, ValueError) as exc:
         # Includes TOML syntax, UTF-8 decoding, and parser numeric limits.
         settings = Settings(config_path=(path or default_config_path()).expanduser())
-        settings.load_warnings.append(f"설정 파일을 읽지 못해 모든 기본값을 사용합니다: {type(exc).__name__}: {exc}")
+        settings.load_warnings.append(f"설정 파일을 읽지 못해 모든 기본값을 사용합니다: {type(exc).__name__}")
         return settings
