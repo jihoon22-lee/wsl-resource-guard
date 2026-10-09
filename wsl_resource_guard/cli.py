@@ -33,6 +33,7 @@ from .processes import (
     build_snapshot,
     descendants_of,
     is_stale_session,
+    kill_block_reason,
     process_start_ticks,
     signal_verified_process,
 )
@@ -336,6 +337,15 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     return 0
 
 
+def _protected_tree(processes) -> bool:
+    for process in processes:
+        reason = kill_block_reason(process)
+        if reason:
+            print(reason, file=sys.stderr)
+            return True
+    return False
+
+
 def cmd_stop_mcp(args: argparse.Namespace) -> int:
     settings = _load_settings(args)
     snapshot = build_snapshot(settings.project_roots)
@@ -344,6 +354,8 @@ def cmd_stop_mcp(args: argparse.Namespace) -> int:
         print(f"PID {args.pid}는 현재 감지된 MCP 트리 루트가 아닙니다.", file=sys.stderr)
         return 2
     processes = descendants_of(args.pid, snapshot.processes)
+    if _protected_tree(processes):
+        return 2
     print(
         f"대상 MCP: {group.root_name} PID {group.root_pid}, {group.provider}/{group.project}, "
         f"{_gib(group.rss_kib)}, 프로세스 {group.process_count}개"
@@ -375,6 +387,8 @@ def cmd_stop(args: argparse.Namespace) -> int:
         print(f"PID {args.pid}는 현재 감지된 LLM 세션 루트가 아닙니다.", file=sys.stderr)
         return 2
     processes = descendants_of(args.pid, snapshot.processes)
+    if _protected_tree(processes):
+        return 2
     session = next(item for item in snapshot.sessions if item.root_pid == args.pid)
     print(
         f"대상: {session.provider} PID {session.root_pid}, {session.project}, "
