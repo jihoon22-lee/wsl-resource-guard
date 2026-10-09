@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from wsl_resource_guard.config import (CONFIG_GROUPS, CONFIG_RULES, Settings,
                                        load_daemon_settings)
@@ -58,6 +59,18 @@ class SettingsTests(unittest.TestCase):
     def test_zero_interval_cannot_create_a_busy_loop(self) -> None:
         settings = self.load_text("interval_seconds = 0\n")
         self.assertEqual(settings.interval_seconds, 15)
+
+    def test_load_warnings_do_not_expose_exception_details(self) -> None:
+        marker = 'private-exception-detail'
+        with patch('wsl_resource_guard.config.coerce_config_value', side_effect=ValueError(marker)):
+            settings = self.load_text('interval_seconds = 30\n')
+        self.assertEqual(settings.interval_seconds, Settings().interval_seconds)
+        self.assertTrue(settings.load_warnings)
+        self.assertNotIn(marker, str(settings.load_warnings))
+        with patch.object(Settings, 'load', side_effect=PermissionError(marker)):
+            settings = load_daemon_settings()
+        self.assertIn('PermissionError', str(settings.load_warnings))
+        self.assertNotIn(marker, str(settings.load_warnings))
 
     def test_integral_float_is_accepted_for_integer_keys(self) -> None:
         settings = self.load_text("interval_seconds = 30.0\ndisk_drives = [\"c\"]\n")

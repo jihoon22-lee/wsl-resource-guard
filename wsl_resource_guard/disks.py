@@ -75,9 +75,12 @@ def collect_disks(drives: list[str], vhd_path: str = '', previous: list[dict] | 
             row.update(observed_at=now, total_bytes=total, used_bytes=used, available_bytes=available,
                        reserved_bytes=free-available, available_percent=available/total*100,
                        used_percent=used/total*100)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError):
             row['status'] = 'unmounted' if row['status'] == 'unmounted' else 'error'
-            row['error'] = str(exc)
+            row['error'] = ('드라이브가 연결 또는 마운트되어 있지 않습니다.'
+                            if row['status'] == 'unmounted' else
+                            '마운트 정보를 읽지 못했습니다.' if kind == 'windows' and mount_error else
+                            '디스크 용량을 읽지 못했습니다.')
             old = previous_by_id.get(identifier, {})
             # Keep last good measurements for alarm continuity, explicitly marked stale.
             for key in ('observed_at', 'total_bytes', 'used_bytes', 'available_bytes',
@@ -94,8 +97,8 @@ def collect_disks(drives: list[str], vhd_path: str = '', previous: list[dict] | 
                         raise OSError('VHDX 저장 드라이브가 마운트되어 있지 않습니다.')
                     row['vhd']['file_bytes'] = Path(vhd_path).stat().st_size
                     row['vhd']['status'] = 'ok'
-                except OSError as exc:
-                    row['vhd'].update(status='error', error=str(exc))
+                except OSError:
+                    row['vhd'].update(status='error', error='VHDX 파일 정보를 읽지 못했습니다. 경로와 마운트를 확인하세요.')
         rows.append(row)
     return rows
 
