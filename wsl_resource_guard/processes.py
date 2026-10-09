@@ -40,6 +40,7 @@ class ProcessInfo:
     command: str = field(repr=False)
     cpu_jiffies: int = 0
     start_ticks: int | None = None
+    argv: tuple[str, ...] = field(default=(), repr=False)
 
     @property
     def is_mcp(self) -> bool:
@@ -166,7 +167,7 @@ AGY_PROGRAMS = frozenset({"agy", "antigravity"})
 _INTERPRETER = re.compile(r"(?:python[\d.]*|node|bun|deno)")
 
 
-def _persistent_provider(name: str, command: str) -> str | None:
+def _persistent_provider(name: str, command: str, argv: tuple[str, ...] = ()) -> str | None:
     """Provider of an agent server root that stays up by design, else None.
 
     devin-web runs the agent under devin-acpd (a node daemon, comm MainThread);
@@ -175,6 +176,21 @@ def _persistent_provider(name: str, command: str) -> str | None:
     desktop app runs its agent backend as a language_server from the WSL-side
     .antigravity-server install. `name` and `command` are lowercased.
     """
+    tokens = [arg.lower() for arg in argv] if argv else command.split()
+    if name.startswith('codex') and tokens and Path(tokens[0]).name in ('codex', 'codex.exe'):
+        index = 1
+        value_options = {'-c', '--config', '--cd', '-p', '--profile', '-s', '--sandbox',
+                         '-a', '--ask-for-approval', '--enable', '--disable'}
+        while index < len(tokens):
+            option = tokens[index]
+            if option.split('=', 1)[0] in value_options:
+                index += 1 if '=' in option else 2
+            elif option in ('--search', '--full-auto'):
+                index += 1
+            else:
+                break
+        if index < len(tokens) and tokens[index] == 'app-server':
+            return 'codex'
     if "bin/devin-acpd.mjs" in command:
         return "devin"
     if name == "language_server" and "/.antigravity-server/" in command:
@@ -244,8 +260,10 @@ def _read_process(pid: int, clock_ticks: int, uptime: float) -> ProcessInfo | No
     try:
         raw_command = (proc_dir / "cmdline").read_bytes()
         command = raw_command.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+        argv = tuple(arg.decode('utf-8', errors='replace') for arg in raw_command.rstrip(b'\0').split(b'\0'))
     except OSError:
         command = ""
+        argv = ()
     try:
         cwd = os.readlink(proc_dir / "cwd")
     except OSError:
@@ -276,6 +294,7 @@ def _read_process(pid: int, clock_ticks: int, uptime: float) -> ProcessInfo | No
         cpu_jiffies=cpu_jiffies,
         command=command,
         start_ticks=start_ticks,
+        argv=argv,
     )
 
 
@@ -317,6 +336,8 @@ def kill_block_reason(root: ProcessInfo | None) -> str:
     """Non-empty when this tree root must not be signalled from session controls."""
     # The nearest owning unit also covers sub-cgroups inside a service, while
     # an interactive scope under a per-user manager remains interactive.
+    if root and _persistent_provider(root.name.lower(), root.command.lower(), root.argv):
+        return '여러 작업이 사용하는 상시 실행기입니다. 원래 앱에서 해당 작업을 확인하고 중지하세요.'
     for component in reversed(((root.cgroup if root else "") or "").split('/')):
         if component.endswith('.scope'):
             return ''
@@ -593,7 +614,7 @@ def build_snapshot(project_roots: list[str], uid: int | None = None) -> ProcessS
                 mcp_count=sum(item.mcp_count for item in projects),
                 cgroup=root.cgroup,
                 cpu_jiffies=sum(item.cpu_jiffies for item in projects),
-                persistent=_persistent_provider(root.name.lower(), root.command.lower()) is not None,
+                persistent=_persistent_provider(root.name.lower(), root.command.lower(), root.argv) is not None,
                 limits=scope_limits(root.cgroup),
                 projects=projects,
             )

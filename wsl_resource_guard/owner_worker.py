@@ -53,7 +53,13 @@ class OwnerData:
         values = asdict(settings)
         values['config_path'] = str(settings.config_path)
         values['secrets_path'] = str(settings.secrets_path)
-        return {'settings': values, 'state': load_state(settings.state_path / 'state.json'),
+        state = load_state(settings.state_path / 'state.json')
+        from .delivery import merge_delivery_summary
+        try:
+            state = merge_delivery_summary(state, settings.state_path)
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            state['last_channel_errors'] = {'delivery': '전달 기록을 읽지 못했습니다.'}
+        return {'settings': values, 'state': state,
                 'channels': Notifier(settings).channel_status()}
 
     def _owner_home(self) -> Path:
@@ -154,6 +160,11 @@ class OwnerData:
         settings = self._owner_settings()
         state_path = settings.state_path
         state = load_state(state_path / 'state.json')
+        from .delivery import merge_delivery_summary
+        try:
+            state = merge_delivery_summary(state, state_path)
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            state['last_channel_errors'] = {'delivery': '전달 기록을 읽지 못했습니다.'}
         previous = (state.get('metrics') or {}).get('disks', [])
         rows = read_disks(settings.disk_drives, settings.wsl_vhd_path, previous,
                           interval=settings.disk_refresh_seconds, force=force)
@@ -252,6 +263,29 @@ def dispatch(operation: str, args: dict, reader=None):
         return reader.session_history()
     if operation == 'alerts':
         return reader.alert_episodes()
+    if operation == 'incidents':
+        from .incidents import read_store, IDENTIFIER
+        from .delivery import read_json
+        store = read_store(reader._state_path() / 'incidents.json')
+        identifier = args.get('id')
+        if identifier is None:
+            return store
+        if not IDENTIFIER.fullmatch(str(identifier)):
+            raise ValueError('Invalid incident identity')
+        store['incidents'] = [row for row in store['incidents'] if row['id'] == identifier]
+        try:
+            deliveries = read_json(reader._state_path() / 'delivery.json', {'events': {}})
+            for row in store['incidents']:
+                row['delivery'] = deliveries.get('events', {}).get(row['id'], {})
+        except (OSError, ValueError, AttributeError):
+            store['delivery_unavailable'] = True
+        return store
+    if operation == 'task-metadata':
+        from .identity import task_metadata
+        pids = args.get('pids')
+        if not isinstance(pids, list):
+            raise ValueError('Invalid process list')
+        return task_metadata(reader.home, pids)
     if operation == 'disks':
         return reader.disks(force=args.get('force') is True)
     if operation == 'settings':

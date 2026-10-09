@@ -2070,3 +2070,15 @@ body.live .live-dot {
   font-size: 11px;
   margin-top: 4px;
 }
+
+/* Incident investigation follows the same layout on Samsung Internet and desktop. */
+.investigation-panel { margin-top: 16px; }
+.investigation-panel .panel-body { line-height: 1.65; }
+.incident-cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,290px),1fr)); gap: 12px; }
+.incident-card { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 16px; color: inherit; text-decoration: none; overflow-wrap: anywhere; min-width: 0; }
+.incident-card:hover,.incident-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.path-text,.investigation-panel li { overflow-wrap: anywhere; }
+.impact-consent { display:flex; align-items:flex-start; gap:12px; padding:16px 0; }
+.impact-consent input { min-width:22px; min-height:22px; }
+.investigation-panel .action-grid { margin:12px 0; }
+@media(max-width:640px) { .investigation-panel .action-grid { display:flex; flex-direction:column; align-items:stretch; } .investigation-panel .button { min-height:44px; white-space:normal; } }

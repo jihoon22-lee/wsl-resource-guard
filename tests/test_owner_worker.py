@@ -175,6 +175,7 @@ class RootIsolationTests(unittest.TestCase):
             fixture_file.write_text(json.dumps({'slot': marker, 'commit': marker, 'metrics': {'marker': marker}}))
             fixture_file.chmod(0o600)
             for path in (state / 'state.json', state / 'weekly-report.json',
+                         state / 'incidents.json',
                          state / 'config-request-result.json', state / 'push-expired.json', cli / 'BUILD.json',
                          config / 'secrets.json', home / '.local/state/opencode-web.log'):
                 path.symlink_to(fixture_file)
@@ -191,12 +192,13 @@ class RootIsolationTests(unittest.TestCase):
             worker = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(worker)
             for operation, args in (('context', {}), ('settings', {}), ('config-result', {}),
+                                    ('incidents', {}),
                                     ('history', {}), ('attribution', {}), ('session-history', {}),
                                     ('alerts', {}), ('gone-endpoints', {}),
                                     ('logs', {'target': 'opencode-web.service', 'lines': 10}),
                                     ('disks', {})):
                 with self.subTest(operation=operation):
-                    if operation in ('config-result', 'history', 'attribution', 'session-history', 'alerts'):
+                    if operation in ('incidents', 'config-result', 'history', 'attribution', 'session-history', 'alerts'):
                         # Unreadable history and configuration results must
                         # fail explicitly rather than appear empty or pending.
                         with self.assertRaises(OSError):

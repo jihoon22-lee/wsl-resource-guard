@@ -137,6 +137,8 @@ def main():
         owner = pwd.getpwnam(ACCOUNT)
         command('loginctl', 'enable-linger', ACCOUNT)
         command('systemctl', 'start', f'user@{owner.pw_uid}.service')
+        user(owner, 'systemd-run', '--user', '--scope', '--quiet', '/usr/bin/python3', '-B',
+             str(REPO / 'tests/actionable_lifecycle.py'))
         write_config(owner)
         state = HOME / '.local/state/wsl-resource-guard'
         user(owner, '/bin/bash', str(REPO / 'install-user.sh'))
