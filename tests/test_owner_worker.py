@@ -41,6 +41,41 @@ class SafeReadTests(unittest.TestCase):
 
 
 class OwnerDataTests(unittest.TestCase):
+    def test_investigation_reads_cross_the_real_worker_protocol(self):
+        import subprocess
+        import sys
+        root = str(Path(__file__).resolve().parents[1])
+        script = 'import sys;sys.path.insert(0, ' + repr(root) + ');from wsl_resource_guard.owner_worker import main;main()'
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / '.local/state/wsl-resource-guard'
+            state.mkdir(parents=True)
+            identifier = 'a' * 32
+            incident = {'id': identifier, 'state': 'active', 'revision': 1}
+            (state / 'incidents.json').write_text(json.dumps({'version': 1, 'updated_at': 123, 'incidents': [incident]}))
+            (state / 'delivery.json').write_text(json.dumps({'events': {identifier: {'destinations': {}}}}))
+            def invoke(operation, args):
+                child = subprocess.run([sys.executable, '-I', '-c', script],
+                    input=json.dumps({'op': operation, 'args': args}), text=True,
+                    capture_output=True, env={**os.environ, 'HOME': directory}, timeout=15, check=True)
+                return json.loads(child.stdout)
+            self.assertEqual(invoke('incidents', {})['incidents'], [incident])
+            self.assertEqual(invoke('incidents', {'id': identifier})['incidents'][0]['delivery'], {'destinations': {}})
+            self.assertEqual(invoke('task-metadata', {'pids': []}), {})
+            with self.assertRaises(subprocess.CalledProcessError):
+                invoke('task-metadata', {'pids': [-1]})
+
+    def test_settings_exposes_delivery_failure_without_changing_sampler_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reader = owner_worker.OwnerData(Path(directory))
+            state = reader._state_path()
+            state.mkdir(parents=True)
+            (state / 'state.json').write_text('{"last_channel_errors": {}}')
+            before = (state / 'state.json').read_bytes()
+            (state / 'delivery.json').write_text(json.dumps({'events': {'incident': {'destinations': {
+                'mail': {'channel': 'gmail', 'status': 'failed', 'attempted_at': 1}}}}}))
+            self.assertIn('gmail', reader.settings_info()['channel_errors'])
+            self.assertEqual((state / 'state.json').read_bytes(), before)
+
     def test_log_tail_supports_controller_limits_and_rejects_invalid_input(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

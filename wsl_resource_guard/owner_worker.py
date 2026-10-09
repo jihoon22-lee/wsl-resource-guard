@@ -160,11 +160,6 @@ class OwnerData:
         settings = self._owner_settings()
         state_path = settings.state_path
         state = load_state(state_path / 'state.json')
-        from .delivery import merge_delivery_summary
-        try:
-            state = merge_delivery_summary(state, state_path)
-        except (OSError, ValueError, AttributeError, KeyError, TypeError):
-            state['last_channel_errors'] = {'delivery': '전달 기록을 읽지 못했습니다.'}
         previous = (state.get('metrics') or {}).get('disks', [])
         rows = read_disks(settings.disk_drives, settings.wsl_vhd_path, previous,
                           interval=settings.disk_refresh_seconds, force=force)
@@ -203,6 +198,11 @@ class OwnerData:
         settings = self._owner_settings()
         state_path = settings.state_path
         state = load_state(state_path / 'state.json')
+        from .delivery import merge_delivery_summary
+        try:
+            state = merge_delivery_summary(state, state_path)
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            state['last_channel_errors'] = {'delivery': '전달 기록을 읽지 못했습니다.'}
         cli_stamp = read_stamp(home / '.local/lib/wsl-resource-guard/wsl_resource_guard')
         web_stamp = read_stamp(WEB_PACKAGE)
         level, detail = compare_stamps(cli_stamp, web_stamp, WEB_PACKAGE.is_dir())
@@ -247,7 +247,8 @@ class OwnerData:
 
 def dispatch(operation: str, args: dict, reader=None):
     allowed = {'context', 'history', 'attribution', 'session-history', 'alerts',
-               'disks', 'settings', 'config-result', 'gone-endpoints', 'logs'}
+               'disks', 'settings', 'config-result', 'gone-endpoints', 'logs',
+               'incidents', 'task-metadata'}
     if operation not in allowed or not isinstance(args, dict):
         raise ValueError('Unsupported owner read operation')
     reader = reader or OwnerData()
