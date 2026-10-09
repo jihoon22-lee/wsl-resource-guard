@@ -139,6 +139,40 @@ def create_app(config: dict | None = None, control=request_control,
     def alerts():
         return jsonify(control({'op': 'alerts'}))
 
+    @app.get('/api/incidents')
+    def incidents():
+        return jsonify(control({'op': 'incidents', 'id': request.args.get('id')}))
+
+    @app.get('/api/targets/<identifier>')
+    def target_detail(identifier):
+        return jsonify(control({'op': 'target-detail', 'id': identifier}))
+
+    @app.post('/api/incidents/<identifier>/decision')
+    def incident_decision(identifier):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            abort(400)
+        return jsonify(control({'op': 'incident-decision', 'id': identifier, 'choice': body.get('choice'),
+                                'minutes': body.get('minutes'), 'actor': session['login']}))
+
+    @app.post('/api/actions/preview')
+    def action_preview():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            abort(400)
+        return jsonify(control({'op': 'action-preview', 'id': body.get('target_id'), 'actor': session['login']}))
+
+    @app.post('/api/actions/<identifier>/execute')
+    def action_execute(identifier):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or body.get('confirmed') is not True:
+            abort(400, description='영향 범위를 확인하세요.')
+        return jsonify(control({'op': 'action-execute', 'id': identifier, 'actor': session['login']}))
+
+    @app.get('/api/actions/<identifier>')
+    def action_status(identifier):
+        return jsonify(control({'op': 'action-status', 'id': identifier, 'actor': session['login']}))
+
     @app.get('/api/settings')
     def settings():
         return jsonify(control({'op': 'settings'}))

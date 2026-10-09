@@ -24,7 +24,9 @@ class ServiceError(Exception):
 
 
 # Fixed protocol codes, never arbitrary HTTP status supplied by the caller.
-ERROR_STATUSES = {'config_pending': 409, 'config_not_found': 404, 'config_unavailable': 503}
+ERROR_STATUSES = {'config_pending': 409, 'config_not_found': 404, 'config_unavailable': 503,
+                  'incident_not_found': 404, 'target_not_found': 404, 'action_not_found': 404,
+                  'action_unavailable': 409, 'preview_required': 409}
 
 
 class ServiceUnavailable(ServiceError):

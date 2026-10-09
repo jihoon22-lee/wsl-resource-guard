@@ -189,6 +189,7 @@ def _install_preflighted(owner, origin, login, serve, old_handler):
             Controller().init(owner.pw_name, origin)
         if not WEB_CONFIG.exists():
             tx.write(WEB_CONFIG, json.dumps({'origin': origin, 'allowed_logins': [login], 'secret_key': secrets.token_urlsafe(48)}).encode(), 0o640, web.pw_gid)
+        tx.write(SHARED / 'dashboard.json', json.dumps({'origin': origin}).encode(), 0o640, owner.pw_gid)
         # Prove both installed code and configuration are readable by the web UID.
         run_as(web, str(environment / 'bin/python'), '-c',
                'import wsl_resource_guard.webapp; from pathlib import Path; Path("/etc/wsl-resource-guard/web.json").read_bytes()', cwd=str(DEST))

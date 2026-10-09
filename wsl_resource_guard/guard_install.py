@@ -151,7 +151,8 @@ def validate_system_owner(owner):
 
 
 # These are daemon-owned outputs, not arbitrary files in the user's state directory.
-DAEMON_STATE_FILES = ('state.json', 'config-request-result.json', 'weekly-report.json', 'push-expired.json')
+DAEMON_STATE_FILES = ('state.json', 'config-request-result.json', 'weekly-report.json', 'push-expired.json',
+                      'incidents.json', 'delivery.json', 'scheduled-delivery.json')
 HISTORY_NAME = re.compile(r'(?:disk-)?history-\d{4}-\d{2}-\d{2}\.jsonl')
 
 

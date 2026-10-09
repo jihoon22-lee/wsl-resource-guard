@@ -41,7 +41,7 @@ def scenario(browser, width, view, overrides=None, intercept=None):
 def check_optional_failure(browser, width):
     with scenario(browser, width, 'sessions', {'/api/session-history': 'bad-gateway'}) as (page, _, _, errors):
         expect(page.locator('#refresh')).to_be_enabled()
-        expect(page.locator('#sessions-table [data-kill]')).to_have_count(1)
+        expect(page.locator('#sessions-table a[href^="#target?id="]')).to_have_count(2)
         expect(page.locator('#session-history')).to_contain_text('갱신 실패')
         expect(page.locator('#last-updated')).to_contain_text('일부 갱신 실패')
         expect(page.locator('#notice')).not_to_be_visible()
