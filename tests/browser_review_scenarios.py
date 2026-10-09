@@ -173,6 +173,7 @@ def check_config_failure_false_success(browser, width):
         page.locator('#config-value').fill('7')
         page.locator('#confirm-action').click()
         expect(page.locator('#config-tracking')).to_contain_text('502')
+        expect(page.locator('#config-tracking')).to_contain_text('적용 여부 확인 필요')
         assert '변경을 적용했습니다' not in page.locator('#notice').inner_text()
         expect(page.locator('[data-config-key="warning_available_gib"]')).to_be_disabled()
         # Request tracking survives navigation independently of view refresh.

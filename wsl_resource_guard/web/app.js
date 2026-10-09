@@ -1670,7 +1670,7 @@ function renderConfigTracking() {
   if (!configTrack) return;
   const d = configTrack;
   const pending = d.state === "pending";
-  const label = pending ? "Guard 적용 대기 중" : d.state === "applied" ? "적용됨"
+  const label = pending ? (d.error ? "적용 여부 확인 필요 · 마지막 확인: 대기 중" : "Guard 적용 대기 중") : d.state === "applied" ? "적용됨"
     : d.state === "failed" ? "설정 변경 실패" : "적용 여부 확인 필요";
   const detail = d.error || (d.state === "failed" ? d.message : "");
   host.innerHTML = `<div><strong>${label}</strong>${d.key ? ` · <code>${esc(d.key)}</code> = ${esc(String(d.value))}` : ""}<span class="subline">${pending ? `수집 주기 ${Number(d.interval_seconds) || configInterval()}초 · 최근 수집 ${when(d.daemon_updated_at)} · 다른 설정은 처리 후 변경하세요.` : ""}${detail ? ` ${esc(detail)}` : ""}</span></div><div class="row-actions"><button id="config-check" class="button compact secondary">상태 다시 확인</button>${!pending ? '<button id="config-dismiss" class="button compact secondary">닫기</button>' : ""}</div>`;
