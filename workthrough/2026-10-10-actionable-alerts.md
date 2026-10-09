@@ -2,7 +2,7 @@
 
 ## 범위와 진행 상태
 
-사용자는 Android의 Samsung Internet 웹 푸시와 Gmail에서 경보를 확인한다. 알림에서 실제 작업·공유 범위·현재 상태를 이해하고, 유지/재확인/개별 종료를 선택한 뒤 결과를 확인하는 흐름을 구현한다. 완료 후 문서·버전 갱신, 태그·Release 게시와 수동 운영 배포까지 요청받았다. 구현 커밋 `1e59403`의 PR 검증과 병합을 마치고 0.2.0 문서·버전을 준비한다. 운영 설치본은 아직 변경하지 않았다.
+사용자는 Android의 Samsung Internet 웹 푸시와 Gmail에서 경보를 확인한다. 알림에서 실제 작업·공유 범위·현재 상태를 이해하고, 유지/재확인/개별 종료를 선택한 뒤 결과를 확인하는 흐름을 구현했다. 완료 후 문서·버전 갱신, 태그·Release 게시와 수동 운영 배포까지 요청받았다. 구현·후속 보완·문서·버전 0.2.0을 main에 병합하고 태그와 Release를 게시했다. **운영 배포는 관리자 실행 연결 실패로 미완료**이며 기존 v0.1.2 설치본을 유지한다.
 
 ## 확인한 문제와 설계
 
@@ -22,11 +22,47 @@
 - 실제 pidfd 수명주기: 검사에서 생성한 부모·자식에만 SIGTERM을 요청했다. 부모는 종료되고 SIGTERM을 무시한 자식은 잔존으로 보고됐다. 별도 프로세스는 유지됐으며 같은 조치 ID 재실행은 신호를 반복하지 않았다. 검사 대상은 종료·정리됐다.
 - 실제 서비스 워커 소스의 모의 실행에서 다른 사건의 태그 분리, 역순/중복 도착 억제, 동일 origin 링크, 진행 중 다른 탭 보존, 저장 데이터 제한을 확인했다. 실제 휴대전화 수신 검증은 아니다.
 
-## 남은 검증과 제약
+## 전체 검증과 제약
 
 - 종료 사전 검사와 owner 조회 연결 보완 후 전체 단위 477개 중 475개 통과, root 전용 2개 skip이다. 해당 2개는 실제 WSL root의 격리 fixture에서 앞서 별도 실행하여 모두 통과했다. 기존 Chromium 사용성 회귀와 새 시나리오도 통과했고 모바일 상세 화면을 직접 확인했다.
 - 500개 서비스·2,000개 세션 규모의 기능 검사는 통과했다. CPU 4배 감속 모바일에서 전체 세션 목록 렌더링은 약 6.3초였으며 기존 전체 목록 성능 한계는 유지한다. 새 사건 링크는 전체 목록을 거치지 않는다. 단일 반복 수치를 안정적인 p95 측정이나 성능 목표 달성으로 해석하지 않는다.
 - [PR #9](https://github.com/jihoon22-lee/wsl-resource-guard/pull/9)의 [CI 37960792164](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37960792164)는 13개 job 모두 success다. Python 3.11–3.14, 권한 경계, 일회용 systemd 설치·복구와 실제 조치 scope, Chromium/WebKit, 의존성 감사, 두 언어 CodeQL, 압축본 왕복 검사를 포함한다. GitHub merge commit `6cb8258`을 로컬 main에도 no-ff 통합했다.
-- 실제 Samsung Internet/Gmail 수신·링크 이동은 단말에서 별도 확인해야 한다. 사용자의 확인 가능 여부를 요청했고 자동 검증·구현은 계속한다. fixture만으로 실기기 성공을 선언하지 않는다.
+- 실제 Samsung Internet/Gmail 수신·링크 이동은 단말에서 별도 확인해야 한다. 사용자에게 확인 가능 여부를 요청했으며 아직 실기기 검증 결과는 없다. fixture만으로 실기기 성공을 선언하지 않는다.
 - 공용 앱 서버의 모든 대화를 프로세스별로 정확히 매핑할 수 있는 정보가 제공되지는 않는다. 명시적 ID가 없는 작업의 제목·활동 상태는 추정하지 않으며 공용 서버 전체 종료를 편의 기능으로 제공하지 않는다.
 - PC/WSL이 꺼져 있으면 내부 감시기가 새 알림을 발송할 수 없다. 외부 상시 감시는 이번 범위가 아니다.
+
+## 릴리스 결과
+
+- 종료 사전 검사 `ec5774d`, 문서·버전 `a92d149`, 실제 owner 조회 연결 `5d4b49d`를 로컬 main에 no-ff 병합하고 원격에 push했다.
+- 최종 제품 커밋은 `36086bbaffe528dc11dd4e6ccbde13ee60e5f901`이다. [main CI 37962835341](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37962835341)의 13개 job 모두 success를 확인한 뒤 annotated `v0.2.0` 태그를 생성했다. 앞선 `793910b` 실행은 보완본 검사를 진행하기 위해 취소했다.
+- [Release CI 37963913772](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37963913772)의 전체 검사·두 언어 보안 분석·보안 결과 gate·패키징·게시 15개 job 모두 success다. [v0.2.0 Release](https://github.com/jihoon22-lee/wsl-resource-guard/releases/tag/v0.2.0)는 draft/prerelease가 아니다.
+- 게시된 tar.gz와 SHA256SUMS를 다시 다운로드해 해시, SOURCE manifest, 포함 파일을 검증했다. 같은 태그 커밋에서 로컬 재생성한 압축본과 바이트 단위로 일치했다. 버전 변경은 잠금 파일의 프로젝트 버전만 바꾸며 의존성 버전은 유지한다.
+
+## 운영 배포 차단과 후속 작업
+
+- 배포 승인은 받았지만 기존 `wsl.exe -d Ubuntu -u root` 실행 경로가 `Wsl/Service/0x8007274c` 및 `UtilAcceptVsock: accept4 failed 110`으로 실패했다. 현재 터미널의 `sudo -n`도 대화형 인증을 요구한다. 다른 WSL 연결과 최종 읽기 전용 재확인에서도 root 명령을 실행하지 못했다. 비밀번호를 요청하거나 WSL 전체를 재시작하지 않았다.
+- 설치기를 실행하지 않았고 운영 코드·설정·서비스를 변경하지 않았다. 읽기 전용 확인에서 웹/CLI BUILD는 모두 기존 `f4d971d`·dirty=false, Guard·웹·컨트롤러는 모두 active였다. 새 버전의 운영 표본·전달 결과·모바일 운영 API·실제 단말 수신은 아직 검증하지 않았다.
+- 사용자에게 WSL 터미널에서 설치 명령을 직접 실행할 수 있는지 요청했다. 다음 명령은 **사용자가 관리자 인증 가능한 터미널에서 실행할 후속 절차**이며 이번 작업에서 실행한 결과가 아니다. 태그의 검증된 배포 파일을 사용해 개발 체크아웃을 바꾸지 않는다.
+
+```bash
+cd ~/projects/wsl-resource-guard
+(
+  set -e
+  wrg_release_dir=$(mktemp -d /tmp/wrg-v0.2.0.XXXXXX)
+  gh release download v0.2.0 --repo jihoon22-lee/wsl-resource-guard \
+    --dir "$wrg_release_dir" --pattern '*.tar.gz' --pattern SHA256SUMS
+  (cd "$wrg_release_dir" && sha256sum -c SHA256SUMS)
+  .venv/bin/python scripts/release.py verify "$wrg_release_dir/wsl-resource-guard-0.2.0.tar.gz"
+  tar -xzf "$wrg_release_dir/wsl-resource-guard-0.2.0.tar.gz" -C "$wrg_release_dir"
+  sudo env PYTHONDONTWRITEBYTECODE=1 bash "$wrg_release_dir/wsl-resource-guard-0.2.0/install-services.sh" --owner "$(id -un)"
+  sudo env PYTHONDONTWRITEBYTECODE=1 bash "$wrg_release_dir/wsl-resource-guard-0.2.0/install-root.sh" --owner "$(id -un)"
+  systemctl is-active wsl-resource-guard.service wrg-web.service wrg-service-control.service
+  rm -r -- "$wrg_release_dir"
+)
+```
+
+설치 실패 시 위 절차는 중단하며 생성한 임시 다운로드 디렉터리는 원인 확인 후 정리한다. 설치 성공 후에도 BUILD 커밋, 새 Guard writer/표본·이력, 설정·무관한 서비스 보존, 실제 Tailscale 웹의 사건/공용 실행기 조회를 확인해야 운영 적용 검증이 완료된다. Samsung Internet/Gmail의 수신·링크 이동은 실제 단말에서 별도로 확인한다. 설치 복구 백업과 이전 실행 환경은 복구용으로 보존한다.
+
+## 정리
+
+main 병합을 확인한 구현·버전·보완 브랜치와 원격 PR 브랜치를 삭제했다. 이번 임시 로그·스크린샷·다운로드한 uv·압축본·검증 보조 스크립트도 제거했다. 테스트 프로세스와 CI 추적은 종료됐으며 임시 worktree는 없다. 기존 개발 가상환경·캐시, 운영 데이터·인증정보·복구 백업은 보존한다. 최종 결과 문서도 별도 브랜치에서 커밋·main 병합·push한 뒤 해당 브랜치를 정리한다.
