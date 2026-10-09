@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -53,7 +54,9 @@ EXCLUDED = ('wrg-', 'devbox-wsl-service-recovery', 'systemd-', 'user@', 'getty@'
 
 
 class ControlError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str = ''):
+        super().__init__(message)
+        self.code = code
 
 
 def _memory_limit(raw: str) -> int | None:
@@ -251,6 +254,17 @@ class Controller:
 
     def request_config_change(self, key: object, value: object, actor: str = '') -> dict:
         """Queue a numeric setting change for the guard daemon to apply."""
+        # Serialize the entire check + write across controller instances. Only
+        # a matching terminal result releases the slot, even after expiry or
+        # a guard restart. The daemon is the sole writer of that result.
+        with self.mutation(wait=5):
+            pending = self.config_request_status()
+            if pending.get('state') == 'pending':
+                raise ControlError(f'{pending["key"]} = {pending["value"]} 적용 대기 중입니다. '
+                                   '처리 결과를 확인한 뒤 다시 변경하세요.', code='config_pending')
+            return self._request_config_change_locked(key, value, actor)
+
+    def _request_config_change_locked(self, key: object, value: object, actor: str) -> dict:
         from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, check_relations,
                              coerce_config_value)
         if not isinstance(key, str) or key not in CONFIG_RULES \
@@ -258,24 +272,65 @@ class Controller:
             raise ControlError('웹에서는 범위가 정해진 숫자 설정만 바꿀 수 있습니다.')
         try:
             typed = coerce_config_value(key, value)
-            check_relations(self._owner_settings(), key, typed)
+            settings = self._owner_settings()
+            check_relations(settings, key, typed)
         except ValueError as exc:
             raise ControlError(f'{key}: {exc}') from None
         request = {'id': os.urandom(8).hex(), 'key': key, 'value': typed,
-                   'actor': actor[:160], 'requested_at': time.time()}
+                   'actor': actor[:160], 'requested_at': time.time(),
+                   'interval_seconds': settings.interval_seconds}
         self.write_shared('config-request.json', request)
-        return {'message': f'{key} = {typed!r} 변경을 요청했습니다. Guard가 다음 측정(약 15초 안)에 적용합니다.',
-                'id': request['id']}
+        return {'message': f'{key} = {typed!r} 변경을 요청했습니다. '
+                           f'Guard의 다음 측정에서 적용합니다 (수집 주기 {settings.interval_seconds}초).',
+                'id': request['id'], 'interval_seconds': settings.interval_seconds}
 
-    def config_request_status(self) -> dict:
-        request = self.read_shared('config-request.json')
-        if not request:
+    def _read_config_request(self) -> dict:
+        from .safe_read import read_text
+        try:
+            request = json.loads(read_text(self.shared / 'config-request.json', max_bytes=16384))
+            if (not isinstance(request, dict) or not isinstance(request.get('id'), str)
+                    or not request['id'] or len(request['id']) > 64
+                    or not isinstance(request.get('key'), str)
+                    or type(request.get('value')) not in (int, float)
+                    or not math.isfinite(request['value'])
+                    or type(request.get('requested_at')) not in (int, float)
+                    or not math.isfinite(request['requested_at'])):
+                raise ValueError('Malformed config request')
+            return request
+        except FileNotFoundError:
             return {}
-        result = self._owner_read('config-result')
-        done = result if result.get('id') == request.get('id') else None
-        return {'key': request.get('key'), 'value': request.get('value'),
+        except (OSError, ValueError, TypeError, OverflowError):
+            raise ControlError('설정 요청 파일을 확인할 수 없습니다. Guard와 서비스 관리자 상태를 확인하세요.',
+                               code='config_unavailable') from None
+
+    def config_request_status(self, identifier: object = None) -> dict:
+        if identifier is not None and (not isinstance(identifier, str)
+                                      or re.fullmatch(r'[0-9a-f]{16}', identifier) is None):
+            raise ControlError('설정 요청 ID가 올바르지 않습니다.')
+        request = self._read_config_request()
+        if not request and identifier is None:
+            return {}
+        try:
+            result = self._owner_read('config-result')
+            if not isinstance(result, dict) or (result and (
+                    not isinstance(result.get('id'), str) or type(result.get('ok')) is not bool)):
+                raise ValueError('Malformed config result')
+            context = self._owner_context()
+        except (ControlError, ValueError, OSError):
+            raise ControlError('설정 처리 결과를 읽지 못했습니다. 적용 여부를 다시 확인하세요.',
+                               code='config_unavailable') from None
+        target = request.get('id') if identifier is None else identifier
+        done = result if result.get('id') == target else None
+        if request.get('id') != target:
+            if done is None:
+                raise ControlError('이 요청의 결과는 더 이상 보관되어 있지 않습니다. 현재 설정값을 확인하세요.',
+                                   code='config_not_found')
+            request = done  # Keep the previous outcome while the next slot is pending.
+        return {'id': target, 'key': request.get('key'), 'value': request.get('value'),
                 'requested_at': request.get('requested_at'),
-                'state': 'pending' if done is None else ('applied' if done.get('ok') else 'failed'),
+                'interval_seconds': context['settings']['interval_seconds'],
+                'daemon_updated_at': context['state'].get('updated_at'),
+                'state': 'pending' if done is None else ('applied' if done['ok'] else 'failed'),
                 'message': (done or {}).get('message', '')}
 
     def _push_subscriptions(self) -> list:
@@ -1133,6 +1188,8 @@ class Controller:
             return downsample_service_memory(self.service_memory_history())
         if op == 'settings':
             return self.settings_info()
+        if op == 'config-request':
+            return self.config_request_status(request.get('id'))
         if op == 'docker-df':
             return self.docker_df()
         if op == 'summary':
@@ -1219,6 +1276,10 @@ class ControlHandler(socketserver.StreamRequestHandler):
             payload = {'ok': True, 'data': result}
         except (ControlError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
             payload = {'ok': False, 'error': str(exc)}
+            from .services import ERROR_STATUSES
+            code = getattr(exc, 'code', '')
+            if code in ERROR_STATUSES:
+                payload['code'] = code
         except Exception:
             import traceback
             traceback.print_exc()

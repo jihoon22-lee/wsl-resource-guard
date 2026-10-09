@@ -14,7 +14,7 @@ from flask import (Flask, Response, abort, jsonify, render_template, request, se
                    stream_with_context)
 from werkzeug.exceptions import HTTPException
 
-from .services import ServiceError, ServiceUnavailable, request_control
+from .services import ERROR_STATUSES, ServiceError, ServiceUnavailable, request_control
 
 # Strict policy: no inline styles or scripts; markup must not emit style=
 # attributes. JS el.style.* property assignment is not governed by CSP.
@@ -89,7 +89,7 @@ def create_app(config: dict | None = None, control=request_control,
 
     @app.errorhandler(ServiceError)
     def control_error(error):
-        return jsonify(error=str(error)), 400
+        return jsonify(error=str(error), code=error.code), ERROR_STATUSES.get(error.code, 400)
 
     @app.get('/healthz')
     def health():
@@ -142,6 +142,10 @@ def create_app(config: dict | None = None, control=request_control,
     @app.get('/api/settings')
     def settings():
         return jsonify(control({'op': 'settings'}))
+
+    @app.get('/api/settings/request')
+    def config_request():
+        return jsonify(control({'op': 'config-request', 'id': request.args.get('id')}))
 
     @app.get('/api/disks')
     def disks():

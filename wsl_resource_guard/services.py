@@ -18,7 +18,13 @@ AUDIT_OP_LABELS = {'register': '등록', 'restore': '복구', 'logs': '로그 �
 
 
 class ServiceError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str = ''):
+        super().__init__(message)
+        self.code = code
+
+
+# Fixed protocol codes, never arbitrary HTTP status supplied by the caller.
+ERROR_STATUSES = {'config_pending': 409, 'config_not_found': 404, 'config_unavailable': 503}
 
 
 class ServiceUnavailable(ServiceError):
@@ -37,7 +43,9 @@ def request_control(payload: dict, socket_path: str = SOCKET) -> object:
     except (OSError, ValueError) as exc:
         raise ServiceUnavailable('서비스 관리자에 연결할 수 없습니다. wrg-service-control.service 상태를 확인하세요.') from exc
     if not result.get('ok'):
-        raise ServiceError(result.get('error', '서비스 관리 실패'))
+        code = result.get('code')
+        raise ServiceError(result.get('error', '서비스 관리 실패'),
+                           code=code if isinstance(code, str) and code in ERROR_STATUSES else '')
     return result['data']
 
 
