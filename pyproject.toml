@@ -1,6 +1,6 @@
 [project]
 name = "wsl-resource-guard"
-version = "0.1.2"
+version = "0.2.0"
 description = "Lightweight WSL memory, swap, LLM session, and MCP monitor"
 requires-python = ">=3.11"
 dependencies = []

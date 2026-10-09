@@ -9,9 +9,13 @@ uv run --locked --no-sync python scripts/dependency_profiles.py
 .venv/bin/python -m playwright install --with-deps chromium webkit
 .venv/bin/python scripts/ci_unit.py
 node --check wsl_resource_guard/web/app.js
+node --check wsl_resource_guard/web/investigate.js
+node tests/worker_notifications.js
 .venv/bin/python tests/browser_offline.py
 .venv/bin/python tests/browser_review_scenarios.py --browser chromium
 .venv/bin/python tests/browser_review_scenarios.py --browser webkit
+.venv/bin/python tests/browser_actionable.py --browser chromium
+.venv/bin/python tests/browser_actionable.py --browser webkit
 .venv/bin/python tests/browser_scale.py --iterations 1
 .venv/bin/python tests/gunicorn_transport.py -q
 ```
@@ -21,6 +25,8 @@ node --check wsl_resource_guard/web/app.js
 
 `browser_review_scenarios.py`는 과거 결함 진단을 정상 동작을 요구하는 회귀 검사로 전환한 스크립트입니다. 서비스 워커는 이 fixture context에서 차단해 요청이 실제 네트워크로 빠지지 않게 하며 Push/worker 검증은 기존 별도 검사와 구분합니다.
 규모 검사는 서비스 50/500개·세션 200/2,000개·14일 이력을 사용합니다. `--iterations 20`과 `--browser webkit`으로 p95를 추가 측정할 수 있습니다. 출력의 `within_target=false`는 성능 목표 미달이며 기능 검사의 성공과 별개입니다. CI는 장비별 시간 목표를 강제하지 않지만 데이터·대상·오류·레이아웃 assertion은 반드시 통과해야 합니다.
+
+`browser_actionable.py`는 공용 실행기·개별 도구·미리보기·취소·부분 종료·응답 유실·대상 변경·만료 링크를 사용자 흐름으로 검사합니다. `actionable_lifecycle.py`는 자신이 만든 프로세스에만 실제 pidfd 신호를 보내며 무관한 프로세스 보존과 잔존 자식을 확인합니다. CI에서는 일회용 사용자 scope에서 실행합니다. 실제 휴대전화나 운영 세션을 자동 종료 시험 대상으로 사용하지 마세요.
 
 에이전트는 AGENTS.md의 작업 브랜치·검증·커밋·로컬 no-ff 병합·정리 절차를 따릅니다.
 PR과 CI는 권장하며 작은 수정의 승인된 직접 push를 허용합니다. required PR/CI를 강제하지 않습니다.
@@ -66,7 +72,7 @@ Release 워크플로의 수동 실행은 게시 없는 리허설입니다. main�
 
 ```bash
 python3 scripts/release.py build dist
-python3 scripts/release.py verify dist/wsl-resource-guard-0.1.2.tar.gz
+python3 scripts/release.py verify dist/wsl-resource-guard-0.2.0.tar.gz
 ```
 
 빌드는 Git의 커밋된 파일을 사용하므로 미커밋 변경은 배포 파일에 포함되지 않습니다.

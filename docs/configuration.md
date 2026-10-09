@@ -21,7 +21,7 @@ wrg configure-alerts
 | disk_drives | 관측할 Windows 드라이브 목록. 연결되지 않은 드라이브는 미관측 표시 |
 | wsl_vhd_path | 선택적 VHDX 경로. 표시를 위한 조회만 수행 |
 | interval_seconds / history_interval_seconds | 수집·이력 기록 간격, 초 |
-| retention_days | 보존 기간, 일 |
+| retention_days | 이력과 해소된 사건의 보존 기간, 일. 사건에는 개수/크기 한도도 적용 |
 | alert_quiet_hours | 예: `23-08`. warning 재알림 억제, 새 경보·critical·회복은 별도 |
 | recovery_sustain_seconds | 정상 재관측 후 회복 확인 시간 |
 
@@ -33,7 +33,8 @@ wrg configure-alerts
 자격 정보가 없거나 관측할 수 없는 항목을 정상 수신·정상 0으로 표시하지 않습니다.
 수집 간격이 설정 주기의 두 배를 넘거나 시계가 역행하면 지속·회복 판정 시간을 다시 시작합니다.
 기존 경보는 관측 실패만으로 해제하지 않고 새 정상 관측으로 회복을 확인합니다.
-heartbeat는 설정한 발송 분을 놓쳐도 다음 수집에서 가장 최근 예정 슬롯을 한 번 처리합니다.
+상시 Guard의 사건별 재알림은 `reminder_cooldown_seconds`/`critical_reminder_seconds`를 사용합니다. 사건별 보류는 해당 revision에만 적용되며 다른 사건과 위험도 상승을 막지 않습니다. 기존 전역 보류도 반복 알림에만 적용됩니다.
+heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 예정 슬롯을 한 번 처리합니다.
 오래 중단된 동안의 모든 슬롯을 몰아서 발송하지 않으며 발송 시도와 실제 성공은 구분합니다.
 
 ## 검증되는 기본값과 범위
