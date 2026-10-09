@@ -152,7 +152,7 @@ def fixtures() -> dict:
                       {'key': 'gmail_enabled', 'value': True, 'kind': 'bool',
                        'min': None, 'max': None, 'description': 'Gmail 알림 사용',
                        'group': '알림', 'default': True, 'editable': False}],
-            'config_request': {'key': 'warning_available_gib', 'value': 6.0,
+            'config_request': {'id': '0000000000000001', 'key': 'warning_available_gib', 'value': 6.0,
                                'requested_at': time.time(), 'state': 'applied', 'message': ''},
             'weekly_report': {'slot': '2026-W40', 'sent_at': time.time() - 86400},
             'disk_drives': ['C:'], 'wsl_vhd_path': 'D:\\vhd', 'project_roots': ['/projects'],
@@ -176,6 +176,10 @@ def serve(route, posts: list, gets: list, overrides: dict) -> None:
                              headers={'Content-Security-Policy': webapp.CSP})
     if path == '/sw.js':
         return route.fulfill(body=(ASSETS / 'sw.js').read_text(), content_type='text/javascript')
+    if path == '/api/stream':
+        # Unless a scenario explicitly installs an SSE route, use the real
+        # server's "polling only" response, not malformed JSON-as-SSE.
+        return route.fulfill(status=204)
     if path.startswith('/assets/'):
         name = path.removeprefix('/assets/')
         kinds = {'.css': 'text/css', '.svg': 'image/svg+xml',
@@ -185,6 +189,11 @@ def serve(route, posts: list, gets: list, overrides: dict) -> None:
         return route.fulfill(body=(ASSETS / name).read_text(), content_type=kind)
     if request.method == 'POST':
         posts.append((path, json.loads(request.post_data or '{}')))
+        if path == '/api/settings/change':
+            payload = json.loads(request.post_data)
+            overrides['/api/settings/request'] = {**payload, 'id': '0000000000000002',
+                'state': 'applied', 'requested_at': time.time(), 'interval_seconds': 15}
+            return route.fulfill(json={'message': '변경 요청 접수', 'id': '0000000000000002', 'interval_seconds': 15})
         return route.fulfill(body=json.dumps({'message': 'SIGTERM을 보냈습니다.'}),
                              content_type='application/json')
     gets.append(path)
@@ -752,7 +761,7 @@ def check_settings_view(page) -> None:
     view.locator('[data-config-key="warning_available_gib"]').click()
     page.locator('#config-value').fill('2000')
     page.locator('#confirm-action').click()
-    expect(page.locator('#notice')).to_contain_text('0.1 ~ 1024')
+    expect(page.locator('#dialog-error')).to_contain_text('0.1 ~ 1024')
     page.locator('#config-value').fill('6.5')
     page.locator('#confirm-action').click()
     expect(page.locator('#dialog')).not_to_have_attribute('open', '')

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pwd
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -87,6 +88,23 @@ class ControllerTests(unittest.TestCase):
         self.controller._snapshot_at = 0  # expired
         self.controller.snapshot()
         self.assertEqual(self.controller.unit_state.call_count, 2)
+
+    def test_snapshot_errors_do_not_expose_exception_details(self):
+        marker = 'private-command-argument'
+        for kind in ('compose', 'systemd'):
+            for error in (ControlError(marker), subprocess.TimeoutExpired([marker], 1)):
+                with self.subTest(kind=kind, error=type(error).__name__):
+                    self.data['services'] = [dict(self.entry, kind=kind)]
+                    atomic_json(self.path, self.data)
+                    self.controller.containers = Mock(side_effect=error)
+                    self.controller.unit_state = Mock(side_effect=error)
+                    self.controller._invalidate_snapshot()
+                    result = self.controller.snapshot()
+                    row = result['services'][0]
+                    self.assertEqual(row['state'], 'unknown')
+                    self.assertTrue(row['error'])
+                    self.assertIsNone(row['memory_bytes'])
+                    self.assertNotIn(marker, json.dumps(result))
 
     def test_systemd_row_carries_memory_limits(self):
         self.data['services'] = [dict(self.entry, id='devin-web', kind='systemd',

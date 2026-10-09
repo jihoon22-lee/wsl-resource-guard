@@ -939,7 +939,8 @@ def apply_config_request(settings: Settings, shared_dir: Path = SHARED_DIR,
         return None
     current = time.time() if now is None else now
     key = request.get("key")
-    result: dict[str, object] = {"id": request["id"], "key": key, "applied_at": current}
+    result: dict[str, object] = {"id": request["id"], "key": key, "applied_at": current,
+                               "requested_at": request.get("requested_at"), "value": request.get("value")}
     try:
         if key not in CONFIG_RULES or CONFIG_RULES[key][0] not in WEB_EDITABLE_KINDS:
             raise ValueError("웹에서 바꿀 수 없는 설정입니다.")

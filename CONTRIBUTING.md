@@ -1,20 +1,26 @@
 # 개발·검증·릴리스
 
-Python 3.11–3.14, Node.js, Playwright Chromium을 사용합니다. 개발 체크아웃 하나에서 작업하고, 검증된 커밋만 설치기를 통해 기존 운영 설치본에 적용하세요.
+Python 3.11–3.14, Node.js, Playwright Chromium·WebKit을 사용합니다. 개발 체크아웃 하나에서 작업하고, 검증된 커밋만 설치기를 통해 기존 운영 설치본에 적용하세요.
 
 ```bash
 # uv 0.12.23을 사용합니다. Python은 기존 3.11–3.14 설치를 지정하세요.
 uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python python3
 uv run --locked --no-sync python scripts/dependency_profiles.py
-.venv/bin/python -m playwright install --with-deps chromium
+.venv/bin/python -m playwright install --with-deps chromium webkit
 .venv/bin/python scripts/ci_unit.py
 node --check wsl_resource_guard/web/app.js
 .venv/bin/python tests/browser_offline.py
+.venv/bin/python tests/browser_review_scenarios.py --browser chromium
+.venv/bin/python tests/browser_review_scenarios.py --browser webkit
+.venv/bin/python tests/browser_scale.py --iterations 1
 .venv/bin/python tests/gunicorn_transport.py -q
 ```
 
 전체 CI profile은 Flask·cryptography가 필요하며 예상하지 못한 skip을 실패로 처리합니다.
 실제 controller나 개인 Tailnet을 사용하는 integration/browser 스크립트는 격리 환경을 명시적으로 준비한 경우에만 실행합니다.
+
+`browser_review_scenarios.py`는 과거 결함 진단을 정상 동작을 요구하는 회귀 검사로 전환한 스크립트입니다. 서비스 워커는 이 fixture context에서 차단해 요청이 실제 네트워크로 빠지지 않게 하며 Push/worker 검증은 기존 별도 검사와 구분합니다.
+규모 검사는 서비스 50/500개·세션 200/2,000개·14일 이력을 사용합니다. `--iterations 20`과 `--browser webkit`으로 p95를 추가 측정할 수 있습니다. 출력의 `within_target=false`는 성능 목표 미달이며 기능 검사의 성공과 별개입니다. CI는 장비별 시간 목표를 강제하지 않지만 데이터·대상·오류·레이아웃 assertion은 반드시 통과해야 합니다.
 
 에이전트는 AGENTS.md의 작업 브랜치·검증·커밋·로컬 no-ff 병합·정리 절차를 따릅니다.
 PR과 CI는 권장하며 작은 수정의 승인된 직접 push를 허용합니다. required PR/CI를 강제하지 않습니다.
