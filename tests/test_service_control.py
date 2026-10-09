@@ -246,7 +246,7 @@ class ControllerTests(unittest.TestCase):
         with patch.object(self.controller, 'kill_stale',
                           return_value={'message': 'ok', 'killed': [111], 'skipped': [222]}):
             self.controller.dispatch({'op': 'kill-stale', 'pids': [111, 222], 'confirmed': True},
-                                     uid=999, web_uid=999)
+                                     uid=1000, web_uid=999)
         record = json.loads((self.path.parent / 'audit.jsonl').read_text().splitlines()[-1])
         self.assertEqual(record['detail'], {'pids': [111, 222], 'killed': [111]})
 
@@ -792,7 +792,7 @@ class ControllerTests(unittest.TestCase):
             with patch('wsl_resource_guard.processes.build_snapshot', return_value=self._kill_snapshot()):
                 with patch('wsl_resource_guard.processes.signal_verified_process', return_value=True):
                     result = self.controller.dispatch(
-                        {'op': 'kill', 'pid': 100, 'confirmed': True}, uid=999, web_uid=999)
+                        {'op': 'kill', 'pid': 100, 'confirmed': True}, uid=1000, web_uid=999)
         self.assertIn('SIGTERM', result['message'])
         audit = json.loads((Path(self.temp.name) / 'audit.jsonl').read_text().splitlines()[-1])
         self.assertEqual((audit['op'], audit['id'], audit['ok']), ('kill', 100, True))

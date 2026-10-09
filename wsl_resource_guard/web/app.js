@@ -37,6 +37,9 @@ function ageCell(seconds) {
   return `<span class="age" title="시작 ${esc(when(base - seconds))}">${age(seconds)}</span>`;
 }
 const titles = {
+  incident: ["경보", "원인과 영향 확인", "발생 당시와 현재 상태를 구분해 판단하세요"],
+  target: ["작업 확인", "어떤 작업인가요?", "연결된 작업과 중단 영향을 확인하세요"],
+  action: ["조치", "영향 확인과 처리 결과", "신호 전송과 실제 종료는 별도로 확인합니다"],
   disks: [
     "Disk",
     "저장 공간",
@@ -546,6 +549,7 @@ function renderOverview() {
   const snoozeUntil = liveSummary?.snooze_until || d.snooze_until || 0;
   const snoozeText = snoozeUntil > Date.now() / 1000 ? `재알림 일시 정지 중 · ${shortWhen(snoozeUntil)}까지` : "";
   const alertActions = [
+    '<a class="button secondary" href="#alerts">원인과 영향 확인 →</a>',
     d.severity !== "normal" || snoozeText
       ? `<button class="button secondary" data-snooze>${snoozeText ? "일시 정지 변경" : "재알림 일시 정지"}</button>`
       : "",
@@ -846,7 +850,7 @@ function renderSessions() {
   );
   const stale = monitorData.sessions.filter((r) => r.stale && r.killable !== false);
   const bulk = $("kill-stale");
-  bulk.classList.toggle("hidden", !stale.length);
+  bulk.classList.add("hidden");
   bulk.textContent = `전체 오래된 세션 ${stale.length}개 종료`;
   bulk.title = "검색 조건과 무관한 전체 오래된 후보";
   preserveViewState($("sessions-table"), () => {
@@ -859,7 +863,7 @@ function renderSessions() {
       { t: "RAM", cls: "num", key: (r) => r.rss_kib },
       { t: "Swap", cls: "num", key: (r) => r.swap_kib },
       { t: "CPU", cls: "num", key: (r) => r.cpu_percent || 0 },
-      { t: "프로세스 / MCP", cls: "num", key: (r) => r.process_count },
+      { t: "프로세스 / MCP 도구", cls: "num", key: (r) => r.process_count },
       "",
     ],
     rowsOf(rows, (r) => {
@@ -879,24 +883,23 @@ function renderSessions() {
             .join(" ")
         : "";
       return [
-        `<strong>${esc(r.project)}</strong>${limits ? ' <span class="pill warn" title="' + esc(limitText) + '">제한</span>' : ""}<span class="subline">PID ${num(r.root_pid)}</span><details class="details" data-key="${Number(r.root_pid)}"><summary>프로젝트 구성</summary><div>${r.projects.map((p) => `${esc(p.project)} · ${giB(p.rss_kib)} GiB · CPU ${Number(p.cpu_percent || 0).toFixed(1)}% · MCP ${num(p.mcp_count)}`).join("<br>")}<br>${esc(r.cgroup)}${limits ? "<br>제한: " + esc(limitText) : ""}</div></details>`,
+        `<strong>${esc(r.identity?.kind === "shared_runtime" ? r.provider + " 공용 실행기" : r.project)}</strong>${r.identity ? `<span class="subline">${esc(r.identity.kind === "shared_runtime" ? "여러 작업에 영향을 줄 수 있습니다" : "실행 프로세스 · 대화 제목은 상세에서 확인")}</span>` : ""}${limits ? ' <span class="pill warn" title="' + esc(limitText) + '">제한</span>' : ""}<span class="subline">PID ${num(r.root_pid)}</span><details class="details" data-key="${Number(r.root_pid)}"><summary>프로젝트 구성</summary><div>${r.projects.map((p) => `${esc(p.project)} · ${giB(p.rss_kib)} GiB · CPU ${Number(p.cpu_percent || 0).toFixed(1)}% · MCP 프로세스 ${num(p.mcp_count)}`).join("<br>")}<br>${esc(r.cgroup)}${limits ? "<br>제한: " + esc(limitText) : ""}</div></details>`,
         esc(r.provider),
         ageCell(r.age_seconds),
         ageCell(r.youngest_process_age_seconds),
         `${giB(r.rss_kib)} GiB`,
         `${giB(r.swap_kib)} GiB`,
         `${Number(r.cpu_percent || 0).toFixed(1)}%`,
-        `${num(r.process_count)} / ${num(r.mcp_count)}`,
-        r.killable === false
-          ? `<button class="button compact danger" disabled title="${esc(r.kill_block_reason || "종료할 수 없습니다.")}">종료</button>`
-          : `<button class="button compact danger" data-kill="${Number(r.root_pid)}" data-label="${esc(r.project)} 세션">종료</button>`,
+        `${num(r.process_count)} / ${r.identity?.mcp_tree_count == null ? "—" : num(r.identity.mcp_tree_count)}`,
+        r.identity?.id
+          ? `<a class="button compact secondary" href="#target?id=${esc(r.identity.id)}">작업·영향 확인</a>`
+          : '<span class="muted">작업 신원 미확인 · 최신 서버 정보 필요</span>',
       ];
     }),
     true,
     { id: "sessions" },
     );
   });
-  bindKillButtons($("sessions-table"));
   renderSessionHistory();
 }
 function renderSessionHistory() {
@@ -970,15 +973,14 @@ function renderMcp() {
         `${giB(r.swap_kib)} GiB`,
         `${Number(r.cpu_percent || 0).toFixed(1)}%`,
         num(r.process_count),
-        r.killable === false
-          ? `<button class="button compact danger" disabled title="${esc(r.kill_block_reason || "종료할 수 없습니다.")}">종료</button>`
-          : `<button class="button compact danger" data-kill="${Number(r.root_pid)}" data-label="${esc(r.root_name)}">종료</button>`,
+        r.identity?.id
+          ? `<a class="button compact secondary" href="#target?id=${esc(r.identity.id)}">작업·영향 확인</a>`
+          : '<span class="muted">작업 신원 미확인 · 최신 서버 정보 필요</span>',
       ]),
       true,
       { id: "mcp" },
     );
   });
-  bindKillButtons($("mcp-table"));
 }
 let chartSeq = 0;
 const chartDataPending = {};
@@ -1489,6 +1491,7 @@ const shortWhen = (stamp) => {
     : `${pad(d.getMonth() + 1)}. ${pad(d.getDate())}. ${time}`;
 };
 function renderAlerts() {
+  renderIncidentList();
   if (!loaded.alerts) {
     $("alerts-summary").innerHTML = '<div class="panel empty">불러오는 중…</div>';
     return;
@@ -1850,7 +1853,10 @@ function auditDetail(d) {
   if (d.minutes != null) parts.push(d.minutes ? `${d.minutes / 60}시간` : "해제");
   if (d.value != null) parts.push(`값 ${d.value}`);
   if (d.pids) parts.push(`요청 PID ${d.pids.join(", ")}`);
-  if (d.killed) parts.push(`종료 ${d.killed.length}개`);
+  if (d.killed) parts.push(`종료 신호 요청 ${d.killed.length}개`);
+  if (d.signalled) parts.push(`종료 신호 요청 ${d.signalled.length}개`);
+  if (d.status) parts.push(operationStates[d.status] || d.status);
+  if (d.choice) parts.push({acknowledge:"확인함",defer:"재확인 보류",resume:"재알림 재개"}[d.choice] || d.choice);
   return parts.join(" · ");
 }
 // --- Browser push on this device. iPhone/iPad need the dashboard added to
@@ -1989,7 +1995,7 @@ function renderAudit() {
       (r) => [
         esc(new Date(r.time).toLocaleString("ko-KR", { hour12: false })),
         esc(r.id),
-        `${esc(actionNames[r.action] || { register: "등록", kill: "세션 종료", snooze: "재알림 일시 정지", "kill-stale": "오래된 세션 일괄 종료", "config-change": "설정 변경 요청", "push-subscribe": "푸시 알림 등록", "push-unsubscribe": "푸시 알림 해제", "push-test": "푸시 테스트" }[r.op] || r.op)}${r.detail ? `<span class="subline">${esc(auditDetail(r.detail))}</span>` : ""}`,
+        `${esc(actionNames[r.action] || { "action-preview": "종료 영향 확인", "action-execute": "종료 요청", "incident-decision": "경보 대응", register: "등록", kill: "세션 종료", snooze: "재알림 일시 정지", "kill-stale": "오래된 세션 일괄 종료", "config-change": "설정 변경 요청", "push-subscribe": "푸시 알림 등록", "push-unsubscribe": "푸시 알림 해제", "push-test": "푸시 테스트" }[r.op] || r.op)}${r.detail ? `<span class="subline">${esc(auditDetail(r.detail))}</span>` : ""}`,
         `${pill(r.ok ? "normal" : "failed")}${r.error ? `<span class="subline">${esc(r.error)}</span>` : ""}`,
       ],
     ),
@@ -2014,6 +2020,7 @@ function render() {
     case "disks": renderDisks(); break;
     case "top": renderTop(); break;
     case "sessions": renderSessions(); break;
+    case "incident": case "target": case "action": renderInvestigation(); break;
     case "mcp": renderMcp(); break;
     case "history": renderHistory(); break;
     case "alerts": renderAlerts(); break;
@@ -2116,13 +2123,17 @@ function updateAlertBadge() {
 // obsolete reads; a late response cannot update a different query or view.
 const sectionStates = new Map(), sectionReads = new Map();
 let refreshSignature = "", renderFrame = 0;
-const querySignature = () => currentView + (currentView === "history" ? ":" + historyRange : "");
+const querySignature = () => currentView + (currentView === "history" ? ":" + historyRange : ["incident", "target", "action"].includes(currentView) ? ":" + investigationIds[currentView] : "");
 const SECTION_LABELS = { monitor: "자원 상태", services: "서비스", disks: "디스크",
   dockerDf: "Docker 사용량", overviewHistory: "최근 자원 추이", sessionHistory: "세션 이력",
   serviceMemory: "서비스 메모리 이력", history: "자원 이력", attribution: "프로젝트별 사용량",
+  incidents: "경보별 원인", incidentDetail: "경보 상세", targetDetail: "작업과 영향", operationDetail: "조치 결과",
   alerts: "경보 이력", settings: "설정", pushKey: "푸시 설정", audit: "작업 기록" };
 function viewJobs() {
   const paths = [], view = currentView;
+  if (view === "incident") return [{key: "incidentDetail", path: "/api/incidents?id=" + encodeURIComponent(investigationIds.incident)}];
+  if (view === "target") return [{key: "targetDetail", path: "/api/targets/" + encodeURIComponent(investigationIds.target)}];
+  if (view === "action") return [{key: "operationDetail", path: "/api/actions/" + encodeURIComponent(investigationIds.action)}];
   const add = (key, path) => paths.push({ key, path });
   if (["overview", "disks"].includes(view)) add("disks", "/api/disks");
   if (view === "disks") add("dockerDf", "/api/docker-df");
@@ -2136,6 +2147,7 @@ function viewJobs() {
     add("attribution", `/api/attribution?range=${historyRange}`);
   }
   if (view === "alerts") add("alerts", "/api/alerts");
+  if (["overview", "alerts"].includes(view)) add("incidents", "/api/incidents");
   if (view === "settings") {
     add("settings", "/api/settings");
     add("pushKey", "/api/push/key");
@@ -2145,6 +2157,10 @@ function viewJobs() {
 }
 function applySection(key, value) {
   switch (key) {
+    case "incidents": incidentStore = value; break;
+    case "incidentDetail": incidentDetail = value; break;
+    case "targetDetail": targetDetail = value; break;
+    case "operationDetail": operationDetail = value; break;
     case "disks": diskData = value; break;
     case "dockerDf": dockerDfData = value; break;
     case "overviewHistory": overviewHistory = value; break;
@@ -2191,7 +2207,7 @@ function updateRefreshStatus() {
 function renderSectionStatuses() {
   const view = $("view-" + currentView);
   view.querySelectorAll(".section-status").forEach((el) => el.remove());
-  const hosts = { monitor: {overview:"view-overview",top:"top-table",sessions:"sessions-table",mcp:"mcp-table"}[currentView],
+  const hosts = { incidents: "incident-list", incidentDetail: "incident-detail", targetDetail: "target-detail", operationDetail: "operation-detail", monitor: {overview:"view-overview",top:"top-table",sessions:"sessions-table",mcp:"mcp-table"}[currentView],
     services: currentView === "overview" ? "overview-services" : "services-list",
     disks: "view-" + currentView, dockerDf: "docker-df", overviewHistory: "view-overview",
     sessionHistory: "session-history", serviceMemory: "service-memory-chart",
@@ -2343,6 +2359,7 @@ function parseHash(hash = location.hash) {
 }
 function viewParams(view) {
   const p = {};
+  if (["incident", "target", "action"].includes(view)) p.id = investigationIds[view];
   if (view === "top" && $("top-search").value) p.q = $("top-search").value;
   if (view === "sessions") {
     if ($("session-search").value) p.q = $("session-search").value;
@@ -2365,6 +2382,15 @@ function hashFor(view) {
   return query ? `${view}?${query}` : view;
 }
 function applyViewParams(view, p) {
+  if (["incident", "target", "action"].includes(view)) {
+    const id = /^[0-9a-f]{32}$/.test(p.id || "") ? p.id : "invalid";
+    if (investigationIds[view] !== id) {
+      investigationIds[view] = id;
+      if (view === "incident") incidentDetail = null;
+      if (view === "target") targetDetail = null;
+      if (view === "action") operationDetail = null;
+    }
+  }
   if (view === "top") $("top-search").value = p.q || "";
   if (view === "sessions") {
     $("session-search").value = p.q || "";
@@ -2539,92 +2565,6 @@ function confirmAction(row, action) {
     }
   });
 }
-function bindKillButtons(root) {
-  root
-    .querySelectorAll("[data-kill]")
-    .forEach((b) =>
-      b.addEventListener("click", () =>
-        confirmKill(Number(b.dataset.kill), b.dataset.label || "대상"),
-      ),
-    );
-}
-// SIGTERM is a request: 10 s later, re-read and say which trees survived so
-// the user knows to escalate from the terminal.
-let killFollowUpMs = 10000;
-function followUpKill(pids) {
-  setTimeout(async () => {
-    try {
-      monitorData = await api("/api/monitor?force=1");
-    } catch {
-      return;
-    }
-    const alive = new Set([...monitorData.sessions, ...monitorData.mcp].map((r) => r.root_pid));
-    const left = pids.filter((pid) => alive.has(pid));
-    if (left.length)
-      notify(`아직 실행 중: PID ${left.join(", ")}. 응답하지 않으면 PC 터미널에서 wrg stop ${left[0]} --confirm --kill 로 강제 종료하세요.`);
-    else notify(`종료를 확인했습니다 (PID ${pids.join(", ")}).`, true);
-    render();
-    updateBadges();
-  }, killFollowUpMs);
-}
-function confirmKillStale() {
-  const stale = (monitorData?.sessions || []).filter((r) => r.stale && r.killable !== false);
-  if (!stale.length) return;
-  dialog(
-    `전체 오래된 세션 ${stale.length}개 종료`,
-    `<p class="dialog-text">검색 조건과 무관한 전체 오래된 후보입니다. 아래 세션 트리에 SIGTERM을 보냅니다. 실행 직전에 서버가 다시 확인해, 그사이 활동을 재개한 세션은 건너뜁니다.</p><div class="health-description">${stale.map((r) => `${esc(r.provider)} · ${esc(r.project)} · PID ${num(r.root_pid)} · ${giB(r.rss_kib)} GiB · ${age(r.age_seconds)}`).join("<br>")}</div><div class="dialog-actions"><button id="cancel-action" class="button secondary">취소</button><button id="confirm-action" class="button danger">모두 종료</button></div>`,
-  );
-  $("cancel-action").addEventListener("click", () => $("dialog").close());
-  $("confirm-action").addEventListener("click", async () => {
-    busyAction = true;
-    $("confirm-action").disabled = true;
-    $("cancel-action").disabled = true;
-    try {
-      const data = await api("/api/sessions/kill-stale", { pids: stale.map((r) => r.root_pid), confirmed: true });
-      $("dialog").close();
-      notify(data.message, true);
-      if (data.killed?.length) followUpKill(data.killed);
-    } catch (error) {
-      notify(error.message);
-      $("dialog").close();
-    } finally {
-      busyAction = false;
-      await refresh(true);
-    }
-  });
-}
-function confirmKill(pid, label) {
-  // data-kill carries the raw integer; a locale-formatted "12,345" would become NaN.
-  if (!Number.isSafeInteger(pid) || pid <= 1) {
-    notify("종료할 PID를 확인할 수 없습니다. 화면을 새로고침하세요.");
-    return;
-  }
-  dialog(
-    `${label} · 종료`,
-    `<p class="dialog-text">PID ${num(pid)} 트리의 모든 프로세스에 SIGTERM을 보냅니다.\n강제 종료(SIGKILL)는 PC 터미널의 wrg stop에서만 가능하며, 종료된 세션은 자동으로 다시 시작되지 않습니다.</p><div class="dialog-actions"><button id="cancel-action" class="button secondary">취소</button><button id="confirm-action" class="button danger">종료</button></div>`,
-  );
-  $("cancel-action").addEventListener("click", () => $("dialog").close());
-  $("confirm-action").addEventListener("click", async () => {
-    busyAction = true;
-    $("confirm-action").disabled = true;
-    $("cancel-action").disabled = true;
-    $("dialog-close").disabled = true;
-    $("confirm-action").textContent = "적용 중…";
-    try {
-      const data = await api(`/api/sessions/${pid}/kill`, { confirmed: true });
-      $("dialog").close();
-      notify(data.message, true);
-      followUpKill([pid]);
-    } catch (error) {
-      notify(error.message);
-      $("dialog").close();
-    } finally {
-      busyAction = false;
-      $("dialog-close").disabled = false;
-      await refresh(true);
-    }
-  });
-}
 async function showLogs(row) {
   const scope = dialog(
     `${row.name} · 최근 로그`,
@@ -2796,7 +2736,6 @@ for (const [id, event, fn] of [
   });
 $("tab-more").addEventListener("click", openMoreMenu);
 $("history-custom").addEventListener("click", customRangeDialog);
-$("kill-stale").addEventListener("click", confirmKillStale);
 $("settings-changed-only").addEventListener("change", (e) => {
   settingsChangedOnly = e.target.checked;
   render();

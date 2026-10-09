@@ -60,13 +60,17 @@ jobs:
       - run: python -m playwright install --with-deps chromium webkit
       - run: |
           node --check wsl_resource_guard/web/app.js
+          node --check wsl_resource_guard/web/investigate.js
           node --check wsl_resource_guard/web/theme.js
           node --check wsl_resource_guard/web/sw.js
+          node tests/worker_notifications.js
           shellcheck install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
           bash -n install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
           python tests/browser_offline.py
           python tests/browser_review_scenarios.py --browser chromium
           python tests/browser_review_scenarios.py --browser webkit
+          python tests/browser_actionable.py --browser chromium
+          python tests/browser_actionable.py --browser webkit
           python tests/browser_scale.py --iterations 1
           python tests/gunicorn_transport.py -q
       - name: Validate workflow syntax

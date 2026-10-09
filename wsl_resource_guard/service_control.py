@@ -1021,6 +1021,8 @@ class Controller:
         data['killable'] = not reason
         if reason:
             data['kill_block_reason'] = reason
+        from .identity import describe_target
+        data['identity'] = describe_target(snapshot, row.root_pid)
         return data
 
     @staticmethod
@@ -1031,6 +1033,8 @@ class Controller:
         data['killable'] = not reason
         if reason:
             data['kill_block_reason'] = reason
+        from .identity import describe_target
+        data['identity'] = describe_target(snapshot, row.root_pid)
         return data
 
     def monitor(self, force: bool = False) -> dict:
@@ -1131,6 +1135,121 @@ class Controller:
     def alert_episodes(self, gap_seconds: int = 1800) -> dict:
         return self._cached_owner_history('alerts', 'alerts', ttl=300)
 
+    def incidents(self, identifier=None):
+        from .incidents import IDENTIFIER
+        if identifier is not None and not IDENTIFIER.fullmatch(str(identifier)):
+            raise ControlError('경보 식별자가 올바르지 않습니다.')
+        store = self._owner_read('incidents', {'id': identifier})
+        observed = store.get('updated_at', 0)
+        store['stale'] = not observed or not 0 <= time.time() - observed <= max(60, self._owner_settings().interval_seconds * 3)
+        decisions = self.read_shared('incident-decisions.json')
+        for row in store['incidents']:
+            row['decision'] = decisions.get(row['id'], {})
+        if identifier is not None:
+            row = next((r for r in store['incidents'] if r['id'] == identifier), None)
+            if row is None:
+                raise ControlError('경보 기록이 없거나 보관 기간이 지났습니다. 다른 대상에 연결하지 않습니다.', code='incident_not_found')
+            return {'incident': row, 'stale': store['stale'], 'updated_at': observed,
+                    'delivery_unavailable': store.get('delivery_unavailable', False)}
+        return store
+
+    def incident_decision(self, identifier, choice, minutes, actor):
+        if choice not in ('acknowledge', 'defer', 'resume'):
+            raise ControlError('경보 대응을 다시 선택하세요.')
+        if choice == 'defer' and (type(minutes) is not int or minutes not in (30, 60, 240, 480)):
+            raise ControlError('재확인 시간을 다시 선택하세요.')
+        with self.mutation():
+            row = self.incidents(identifier)['incident']
+            if row['state'] == 'resolved':
+                raise ControlError('이미 해소된 경보입니다. 최신 상태를 확인하세요.')
+            now = time.time()
+            decisions = self.read_shared('incident-decisions.json')
+            decisions = {k: v for k, v in decisions.items() if now - v.get('at', 0) < 30 * 86400}
+            if identifier not in decisions and len(decisions) >= 256:
+                oldest = min(decisions, key=lambda k: decisions[k].get('at', 0))
+                decisions.pop(oldest)
+            decisions[identifier] = {'choice': choice, 'at': now, 'until': now + minutes * 60 if choice == 'defer' else 0,
+                                     'severity': row['severity'], 'revision': row['revision'], 'actor': str(actor)[:160]}
+            self.write_shared('incident-decisions.json', decisions)
+        return {'message': '이 경보의 대응 상태를 저장했습니다. 새 경보와 위험도 상승은 계속 알립니다.'}
+
+    def _action_snapshot(self, target_id=None):
+        from .identity import process_identity, boot_id, describe_target
+        from .processes import build_snapshot, descendants_of
+        from .incidents import IDENTIFIER
+        if target_id is not None and not IDENTIFIER.fullmatch(str(target_id)):
+            raise ControlError('대상 식별자가 올바르지 않습니다.')
+        owner = pwd.getpwnam(self.load()['owner'])
+        snapshot = build_snapshot(self._owner_settings().project_roots, uid=owner.pw_uid)
+        pid, metadata = None, {}
+        if target_id is not None:
+            boot = boot_id()
+            roots = {s.root_pid for s in [*snapshot.sessions, *snapshot.mcp_groups]}
+            pid = next((p for p in roots if process_identity(snapshot.processes[p], boot) == target_id), None)
+            if pid is None:
+                raise ControlError('대상이 종료됐거나 신원이 변경됐습니다. 이전 대상을 다시 조치하지 않습니다.', code='target_not_found')
+            members = descendants_of(pid, snapshot.processes)
+            try:
+                metadata = self._owner_read('task-metadata', {'pids': [p.pid for p in members[:512]]})
+            except ControlError:
+                metadata = {}
+        return snapshot, pid, metadata, owner
+
+    def target_detail(self, identifier):
+        from .identity import describe_target, process_identity, tool_label
+        from .processes import descendants_of
+        snapshot, pid, metadata, _owner = self._action_snapshot(identifier)
+        result = describe_target(snapshot, pid, metadata)
+        members = {p.pid for p in descendants_of(pid, snapshot.processes)}
+        groups = [g for g in snapshot.mcp_groups if g.root_pid in members]
+        result['tools_total'] = len(groups)
+        result['tools'] = [{ 'id': process_identity(snapshot.processes[g.root_pid]), 'root_pid': g.root_pid,
+                            'name': tool_label(descendants_of(g.root_pid, snapshot.processes)), 'project': g.project, 'rss_kib': g.rss_kib,
+                            'age_seconds': g.age_seconds,
+                            'process_count': g.process_count}
+                           for g in groups[:64]]
+        result['observed_at'] = time.time()
+        return result
+
+    def action_operation(self, operation, identifier, actor):
+        from .actions import Actions
+        from .incidents import IDENTIFIER
+        from .processes import process_start_ticks
+        if not IDENTIFIER.fullmatch(str(identifier)):
+            raise ControlError('조치 식별자가 올바르지 않습니다.')
+        actions = Actions(self.registry.parent / 'actions.json')
+        if operation == 'status':
+            record = actions.load().get(identifier)
+            if record and record.get('actor') == actor and record['status'] == 'executing':
+                if record.get('execution_owner') == [os.getpid(), process_start_ticks(os.getpid())]:
+                    result = actions.public(record)
+                    if time.time() - record.get('progress_at', 0) > 30:
+                        result.update(status='unknown', message='처리 진행을 확인하지 못했습니다. 중복 실행하지 말고 대상 상태를 확인하세요.')
+                    return result
+        with self.mutation():
+            try:
+                if operation == 'preview':
+                    snapshot, pid, metadata, _owner = self._action_snapshot(identifier)
+                    return actions.preview(snapshot, pid, metadata, actor)
+                if operation == 'execute':
+                    records = actions.load()
+                    record = records.get(identifier)
+                    if not record or record.get('actor') != actor:
+                        raise ControlError('조치 기록을 찾을 수 없습니다.', code='action_not_found')
+                    if record['status'] != 'preview':
+                        snapshot, _, _, _ = self._action_snapshot()
+                        return actions.status(identifier, snapshot, actor)
+                    try:
+                        snapshot, _pid, metadata, owner = self._action_snapshot(record['target']['id'])
+                    except ControlError:
+                        snapshot, _, metadata, owner = self._action_snapshot()
+                    return actions.execute(identifier, snapshot, metadata, actor, owner.pw_uid)
+                snapshot, _, _, _ = self._action_snapshot()
+                return actions.status(identifier, snapshot, actor)
+            except ValueError as exc:
+                # These modules return controlled diagnostic messages, not command output.
+                raise ControlError('조치 확인에 실패했습니다. 대상 정보와 기존 조치 결과를 다시 확인하세요.', code='action_unavailable') from None
+
     def disks(self, force: bool = False) -> dict:
         if force:
             result = self._owner_read('disks', {'force': True})
@@ -1155,6 +1274,11 @@ class Controller:
         detail = {k: request[k] for k in ('minutes', 'pids', 'value') if k in request}
         if isinstance(result, dict) and isinstance(result.get('killed'), list):
             detail['killed'] = result['killed']
+        if request.get('op') in ('action-preview', 'action-execute') and isinstance(result, dict):
+            detail.update(operation_id=result.get('id'), status=result.get('status'),
+                          signalled=result.get('signalled', []))
+        if request.get('op') == 'incident-decision':
+            detail['choice'] = request.get('choice')
         if detail:
             record['detail'] = json.loads(json.dumps(detail, default=str))
         path = self.registry.parent / 'audit.jsonl'
@@ -1167,6 +1291,20 @@ class Controller:
         if not isinstance(request, dict):
             raise ControlError('잘못된 요청입니다.')
         op = request.get('op')
+        if op == 'incidents':
+            return self.incidents(request.get('id'))
+        if op == 'target-detail':
+            return self.target_detail(request.get('id'))
+        if op in ('action-preview', 'action-execute', 'action-status'):
+            result = self.action_operation(op.removeprefix('action-'), request.get('id'), str(request.get('actor', '')))
+            if op != 'action-status':
+                error = '종료 요청 미실행 또는 일부 처리 실패' if result.get('status') in ('rejected', 'partial', 'unknown', 'expired') else ''
+                self.audit(request, uid, error=error, result=result)
+            return result
+        if op == 'incident-decision':
+            result = self.incident_decision(request.get('id'), request.get('choice'), request.get('minutes'), request.get('actor', ''))
+            self.audit(request, uid, result=result)
+            return result
         if op == 'list':
             return self.snapshot()
         if op == 'discover':
@@ -1216,6 +1354,8 @@ class Controller:
                 result = self.act(str(request.get('id', '')), str(request.get('action', '')),
                                   request.get('confirmed') is True, 'web' if uid == web_uid else 'cli')
             elif op == 'kill':
+                if uid == web_uid:
+                    raise ControlError('종료 영향 미리보기를 다시 열어 확인하세요.', code='preview_required')
                 if request.get('confirmed') is not True:
                     raise ControlError('세션·MCP 종료에는 확인이 필요합니다.')
                 try:
@@ -1235,6 +1375,8 @@ class Controller:
                 result = self.request_config_change(request.get('key'), request.get('value'),
                                                     str(request.get('actor', '')))
             elif op == 'kill-stale':
+                if uid == web_uid:
+                    raise ControlError('대상을 개별 확인한 뒤 종료하세요.', code='preview_required')
                 if request.get('confirmed') is not True:
                     raise ControlError('세션 종료에는 확인이 필요합니다.')
                 result = self.kill_stale(request.get('pids'))

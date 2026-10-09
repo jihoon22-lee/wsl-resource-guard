@@ -10,6 +10,7 @@
     <link id="favicon" rel="icon" href="/assets/icon.svg" type="image/svg+xml" />
     <script src="/assets/theme.js"></script>
     <link rel="stylesheet" href="/assets/style.css" />
+    <script src="/assets/investigate.js" defer></script>
     <script src="/assets/app.js" defer></script>
   </head>
   <body>
@@ -283,7 +284,11 @@
             <div id="history-table" class="table-wrap"></div>
           </div>
         </section>
-        <section id="view-alerts" class="view hidden">
+        <section id="view-incident" class="view hidden"><div id="incident-detail"></div></section>
+          <section id="view-target" class="view hidden"><div id="target-detail"></div></section>
+          <section id="view-action" class="view hidden"><div id="operation-detail"></div></section>
+          <section id="view-alerts" class="view hidden">
+            <div id="incident-list"></div>
           <div id="alerts-summary"></div>
           <div id="alerts-reasons"></div>
           <div class="panel">

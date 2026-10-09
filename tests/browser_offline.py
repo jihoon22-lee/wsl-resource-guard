@@ -27,13 +27,15 @@ def session_row(pid: int) -> dict:
             'age_seconds': 7200, 'youngest_process_age_seconds': 60, 'rss_kib': 1048576,
             'swap_kib': 0, 'process_count': 3, 'mcp_rss_kib': 0, 'mcp_count': 0,
             'cgroup': '/user.slice/demo.scope', 'cpu_percent': 1.0, 'limits': {},
-            'stale': False, 'killable': True, 'projects': []}
+            'stale': False, 'killable': True, 'projects': [],
+            'identity': {'id': f'{pid:032x}', 'kind': 'agent_process'}}
 
 
 def fixtures() -> dict:
     metrics = {'mem_total_kib': 20971520, 'mem_available_kib': 5767168, 'swap_total_kib': 8388608,
                'swap_free_kib': 8388608, 'psi_some_avg60': 0.1, 'psi_full_avg60': 0.0}
     return {
+        '/api/incidents': {'version': 1, 'updated_at': time.time(), 'incidents': [], 'stale': False},
         '/api/bootstrap': {'csrf': 'offline', 'login': 'owner@example.com', 'origin': ORIGIN,
                            # Interaction checks use explicit refresh/stream events.
                            'refresh_seconds': 0},
@@ -167,6 +169,20 @@ def fixtures() -> dict:
     }
 
 
+def target_fixture(identifier, overrides):
+    pid=int(identifier,16)
+    monitor=overrides.get('/api/monitor',fixtures()['/api/monitor'])
+    row=next((r for r in monitor['sessions'] if r['root_pid']==pid), session_row(pid))
+    return {'id':identifier,'root_pid':pid,'provider':row['provider'],'name':row['root_name'],
+            'kind':row.get('identity',{}).get('kind','agent_process'),'project':row['project'],
+            'projects':[{'project':row['project']}],'tasks':[],'identity_note':'대화 제목 미확인',
+            'cwd':'/work/'+row['project'],'age_seconds':row['age_seconds'],'rss_kib':row['rss_kib'],
+            'swap_kib':0,'process_count':3,'mcp_tree_count':0,'observed_at':time.time(),
+            'killable':row.get('killable',True),'kill_block_reason':row.get('kill_block_reason',''),
+            'impact':'이 대상과 자식 작업이 중단됩니다.','memory_note':'회수량은 보장되지 않습니다.',
+            'recovery_note':'저장·재개 여부는 확인되지 않았습니다.','tools':[]}
+
+
 def serve(route, posts: list, gets: list, overrides: dict) -> None:
     request = route.request
     path = request.url.removeprefix(ORIGIN).split('?', 1)[0]
@@ -189,6 +205,18 @@ def serve(route, posts: list, gets: list, overrides: dict) -> None:
         return route.fulfill(body=(ASSETS / name).read_text(), content_type=kind)
     if request.method == 'POST':
         posts.append((path, json.loads(request.post_data or '{}')))
+        if path == '/api/actions/preview':
+            identifier=json.loads(request.post_data)['target_id']
+            operation={'id':identifier,'status':'preview','expires_at':time.time()+120,
+                       'target':target_fixture(identifier,overrides),'message':'영향을 확인하세요.','signalled':[],'remaining':[]}
+            overrides['/api/actions/'+identifier]=operation
+            return route.fulfill(json=operation)
+        if path.startswith('/api/actions/') and path.endswith('/execute'):
+            identifier=path.split('/')[3]
+            operation=overrides['/api/actions/'+identifier]
+            operation.update(status='remaining',message='아직 실행 중인 대상이 있습니다.',
+                             signalled=[operation['target']['root_pid']],remaining=[operation['target']['root_pid']])
+            return route.fulfill(json=operation)
         if path == '/api/settings/change':
             payload = json.loads(request.post_data)
             overrides['/api/settings/request'] = {**payload, 'id': '0000000000000002',
@@ -197,6 +225,8 @@ def serve(route, posts: list, gets: list, overrides: dict) -> None:
         return route.fulfill(body=json.dumps({'message': 'SIGTERM을 보냈습니다.'}),
                              content_type='application/json')
     gets.append(path)
+    if path.startswith('/api/targets/') and path not in overrides:
+        return route.fulfill(json=target_fixture(path.split('/')[-1],overrides))
     override = overrides.get(path)
     if override == 'bad-gateway':
         return route.fulfill(body='Bad Gateway', status=502, content_type='text/plain')
@@ -210,20 +240,21 @@ def serve(route, posts: list, gets: list, overrides: dict) -> None:
     return route.fulfill(body=json.dumps(body), content_type='application/json')
 
 
-def check_session_kill_posts_exact_pid(page, posts: list) -> None:
+def check_session_preview_posts_exact_identity(page, posts: list) -> None:
+    identifier=f'{SESSION_PID:032x}'
     page.goto(ORIGIN + '/#sessions')
-    page.evaluate('killFollowUpMs = 300')
-    button = page.locator(f'#sessions-table [data-kill="{SESSION_PID}"]')
-    expect(button).to_have_count(1)
-    button.click()
-    expect(page.locator('#dialog-content .dialog-text')).to_contain_text('1,234,567')
-    page.locator('#confirm-action').click()
-    expect(page.locator('#notice')).to_contain_text('SIGTERM')
-    assert posts == [(f'/api/sessions/{SESSION_PID}/kill', {'confirmed': True})], posts
-    # The fixture still lists the PID afterwards: the follow-up says so and
-    # points at the terminal-only force kill.
-    expect(page.locator('#notice')).to_contain_text(f'아직 실행 중: PID {SESSION_PID}')
-    expect(page.locator('#notice')).to_contain_text('--kill')
+    page.locator(f'#sessions-table a[href="#target?id={identifier}"]').click()
+    expect(page.locator('#target-detail')).to_contain_text(f'PID {SESSION_PID:,}')
+    page.locator('#preview-termination').click()
+    expect(page.locator('#execute-termination')).to_be_disabled()
+    page.locator('#understand-impact').check()
+    page.locator('#execute-termination').click()
+    expect(page.locator('#operation-detail')).to_contain_text('아직 실행 중인 대상')
+    assert posts == [('/api/actions/preview',{'target_id':identifier}),
+                     (f'/api/actions/{identifier}/execute',{'confirmed':True})], posts
+    page.locator('#check-operation').click()
+    expect(page.locator('#operation-detail')).to_contain_text(f'PID: {SESSION_PID:,}')
+    assert len(posts)==2, 'status lookup must not repeat execution'
     posts.clear()
 
 
@@ -280,11 +311,9 @@ def check_forced_refresh_is_queued(page, overrides: dict, gets: list) -> None:
 def check_service_session_cannot_be_killed(page) -> None:
     page.goto(ORIGIN + '/#sessions')
     row = page.locator(f'#sessions-table tr:has-text("PID {SERVICE_PID:,}")')
-    disabled = row.locator('button[disabled]')
-    expect(disabled).to_have_count(1)
-    title = disabled.get_attribute('title') or ''
-    assert 'systemd 관리 서비스' in title, title
-    assert not row.locator('[data-kill]').count(), 'service session must not offer a kill control'
+    row.locator('a[href^="#target?id="]').click()
+    expect(page.locator('#target-detail')).to_contain_text('systemd 관리 서비스')
+    expect(page.locator('#preview-termination')).to_have_count(0)
 
 
 def check_refresh_preserves_expanded_details(page, gets: list) -> None:
@@ -583,14 +612,9 @@ def check_snooze_and_bulk_stale_kill(page, posts: list, overrides: dict) -> None
     try:
         page.goto(ORIGIN + '/#sessions')
         page.reload()
-        bulk = page.locator('#kill-stale')
-        expect(bulk).to_contain_text('오래된 세션 1개 종료')
-        bulk.click()
-        expect(page.locator('#dialog-content')).to_contain_text(f'PID {SESSION_PID:,}')
-        page.locator('#confirm-action').click()
-        expect(page.locator('#notice')).to_be_visible()
-        assert posts == [('/api/sessions/kill-stale',
-                          {'pids': [SESSION_PID], 'confirmed': True})], posts
+        expect(page.locator('#kill-stale')).not_to_be_visible()
+        expect(page.locator('#sessions-table a[href^="#target?id="]')).to_have_count(2)
+        assert posts == [], 'age alone must not authorize a bulk termination'
     finally:
         overrides.pop('/api/monitor', None)
         posts.clear()
@@ -1378,7 +1402,7 @@ def main() -> None:
         gets: list = []
         overrides: dict = {}
         page.route(ORIGIN + '/**', lambda route: serve(route, posts, gets, overrides))
-        check_session_kill_posts_exact_pid(page, posts)
+        check_session_preview_posts_exact_identity(page, posts)
         check_service_session_cannot_be_killed(page)
         check_refresh_preserves_expanded_details(page, gets)
         check_service_chart_breaks_on_missing_sample(page)

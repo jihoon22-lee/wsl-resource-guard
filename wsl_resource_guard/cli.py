@@ -73,8 +73,17 @@ def _apply_cpu_rates(settings: Settings, snapshot) -> None:
     apply_cpu_rates(snapshot, state.get("cpu_jiffies", {}), time.time(), os.sysconf("SC_CLK_TCK"))
 
 
+def _notification_state(settings: Settings) -> dict:
+    from .delivery import merge_delivery_summary
+    state = load_state(settings.state_path / "state.json")
+    try:
+        return merge_delivery_summary(state, settings.state_path)
+    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+        return dict(state, last_channel_errors={"delivery": "전달 기록을 읽지 못했습니다."})
+
+
 def _channel_errors(settings: Settings) -> dict:
-    raw = load_state(settings.state_path / "state.json").get("last_channel_errors", {})
+    raw = _notification_state(settings).get("last_channel_errors", {})
     return dict(raw) if isinstance(raw, dict) else {}
 
 
@@ -98,7 +107,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                     "alerts": {
                         "channels": Notifier(settings).channel_status(),
                         "channel_errors": _channel_errors(settings),
-                        "last_alert": load_state(settings.state_path / "state.json").get("last_alert"),
+                        "last_alert": _notification_state(settings).get("last_alert"),
                     },
                 },
                 ensure_ascii=False,
@@ -133,7 +142,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  {channel:<16}{state}")
     for channel, detail in _channel_errors(settings).items():
         print(f"  {channel:<16}최근 실패: {detail}")
-    current_state = load_state(settings.state_path / "state.json")
+    current_state = _notification_state(settings)
     last_email_status = float(current_state.get("last_email_status", 0.0) or 0.0)
     last_email_success = float(current_state.get("last_email_success", 0.0) or 0.0)
     last_email_hour_slot = str(current_state.get("last_email_hour_slot", "") or "")

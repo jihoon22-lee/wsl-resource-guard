@@ -50,6 +50,7 @@ class Evaluation:
     pending_reasons: list[str] = field(default_factory=list)
     condition_since: dict[str, float] = field(default_factory=dict, repr=False)
     psi_alert: dict = field(default_factory=dict, repr=False)
+    conditions: list[dict] = field(default_factory=list, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +272,8 @@ def evaluate(
         pending_reasons=pending,
         condition_since=current_since,
         psi_alert=psi_alert,
+        conditions=[{'key': c.key, 'severity': c.severity, 'reason': c.reason}
+                    for c in conditions if c.reason in reasons],
     )
 
 
@@ -608,7 +611,7 @@ def next_email_heartbeat_at(
 
 
 def sample(settings: Settings, notify: bool = False, persist: bool = True,
-           shared_dir: Path = SHARED_DIR) -> tuple[SystemMetrics, ProcessSnapshot, Evaluation]:
+           shared_dir: Path = SHARED_DIR, incident_mode: bool = False) -> tuple[SystemMetrics, ProcessSnapshot, Evaluation]:
     state_path = settings.state_path / "state.json"
     state = load_state(state_path)
     previous = _metrics_from_state(state)
@@ -888,6 +891,15 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
     }
     if persist:
         save_state(state_path, next_state)
+        if incident_mode:
+            from .incidents import read_store, reconcile, atomic_write
+            incident_path = settings.state_path / 'incidents.json'
+            try:
+                previous_incidents = read_store(incident_path)
+                atomic_write(incident_path, reconcile(previous_incidents, evaluation.conditions, snapshot, metrics, settings))
+            except (OSError, ValueError):
+                # Do not erase damaged records or stop resource sampling.
+                print('incident storage unavailable; resource sample retained', flush=True)
     return metrics, snapshot, evaluation
 
 
@@ -1035,6 +1047,9 @@ def run_forever(settings: Settings) -> None:
 
 
 def _run_locked(settings: Settings) -> None:
+    from .delivery import DeliveryWorker
+    deliveries = DeliveryWorker(settings, SHARED_DIR)
+    deliveries.start()
     stopping = False
 
     def stop(_signum: int, _frame: object) -> None:
@@ -1066,14 +1081,11 @@ def _run_locked(settings: Settings) -> None:
                 print(f"config reload error={type(exc).__name__}: {exc}", flush=True)
         started = time.monotonic()
         try:
-            metrics, snapshot, evaluation = sample(settings, notify=True)
+            metrics, snapshot, evaluation = sample(settings, notify=False, incident_mode=True)
+            deliveries.engine.settings = settings
             last_history, last_disk_history = record_history(
                 settings, metrics, snapshot, evaluation, last_history, last_disk_history
             )
-            try:
-                send_weekly_report(settings, metrics.timestamp)
-            except Exception as exc:
-                print(f"weekly report error={type(exc).__name__}: {exc}", flush=True)
             if should_log_sample(
                 evaluation.severity, last_logged_severity, time.time(), last_logged_at
             ):
@@ -1091,4 +1103,5 @@ def _run_locked(settings: Settings) -> None:
         end = time.monotonic() + remaining
         while not stopping and time.monotonic() < end:
             time.sleep(min(1.0, end - time.monotonic()))
+    deliveries.stop()
     print("wsl-resource-guard stopped", flush=True)

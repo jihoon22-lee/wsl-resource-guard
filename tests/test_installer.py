@@ -181,6 +181,7 @@ class ServiceRollbackTests(unittest.TestCase):
                 stack.enter_context(patch.object(service_install, 'prepare_venv', return_value=dest / '.venvs/new',
                                                 side_effect=RuntimeError('injected dependency failure') if dependency_failure else None))
                 stack.enter_context(patch.object(service_install, 'prepare_shared_dir'))
+                stack.enter_context(patch('wsl_resource_guard.installer.os.fchown'))
                 stack.enter_context(patch.object(service_install.pwd, 'getpwnam', return_value=owner))
                 stack.enter_context(patch.object(service_install, 'run_as'))
                 stack.enter_context(patch.object(service_install, 'run', side_effect=run))

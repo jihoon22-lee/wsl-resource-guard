@@ -147,7 +147,7 @@ def browser_case(browser, engine, mobile, service_count, session_count, history,
             if view == 'services':
                 expect(page.locator('[data-manage]')).to_have_count(service_count)
             if view == 'sessions':
-                expect(page.locator('[data-kill]')).to_have_count(session_count)
+                expect(page.locator('#sessions-table a[href^="#target?id="]')).to_have_count(session_count)
             measured = page.evaluate('''async ({iterations, view}) => {
               const renderMs = [], actionMs = [];
               const frame = () => new Promise(r => requestAnimationFrame(r));
@@ -187,10 +187,13 @@ def browser_case(browser, engine, mobile, service_count, session_count, history,
                 assert posts[-1] == ('/api/services/app-0/action', {'action': 'restart', 'confirmed': True})
             elif view == 'sessions':
                 page.locator('#session-search').fill('scenario-199')
-                page.locator('[data-kill="2000199"]').click()
-                page.locator('#confirm-action').click()
-                expect(page.locator('#dialog')).not_to_be_visible()
-                assert posts[-1] == ('/api/sessions/2000199/kill', {'confirmed': True})
+                identifier=f'{2000199:032x}'
+                page.locator(f'a[href="#target?id={identifier}"]').click()
+                page.locator('#preview-termination').click()
+                page.locator('#understand-impact').check()
+                page.locator('#execute-termination').click()
+                expect(page.locator('#operation-detail')).to_contain_text('실행 중인 대상')
+                assert posts[-1] == (f'/api/actions/{identifier}/execute', {'confirmed': True})
             results.append(item)
             print(json.dumps(item), flush=True)
     finally:
