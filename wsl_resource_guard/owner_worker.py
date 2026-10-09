@@ -223,6 +223,8 @@ class OwnerData:
             'channel_errors': (state.get('last_channel_errors')
                                if isinstance(state.get('last_channel_errors'), dict) else {}),
             'config_request': {},  # Root controller merges the trusted request status.
+            'interval_seconds': settings.interval_seconds,
+            'daemon_updated_at': state.get('updated_at'),
             'weekly_report': weekly_status(load_state(state_path / 'weekly-report.json')),
             'code_copies': {'level': level, 'detail': detail,
                             'cli_commit': (cli_stamp or {}).get('commit'),
@@ -255,8 +257,12 @@ def dispatch(operation: str, args: dict, reader=None):
     if operation == 'settings':
         return reader.settings_info()
     if operation == 'config-result':
-        from .daemon import load_state
-        return load_state(reader._state_path() / 'config-request-result.json')
+        # Missing means not handled yet; malformed/unreadable is an explicit
+        # status failure, never an empty result that hides a broken hand-off.
+        try:
+            return json.loads(read_text(reader._state_path() / 'config-request-result.json', max_bytes=16384))
+        except FileNotFoundError:
+            return {}
     if operation == 'gone-endpoints':
         from .webpush import gone_endpoints
         return sorted(gone_endpoints(reader._state_path()))

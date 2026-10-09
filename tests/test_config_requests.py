@@ -17,7 +17,10 @@ from wsl_resource_guard.daemon import apply_config_request
 from wsl_resource_guard.owner_worker import OwnerData, dispatch
 from wsl_resource_guard.service_control import Controller, ControlError, ControlHandler, atomic_json
 from wsl_resource_guard.services import ServiceError, request_control
-from wsl_resource_guard.webapp import create_app
+try:
+    from wsl_resource_guard.webapp import create_app
+except ImportError:
+    create_app = None
 
 
 class ConfigRequestsTests(unittest.TestCase):
@@ -106,6 +109,17 @@ class ConfigRequestsTests(unittest.TestCase):
             self.c.request_config_change('email_heartbeat_minute', 30)
         self.assertEqual(self.c.read_shared('config-request.json')['id'], first['id'])
 
+    def test_corrupt_persisted_result_is_an_explicit_status_failure(self):
+        first = self.c.request_config_change('warning_available_gib', 6)
+        self.settings.state_path.mkdir()
+        (self.settings.state_path / 'config-request-result.json').write_text('{broken')
+        with self.assertRaises(ControlError) as error:
+            self.c.config_request_status(first['id'])
+        self.assertEqual(error.exception.code, 'config_unavailable')
+        with self.assertRaises(ControlError):
+            self.c.request_config_change('email_heartbeat_minute', 30)
+        self.assertEqual(self.c.read_shared('config-request.json')['id'], first['id'])
+
     def test_status_includes_timing_and_rejects_invalid_ids(self):
         request = self.c.request_config_change('warning_available_gib', 6)
         status = self.c.config_request_status(request['id'])
@@ -119,7 +133,7 @@ class ConfigRequestsTests(unittest.TestCase):
 
 class ConfigTransportTests(unittest.TestCase):
     def test_control_handler_and_client_preserve_only_known_error_codes(self):
-        for code in ('config_pending', 'config_not_found', 'config_unavailable'):
+        for code in ('config_pending', 'config_not_found', 'config_unavailable', 'not_a_protocol_code'):
             handler = object.__new__(ControlHandler)
             handler.request = Mock()
             import struct
@@ -130,7 +144,8 @@ class ConfigTransportTests(unittest.TestCase):
             handler.wfile = io.BytesIO()
             handler.handle()
             response = handler.wfile.getvalue()
-            self.assertEqual(json.loads(response)['code'], code)
+            expected = '' if code == 'not_a_protocol_code' else code
+            self.assertEqual(json.loads(response).get('code', ''), expected)
             connection = Mock()
             connection.__enter__ = Mock(return_value=connection)
             connection.__exit__ = Mock(return_value=False)
@@ -138,8 +153,9 @@ class ConfigTransportTests(unittest.TestCase):
             with patch('wsl_resource_guard.services.socket.socket', return_value=connection):
                 with self.assertRaises(ServiceError) as error:
                     request_control({'op': 'config-change'})
-            self.assertEqual(error.exception.code, code)
+            self.assertEqual(error.exception.code, expected)
 
+    @unittest.skipIf(create_app is None, 'Run uv sync --locked --extra web to test HTTP')
     def test_http_exact_status_and_request_id_contract(self):
         control = Mock(return_value={})
         origin = 'https://fixture.example'
