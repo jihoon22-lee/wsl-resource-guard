@@ -752,6 +752,16 @@ class ControllerTests(unittest.TestCase):
         numeric.assert_not_called()
         self.assertIn('SIGTERM', result['message'])
 
+    def test_nested_shared_runtime_blocks_all_legacy_owner_signals(self):
+        snap = self._kill_snapshot()
+        snap.processes[101].name = 'codex'
+        snap.processes[101].command = 'codex app-server'
+        with (patch('wsl_resource_guard.processes.build_snapshot', return_value=snap),
+              patch('wsl_resource_guard.processes.signal_verified_process') as send):
+            with self.assertRaisesRegex(ControlError, '상시'):
+                self.controller.kill_tree(100)
+        send.assert_not_called()
+
     def test_kill_tree_rejects_identity_changed_after_snapshot(self):
         from dataclasses import replace
         snap = self._kill_snapshot()

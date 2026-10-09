@@ -817,6 +817,10 @@ class Controller:
         if reason:
             raise ControlError(reason)
         processes = descendants_of(pid, snapshot.processes)
+        for process in processes:
+            reason = kill_block_reason(process)
+            if reason:
+                raise ControlError(reason)
         if not processes:
             raise ControlError('대상 프로세스를 찾지 못했습니다.')
         signalled = 0

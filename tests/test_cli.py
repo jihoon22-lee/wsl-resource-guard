@@ -221,6 +221,21 @@ class ConfigCommandTests(unittest.TestCase):
 
 
 class StopCommandTests(unittest.TestCase):
+    def test_protected_root_or_child_blocks_every_signal_before_execution(self):
+        for protected_pid in (10, 11):
+            for command in (cli.cmd_stop, cli.cmd_stop_mcp):
+                with self.subTest(protected_pid=protected_pid, command=command.__name__):
+                    snap = self.make_snapshot()
+                    snap.processes[protected_pid].name = 'codex'
+                    snap.processes[protected_pid].command = 'codex app-server'
+                    args = SimpleNamespace(config=None, pid=10, confirm=True, kill=True, timeout=0)
+                    with (patch.object(cli, '_load_settings', return_value=Settings()),
+                          patch.object(cli, 'build_snapshot', return_value=snap),
+                          patch.object(cli, 'signal_verified_process') as send,
+                          redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO())):
+                        self.assertEqual(command(args), 2)
+                    send.assert_not_called()
+
     def make_snapshot(self):
         import os
         from wsl_resource_guard.processes import ProcessInfo, ProcessSnapshot, SessionUsage, McpUsage
