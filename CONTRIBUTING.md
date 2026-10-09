@@ -54,7 +54,7 @@ Dependabot은 `uv` ecosystem으로 pyproject/uv.lock을 갱신하며 Actions 갱
 
 ## 릴리스
 
-프로젝트 버전을 갱신하고 main에 포함된 커밋에 `v<version>` 태그를 생성합니다.
+`pyproject.toml`과 `wsl_resource_guard/__init__.py`의 버전을 함께 갱신하고 `uv lock`으로 잠금 파일의 프로젝트 버전을 맞춥니다. CHANGELOG와 검증 기록도 갱신한 뒤 main에 포함된 커밋에 `v<version>` 태그를 생성합니다.
 태그 워크플로는 전체 테스트·공개정보·의존성·CodeQL 결과 검사를 거쳐 동일 커밋의 압축본을 게시합니다.
 실패·누락된 검사나 차단 보안 결과에서는 Release가 생성되지 않습니다. 운영 WSL 배포는 자동 실행하지 않습니다.
 
@@ -66,7 +66,7 @@ Release 워크플로의 수동 실행은 게시 없는 리허설입니다. main�
 
 ```bash
 python3 scripts/release.py build dist
-python3 scripts/release.py verify dist/wsl-resource-guard-0.1.0.tar.gz
+python3 scripts/release.py verify dist/wsl-resource-guard-0.1.1.tar.gz
 ```
 
 빌드는 Git의 커밋된 파일을 사용하므로 미커밋 변경은 배포 파일에 포함되지 않습니다.

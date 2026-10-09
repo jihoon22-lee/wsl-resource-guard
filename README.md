@@ -52,6 +52,8 @@ pidfd 미지원 환경에서는 세션 종료 기능을 사용할 수 없습니�
 실제 검증 환경·운영 적용 여부·남은 제약은 [후속 검증 기록](workthrough/2026-10-08-review-remediation.md)에 구분해 기록합니다.
 [사용성 후속 수정](workthrough/2026-10-09-usability-remediation.md)에서 설정 요청 유실·완료 오표시, 로그 창 혼합, 부분 조회와 재시도 문제를 수정했습니다. 설정은 한 건씩 적용하며 오래된 요청의 결과는 보관되지 않을 수 있습니다. 서비스 500개·세션 2,000개 규모에서는 정렬·렌더링이 느릴 수 있으며, 모바일 자동화와 실기기·운영 적용 여부는 검증 기록에서 구분합니다.
 
+현재 릴리스 작업과 CI·게시·운영 적용 상태는 [0.1.1 릴리스·배포 기록](workthrough/2026-10-09-release-deploy.md)에서 확인할 수 있습니다.
+
 ## English overview
 
 WSL Resource Guard monitors memory pressure, swap, disks, and LLM/MCP process trees.
