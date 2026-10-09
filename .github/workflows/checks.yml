@@ -57,7 +57,7 @@ jobs:
           uv sync --locked --extra web --group dev --no-build --no-install-project --no-python-downloads --python "$(command -v python)"
           .venv/bin/python scripts/dependency_profiles.py
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
-      - run: python -m playwright install --with-deps chromium
+      - run: python -m playwright install --with-deps chromium webkit
       - run: |
           node --check wsl_resource_guard/web/app.js
           node --check wsl_resource_guard/web/theme.js
@@ -65,6 +65,9 @@ jobs:
           shellcheck install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
           bash -n install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
           python tests/browser_offline.py
+          python tests/browser_review_scenarios.py --browser chromium
+          python tests/browser_review_scenarios.py --browser webkit
+          python tests/browser_scale.py --iterations 1
           python tests/gunicorn_transport.py -q
       - name: Validate workflow syntax
         run: |

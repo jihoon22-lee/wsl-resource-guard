@@ -1111,6 +1111,28 @@ dialog::backdrop {
   justify-content: flex-end;
   margin-top: 24px;
 }
+.dialog-error {
+  margin-top: 16px;
+  padding: 12px;
+  color: var(--red);
+  background: var(--critical-bg);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.action-choice { min-width: 0; }
+.action-choice > button { width: 100%; }
+.action-choice > small { display: block; margin-top: 4px; }
+.section-status, .config-tracking {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.section-status { color: var(--amber); background: var(--warning-bg); }
+.config-tracking { margin-bottom: 16px; }
 .log {
   background: #122a3b;
   color: #c9dce6;

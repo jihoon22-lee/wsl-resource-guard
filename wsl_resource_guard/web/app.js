@@ -127,7 +127,6 @@ let csrf = "",
   settingsData = null,
   auditData = [],
   loading = false,
-  pendingForce = false,
   timer = null,
   lastRefresh = 0,
   busyAction = false,
@@ -183,22 +182,12 @@ $("notice-close").addEventListener("click", () =>
   $("notice").classList.add("hidden"),
 );
 async function fetchCsrf() {
-  let bootstrap;
-  try {
-    bootstrap = await fetch("/api/bootstrap", { headers: { Accept: "application/json" } });
-  } catch {
-    throw new Error("본인 Tailscale 연결을 확인하세요.");
-  }
-  if (!bootstrap.ok) throw new Error("본인 Tailscale 연결을 확인하세요.");
-  try {
-    csrf = (await bootstrap.json()).csrf;
-  } catch {
-    throw new Error("서버 응답을 해석할 수 없습니다. 화면을 새로고침하세요.");
-  }
+  csrf = (await api("/api/bootstrap")).csrf;
 }
 // POSTs reuse the session's CSRF token; a 403 (expired session, new
 // cookie) refetches it once and retries instead of a bootstrap per write.
-async function api(path, body, retried = false) {
+let readTimeoutMs = 30000, writeTimeoutMs = 130000;
+async function api(path, body, retried = false, { signal } = {}) {
   const options = { headers: { Accept: "application/json" } };
   if (body) {
     if (!csrf) await fetchCsrf();
@@ -207,28 +196,53 @@ async function api(path, body, retried = false) {
     options.headers["X-CSRF-Token"] = csrf;
     options.body = JSON.stringify(body);
   }
-  let response;
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  options.signal = controller.signal;
+  let timedOut = false;
+  const timeout = setTimeout(() => { timedOut = true; cancel(); }, body ? writeTimeoutMs : readTimeoutMs);
   try {
-    response = await fetch(path, options);
-  } catch {
-    throw new Error("서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.");
+    const response = await fetch(path, options);
+    if (body && response.status === 403 && !retried) {
+      csrf = "";
+      clearTimeout(timeout);
+      return await api(path, body, true, { signal });
+    }
+    const type = response.headers.get("Content-Type") || "";
+    if (!type.includes("application/json"))
+      throw new Error(`서버 응답 오류 (HTTP ${response.status}). 잠시 후 다시 시도하세요.`);
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      throw new Error(`서버 응답을 해석할 수 없습니다 (HTTP ${response.status}).`);
+    }
+    if (!response.ok) {
+      const error = new Error(data.error || `요청에 실패했습니다 (HTTP ${response.status}).`);
+      error.status = response.status;
+      error.code = data.code;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException("조회 취소", "AbortError");
+    if (timedOut || error instanceof TypeError) {
+      const message = body
+        ? "요청 결과를 확인하지 못했습니다. 실제 적용됐을 수 있으므로 현재 상태를 확인한 뒤 다시 시도하세요."
+        : timedOut ? "조회 시간이 초과됐습니다. 다시 시도하세요."
+          : "서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.";
+      const unavailable = new Error(message);
+      unavailable.uncertain = !!body;
+      throw unavailable;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", cancel);
   }
-  if (body && response.status === 403 && !retried) {
-    csrf = "";
-    return api(path, body, true);
-  }
-  const type = response.headers.get("Content-Type") || "";
-  if (!type.includes("application/json"))
-    throw new Error(`서버 응답 오류 (HTTP ${response.status}). 잠시 후 다시 시도하세요.`);
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error(`서버 응답을 해석할 수 없습니다 (HTTP ${response.status}).`);
-  }
-  if (!response.ok)
-    throw new Error(data.error || `요청에 실패했습니다 (HTTP ${response.status}).`);
-  return data;
 }
 function pill(state) {
   const labels = {
@@ -608,13 +622,13 @@ function renderOverview() {
   $("view-overview").innerHTML =
     `${alertBanner}<div class="cards${stale ? " stale" : ""}">${metricCard("사용 가능한 RAM", giB(available), "GiB", `전체 ${giB(m.mem_total_kib)} GiB 중 사용 가능${staleNote}`, (available / m.mem_total_kib) * 100, "", ramTone, th.warning_available_gib != null ? ((th.warning_available_gib * 1048576) / m.mem_total_kib) * 100 : null, { href: "history", trend: trends.ram })}${metricCard("사용 중인 Swap", giB(swap), "GiB", `전체 ${giB(m.swap_total_kib)} GiB · in ${Number(m.swap_in_mib_per_minute || 0).toFixed(1)} / out ${Number(m.swap_out_mib_per_minute || 0).toFixed(1)} MiB/분 · 막대는 swap-out 속도${staleNote}`, thresholdPercent(m.swap_out_mib_per_minute, th.warning_swap_out_mib_per_minute), "swap", "", th.warning_swap_out_mib_per_minute ? THRESHOLD_MARK : null, { href: "history", trend: trends.swap })}${metricCard("메모리 대기 압력 · PSI", m.psi_some_avg60 == null ? "관측 불가" : Number(m.psi_some_avg60).toFixed(2), m.psi_some_avg60 == null ? "" : "%", `some / full ${psiValue(m.psi_full_avg60)} · ${psiStatus(m)} · 최근 60초 · 표시선은 경고 ${th.warning_psi_some_avg60 ?? "—"}%${staleNote}`, m.psi_some_avg60 == null ? null : thresholdPercent(m.psi_some_avg60, th.warning_psi_some_avg60), "", psiTone, th.warning_psi_some_avg60 ? THRESHOLD_MARK : null, { href: "history", trend: trends.psi })}${metricCard("호스트 WSL 메모리 (vmmem)", m.vmmem_bytes != null ? (m.vmmem_bytes / 2 ** 30).toFixed(2) : "—", m.vmmem_bytes != null ? "GiB" : "", m.vmmem_bytes != null ? `호스트 관측 ${when(m.vmmem_observed_at)}${staleNote}` : "호스트 관측 불가", m.vmmem_bytes != null ? (m.vmmem_bytes / Math.max(1, m.mem_total_kib * 1024)) * 100 : null, "", "", null, { href: "history", trend: trends.vmmem })}${metricCard("LLM 세션", num(d.sessions.length), "개", `MCP ${num(d.mcp_count)}개 · ${giB(d.mcp_rss_kib)} GiB${staleSessions.length ? ` · 오래된 세션 ${staleSessions.length}개` : ""}${staleNote}`, null, "", "", null, { href: "sessions" })}</div>
 <div class="split"><div class="panel" id="overview-status"><div class="panel-heading"><h2>감시·알림 상태</h2>${pill(stale ? "unknown" : d.severity)}</div><div class="status-strip"><strong>${stale ? "Guard의 최근 수집 상태를 확인해 주세요." : d.severity === "normal" ? "자원 상태가 안정적입니다." : "자원 경보가 감지됐습니다."}</strong><span class="muted">마지막 수집 ${when(d.daemon_updated_at)}</span></div><div class="panel-body">${alertBanner ? '<p class="health-description">경보 원인은 위 배너에 표시됩니다.</p>' : warnings.length ? warnings.map((s) => `<div class="reason">${esc(s)}</div>`).join("") : '<p class="health-description">현재 지속 중인 경보 원인이 없습니다. RAM, swap 입출력, 메모리 대기 압력을 함께 감시합니다.</p>'}${d.observations.length ? `<div class="health-description">관찰 항목<br>${d.observations.map(esc).join("<br>")}</div>` : ""}<div class="health-description channel-chips">알림 ${channelChips}<br>정기 이메일 ${d.alerts.email_heartbeat_enabled ? "켜짐" : "꺼짐"} · 마지막 경보 ${when(d.alerts.last_alert)}${snoozeText ? ` · ${esc(snoozeText)}` : ""}${channelErrors.length ? `<br><span class="row-error">알림 채널 실패: ${channelErrors.map(([k, v]) => `${esc(CHANNEL_LABELS[k] || k)} — ${esc(v)}`).join(" · ")}</span>` : ""}</div></div></div>
-<div class="panel" id="overview-services"><div class="panel-heading"><h2>서비스 요약 <span class="badge-count">${activeApps} / ${apps.length} 실행</span></h2><button class="button secondary" data-navigate="services">모두 보기 →</button></div><div class="mini-list">${
+<div class="panel" id="overview-services"><div class="panel-heading"><h2>서비스 요약 <span class="badge-count">${loaded.services ? `${activeApps} / ${apps.length} 실행` : "조회 필요"}</span></h2><button class="button secondary" data-navigate="services">모두 보기 →</button></div><div class="mini-list">${
       serviceProblems
         .map(
           (s) =>
             `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">웹 응답 없음 · ${esc(s.health.error || "")}</div>` : ""}</div>${pill(s.state)}</div>`,
         )
-        .join("") || '<div class="empty">모든 앱이 설정대로 동작 중입니다</div>'
+        .join("") || `<div class="empty">${loaded.services ? "모든 앱이 설정대로 동작 중입니다" : "서비스 상태를 아직 확인하지 못했습니다"}</div>`
     }</div></div></div>
 <div class="panel" id="overview-top"><div class="panel-heading"><h2>메모리를 많이 사용하는 프로젝트</h2><button class="button secondary" data-navigate="top">Top 보기 →</button></div><div class="table-wrap">${table(
       [{ t: "프로젝트" }, { t: "도구" }, { t: "RAM", cls: "num" }, { t: "Swap", cls: "num" }, { t: "MCP", cls: "num" }],
@@ -833,7 +847,8 @@ function renderSessions() {
   const stale = monitorData.sessions.filter((r) => r.stale && r.killable !== false);
   const bulk = $("kill-stale");
   bulk.classList.toggle("hidden", !stale.length);
-  bulk.textContent = `오래된 세션 ${stale.length}개 종료`;
+  bulk.textContent = `전체 오래된 세션 ${stale.length}개 종료`;
+  bulk.title = "검색 조건과 무관한 전체 오래된 후보";
   preserveViewState($("sessions-table"), () => {
     $("sessions-table").innerHTML = table(
     [
@@ -1150,10 +1165,12 @@ function lineChart(rows, title, unit, series, bands = [], opts = {}) {
     psi: !!opts.psi,
     geo: { left, right, top, bottom, w, h, max: 0 },
   };
-  const max = Math.max(
-    0.01,
-    ...rows.flatMap((r, i) => series.map((s) => finite(s.value(r.metrics, i)) ?? 0)),
-  );
+  // Passing every service/sample as an argument exceeds the engine's call
+  // stack at hundreds of services. Keep the same scale with bounded memory.
+  let max = 0.01;
+  rows.forEach((r, i) => {
+    for (const s of series) max = Math.max(max, finite(s.value(r.metrics, i)) ?? 0);
+  });
   const t0 = rows[0].timestamp,
     t1 = rows[rows.length - 1].timestamp,
     span = Math.max(1, t1 - t0);
@@ -1595,42 +1612,139 @@ document.addEventListener("click", (e) => {
 });
 function configDialog(key) {
   const r = (settingsData?.rules || []).find((rule) => rule.key === key);
-  if (!r || !r.editable) return;
+  if (!r || !r.editable || configPending()) return;
   const step = r.kind === "int" ? "1" : "any";
-  dialog(
+  const scope = dialog(
     "설정 변경",
-    `<p class="dialog-text"><strong>${esc(r.description)}</strong>\n<code>${esc(r.key)}</code> · 허용 범위 ${r.min} ~ ${r.max} · 기본값 ${esc(String(r.default))}</p><label class="range-form">새 값 <input id="config-value" class="search" type="number" inputmode="decimal" step="${step}" min="${r.min}" max="${r.max}" value="${esc(String(r.value))}"></label><p class="health-description">Guard가 다음 측정(약 15초 안)에 검증하고 config.toml에 저장합니다. 경고·위험 임계값의 대소 관계를 깨는 값은 거부됩니다.</p><div class="dialog-actions"><button id="cancel-action" class="button secondary">취소</button><button id="confirm-action" class="button primary">변경 요청</button></div>`,
+    `<p class="dialog-text"><strong>${esc(r.description)}</strong>\n<code>${esc(r.key)}</code> · 허용 범위 ${r.min} ~ ${r.max} · 기본값 ${esc(String(r.default))}</p><label class="range-form">새 값 <input id="config-value" class="search" type="number" inputmode="decimal" step="${step}" min="${r.min}" max="${r.max}" value="${esc(String(r.value))}"></label><p class="health-description">Guard가 다음 측정에서 검증하고 config.toml에 저장합니다. 수집 주기 ${configInterval()}초 · 최근 수집 ${when(settingsData?.daemon_updated_at)}. 한 건씩 적용하며 경고·위험 임계값의 대소 관계를 깨는 값은 거부됩니다.</p><div class="dialog-actions"><button id="cancel-action" class="button secondary">취소</button><button id="confirm-action" class="button primary">변경 요청</button></div>`,
   );
   $("cancel-action").addEventListener("click", () => $("dialog").close());
   $("confirm-action").addEventListener("click", async () => {
     const raw = $("config-value").value.trim();
     const value = r.kind === "int" ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
     if (!Number.isFinite(value) || value < r.min || value > r.max || (r.kind === "int" && String(value) !== raw))
-      return notify(`${r.min} ~ ${r.max} 범위의 ${r.kind === "int" ? "정수" : "숫자"}를 입력하세요.`);
+      return dialogError(`${r.min} ~ ${r.max} 범위의 ${r.kind === "int" ? "정수" : "숫자"}를 입력하세요.`, $("config-value"));
+    if (busyAction) return;
+    busyAction = true;
     $("confirm-action").disabled = true;
+    $("cancel-action").disabled = true;
+    $("dialog-close").disabled = true;
     try {
       const data = await api("/api/settings/change", { key, value });
       $("dialog").close();
-      notify(data.message, true);
-      await settleConfigRequest();
+      trackConfigRequest({ ...data, key, value, state: "pending" });
     } catch (error) {
-      notify(error.message);
-      $("confirm-action").disabled = false;
+      if (sameDialog(scope)) dialogError(error.message, $("config-value"));
+      if (error.code === "config_pending" || error.uncertain) {
+        // Discover the server's pending slot without repeating this POST.
+        configTrack = { state: "unknown", error: error.message };
+        checkConfigRequest(true);
+      }
+    } finally {
+      busyAction = false;
+      $("dialog-close").disabled = false;
+      if (sameDialog(scope)) {
+        $("confirm-action").disabled = false;
+        $("cancel-action").disabled = false;
+      }
     }
   });
 }
-// Re-read settings until the guard has handled the request (max ~45 s).
-async function settleConfigRequest() {
-  for (let i = 0; i < 15; i++) {
-    await refresh(true);
-    const state = settingsData?.config_request?.state;
-    if (state && state !== "pending") {
-      if (state === "failed") notify(`설정 변경 실패: ${settingsData.config_request.message}`);
-      else notify(`${settingsData.config_request.key} 변경을 적용했습니다.`, true);
-      return;
-    }
-    await sleep(3000);
+let configTrack = null, configPollTimer = null, configPollAbort = null, configDeadline = 0;
+const settledConfigIds = new Set();
+const configInterval = () => Number(settingsData?.interval_seconds ||
+  settingsData?.rules?.find((r) => r.key === "interval_seconds")?.value || 15);
+const configPending = () => configTrack?.state === "pending" ||
+  (settingsData?.config_request?.state === "pending" && !settledConfigIds.has(settingsData.config_request.id));
+function rememberConfigRequest() {
+  try {
+    if (configTrack?.id && configTrack.state === "pending")
+      sessionStorage.setItem("wrg-config-request", JSON.stringify(configTrack));
+    else sessionStorage.removeItem("wrg-config-request");
+  } catch {}
+}
+function renderConfigTracking() {
+  const host = $("config-tracking");
+  const focused = host.contains(document.activeElement) ? document.activeElement.id : null;
+  host.classList.toggle("hidden", !configTrack);
+  if (!configTrack) return;
+  const d = configTrack;
+  const pending = d.state === "pending";
+  const label = pending ? (d.error ? "적용 여부 확인 필요 · 마지막 확인: 대기 중" : "Guard 적용 대기 중") : d.state === "applied" ? "적용됨"
+    : d.state === "failed" ? "설정 변경 실패" : "적용 여부 확인 필요";
+  const detail = d.error || (d.state === "failed" ? d.message : "");
+  host.innerHTML = `<div><strong>${label}</strong>${d.key ? ` · <code>${esc(d.key)}</code> = ${esc(String(d.value))}` : ""}<span class="subline">${pending ? `수집 주기 ${Number(d.interval_seconds) || configInterval()}초 · 최근 수집 ${when(d.daemon_updated_at)} · 다른 설정은 처리 후 변경하세요.` : ""}${detail ? ` ${esc(detail)}` : ""}</span></div><div class="row-actions"><button id="config-check" class="button compact secondary">상태 다시 확인</button>${!pending ? '<button id="config-dismiss" class="button compact secondary">닫기</button>' : ""}</div>`;
+  $("config-check").addEventListener("click", () => checkConfigRequest(true));
+  $("config-dismiss")?.addEventListener("click", () => { configTrack = null; renderConfigTracking(); });
+  document.querySelectorAll("[data-config-key]").forEach((b) => b.disabled = configPending());
+  if ($("config-value") && !busyAction) $("confirm-action").disabled = configPending();
+  if (focused) $(focused)?.focus({ preventScroll: true });
+}
+function trackConfigRequest(request) {
+  if (!/^[0-9a-f]{16}$/.test(request.id || "")) {
+    configTrack = { state: "unknown", error: "요청 ID를 확인하지 못했습니다. 현재 설정값을 다시 확인하세요." };
+    renderConfigTracking();
+    return;
   }
+  if (configTrack?.id === request.id || settledConfigIds.has(request.id)) return;
+  configTrack = { ...request, state: "pending", error: "" };
+  configDeadline = performance.now() + Math.max(45, (Number(request.interval_seconds) || configInterval()) + 30) * 1000;
+  rememberConfigRequest();
+  renderConfigTracking();
+  checkConfigRequest();
+}
+async function checkConfigRequest(manual = false) {
+  clearTimeout(configPollTimer);
+  if (!configTrack || document.hidden) return;
+  configPollAbort?.abort();
+  const controller = configPollAbort = new AbortController();
+  const id = configTrack.id;
+  if (manual) configDeadline = performance.now() + Math.max(45, (Number(configTrack.interval_seconds) || configInterval()) + 30) * 1000;
+  try {
+    const data = await api("/api/settings/request" + (id ? `?id=${encodeURIComponent(id)}` : ""), null, false, { signal: controller.signal });
+    if (configPollAbort !== controller || !configTrack) return;
+    if ((id && data.id !== id) || !data.id || !["pending", "applied", "failed"].includes(data.state))
+      throw new Error("요청 결과를 확인하지 못했습니다. 현재 설정값을 확인하세요.");
+    // A lookup without our POST id can discover another device's pending
+    // request, but cannot establish that our unknown submission succeeded.
+    if (!id && data.state !== "pending")
+      throw new Error("대기 중인 요청이 없습니다. 현재 설정값을 확인한 뒤 다시 변경하세요.");
+    configTrack = { ...data, error: "" };
+    if (data.state !== "pending") {
+      settledConfigIds.add(data.id);
+      if (!settingsData?.config_request?.id || settingsData.config_request.id === data.id)
+        if (settingsData) settingsData.config_request = data;
+      notify(data.state === "applied" ? `${data.key} 변경을 적용했습니다.` : `설정 변경 실패: ${data.message}`, data.state === "applied");
+      if (currentView === "settings") refresh(true);
+    }
+  } catch (error) {
+    if (error.name === "AbortError" || configPollAbort !== controller || !configTrack) return;
+    configTrack.error = error.message;
+    if (error.status === 404 || !id) {
+      configTrack.state = "unknown";
+      if (error.status === 404 && settingsData?.config_request?.id === id) {
+        settingsData.config_request = {};
+        if (currentView === "settings") refresh(true);
+      }
+    }
+  } finally {
+    if (configPollAbort === controller && configTrack) {
+      configPollAbort = null;
+      if (configTrack.state === "pending") {
+        if (performance.now() < configDeadline && !document.hidden)
+          configPollTimer = setTimeout(checkConfigRequest, 3000);
+        else configTrack.error ||= "자동 확인 시간이 지났습니다. Guard 수집 상태를 확인하고 상태 다시 확인을 누르세요.";
+      }
+      rememberConfigRequest();
+      renderConfigTracking();
+    }
+  }
+}
+function restoreConfigTracking() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("wrg-config-request") || "null");
+    if (saved?.id) trackConfigRequest(saved);
+  } catch {}
 }
 function renderSettings() {
   if (!loaded.settings) {
@@ -1667,6 +1781,7 @@ function renderSettings() {
     `<div class="health-description">주간 리포트 ${rule("weekly_report_enabled") ? `매주 ${weekdays[rule("weekly_report_weekday")] ?? "?"}요일 ${rule("weekly_report_hour")}시 이후 첫 측정에 발송` : "꺼짐"} · 마지막 발송 ${weekly.sent_at ? `${when(weekly.sent_at)} (${esc(weekly.slot)})` : "기록 없음"} · 미리보기: <code>wrg weekly-report</code></div>`,
   );
   const req = d.config_request || {};
+  if (req.state === "pending" && configTrack?.state !== "pending") trackConfigRequest(req);
   const reqBox = $("config-request");
   reqBox.classList.toggle("hidden", !req.key);
   if (req.key)
@@ -1719,7 +1834,7 @@ function renderSettings() {
               ? `${r.min != null ? r.min : ""} ~ ${r.max != null ? r.max : ""}`
               : "—",
             r.editable
-              ? `<button class="button compact secondary" data-config-key="${esc(r.key)}">변경</button>`
+              ? `<button class="button compact secondary" data-config-key="${esc(r.key)}" ${configPending() ? 'disabled title="대기 중인 설정 처리 후 변경하세요"' : ""}>변경</button>`
               : '<span class="muted" title="PC 터미널의 wrg config set에서 바꿉니다">터미널</span>',
           ];
         }),
@@ -1760,6 +1875,11 @@ async function renderPushDevice() {
   const version = ++pushRenderVersion;
   const host = $("push-device");
   if (!host) return;
+  if (sectionStates.get("pushKey")?.error) {
+    host.textContent = "";
+    renderSectionStatuses();
+    return;
+  }
   if (!pushSupported()) {
     host.innerHTML = '<p class="health-description">이 브라우저는 푸시 알림을 지원하지 않습니다. iPhone·iPad는 Safari에서 공유 → 홈 화면에 추가한 뒤 그 앱에서 등록하세요.</p>';
     return;
@@ -1878,18 +1998,32 @@ function renderAudit() {
   );
 }
 function render() {
-  switch (currentView) {
-    case "services": return renderServices();
-    case "disks": return renderDisks();
-    case "top": return renderTop();
-    case "sessions": return renderSessions();
-    case "mcp": return renderMcp();
-    case "history": return renderHistory();
-    case "alerts": return renderAlerts();
-    case "settings": return renderSettings();
-    case "audit": return renderAudit();
-    default: return renderOverview();
+  const active = document.activeElement;
+  let selector = active?.id ? `#${CSS.escape(active.id)}` : null;
+  if (!selector && active?.dataset) {
+    for (const key of ["manage", "quick", "configKey", "retrySection"]) {
+      if (active.dataset[key]) {
+        const attr = key.replace(/[A-Z]/g, (v) => "-" + v.toLowerCase());
+        selector = `[data-${attr}="${CSS.escape(active.dataset[key])}"]`;
+        break;
+      }
+    }
   }
+  switch (currentView) {
+    case "services": renderServices(); break;
+    case "disks": renderDisks(); break;
+    case "top": renderTop(); break;
+    case "sessions": renderSessions(); break;
+    case "mcp": renderMcp(); break;
+    case "history": renderHistory(); break;
+    case "alerts": renderAlerts(); break;
+    case "settings": renderSettings(); break;
+    case "audit": renderAudit(); break;
+    default: renderOverview();
+  }
+  renderSectionStatuses();
+  if (selector && active && !active.isConnected && !$("dialog").open)
+    document.querySelector(selector)?.focus({ preventScroll: true });
 }
 // Menu badges: where attention is needed, without opening each view. Fed
 // by whatever data is loaded plus the live summary stream (see liveSummary).
@@ -1978,95 +2112,181 @@ function updateAlertBadge() {
   ctx.fill();
   favicon.href = canvas.toDataURL("image/png");
 }
-async function refresh(force = false) {
-  if (busyAction) return;
-  if (loading) {
-    pendingForce = pendingForce || force;
-    return;
+// Each section owns its request, data age, and retry. Navigation cancels
+// obsolete reads; a late response cannot update a different query or view.
+const sectionStates = new Map(), sectionReads = new Map();
+let refreshSignature = "", renderFrame = 0;
+const querySignature = () => currentView + (currentView === "history" ? ":" + historyRange : "");
+const SECTION_LABELS = { monitor: "자원 상태", services: "서비스", disks: "디스크",
+  dockerDf: "Docker 사용량", overviewHistory: "최근 자원 추이", sessionHistory: "세션 이력",
+  serviceMemory: "서비스 메모리 이력", history: "자원 이력", attribution: "프로젝트별 사용량",
+  alerts: "경보 이력", settings: "설정", pushKey: "푸시 설정", audit: "작업 기록" };
+function viewJobs() {
+  const paths = [], view = currentView;
+  const add = (key, path) => paths.push({ key, path });
+  if (["overview", "disks"].includes(view)) add("disks", "/api/disks");
+  if (view === "disks") add("dockerDf", "/api/docker-df");
+  if (view === "overview") add("overviewHistory", "/api/history?range=3h");
+  if (view === "sessions") add("sessionHistory", "/api/session-history");
+  if (["overview", "top", "sessions", "mcp"].includes(view)) add("monitor", "/api/monitor");
+  if (["overview", "services"].includes(view)) add("services", "/api/services");
+  if (view === "services") add("serviceMemory", "/api/service-memory");
+  if (view === "history") {
+    add("history", `/api/history?range=${historyRange}`);
+    add("attribution", `/api/attribution?range=${historyRange}`);
   }
-  loading = true;
-  $("refresh").disabled = true;
-  $("refresh").textContent = "↻ 갱신 중";
-  const view = currentView;
-  try {
-    const jobs = [];
-    if (["overview", "disks"].includes(view))
-      jobs.push({ key: "disks", run: () => api("/api/disks" + (force ? "?force=1" : "")) });
-    if (view === "disks") jobs.push({ key: "dockerDf", run: () => api("/api/docker-df") });
-    if (view === "overview") jobs.push({ key: "overviewHistory", run: () => api("/api/history?range=3h") });
-    if (view === "sessions") jobs.push({ key: "sessionHistory", run: () => api("/api/session-history") });
-    if (["overview", "top", "sessions", "mcp"].includes(view))
-      jobs.push({ key: "monitor", run: () => api("/api/monitor" + (force ? "?force=1" : "")) });
-    if (["overview", "services"].includes(view))
-      jobs.push({ key: "services", run: () => api("/api/services") });
-    if (view === "services")
-      jobs.push({ key: "serviceMemory", run: () => api("/api/service-memory") });
-    if (view === "history") {
-      // Tag the request: if the user switches ranges mid-flight the stale
-      // response must not be applied under the new selection.
-      const range = historyRange;
-      jobs.push({ key: "history", range, run: () => api(`/api/history?range=${range}`) });
-      jobs.push({ key: "attribution", range, run: () => api(`/api/attribution?range=${range}`) });
-    }
-    if (view === "alerts") jobs.push({ key: "alerts", run: () => api("/api/alerts") });
-    if (view === "settings") {
-      jobs.push({ key: "settings", run: () => api("/api/settings") });
-      jobs.push({ key: "pushKey", run: () => api("/api/push/key") });
-    }
-    if (view === "audit")
-      jobs.push({ key: "audit", run: () => api("/api/audit") });
-    const setters = {
-      disks: (v) => (diskData = v),
-      dockerDf: (v) => (dockerDfData = v),
-      overviewHistory: (v) => (overviewHistory = v),
-      attribution: (v) => (attributionData = v),
-      sessionHistory: (v) => (sessionHistoryData = v),
-      pushKey: (v) => (pushKeyData = v),
-      monitor: (v) => {
-        if (!monitorData || observationCanReplace(v.daemon_updated_at, monitorData.daemon_updated_at)) monitorData = v;
-      },
-      services: (v) => (serviceData = v),
-      serviceMemory: (v) => (serviceMemoryData = v),
-      history: (v) => (historyData = v),
-      alerts: (v) => (alertsData = v),
-      settings: (v) => (settingsData = v),
-      audit: (v) => (auditData = v),
-    };
-    const results = await Promise.allSettled(jobs.map((j) => j.run()));
-    const failed = [];
-    results.forEach((r, i) => {
-      const { key } = jobs[i];
-      if (r.status === "fulfilled") {
-        if (["history", "attribution"].includes(key) && jobs[i].range !== historyRange) return;
-        setters[key](r.value);
-        if (key in loaded) loaded[key] = true;
-      } else if (!["serviceMemory", "dockerDf", "overviewHistory", "attribution", "sessionHistory", "pushKey"].includes(key)) {
-        failed.push(r.reason.message);
-      }
-    });
-    lastRefresh = Date.now();
-    $("loading").classList.add("hidden");
+  if (view === "alerts") add("alerts", "/api/alerts");
+  if (view === "settings") {
+    add("settings", "/api/settings");
+    add("pushKey", "/api/push/key");
+  }
+  if (view === "audit") add("audit", "/api/audit");
+  return paths;
+}
+function applySection(key, value) {
+  switch (key) {
+    case "disks": diskData = value; break;
+    case "dockerDf": dockerDfData = value; break;
+    case "overviewHistory": overviewHistory = value; break;
+    case "sessionHistory": sessionHistoryData = value; break;
+    case "serviceMemory": serviceMemoryData = value; break;
+    case "history": historyData = value; break;
+    case "attribution": attributionData = value; break;
+    case "alerts": alertsData = value; break;
+    case "settings": settingsData = value; break;
+    case "pushKey": pushKeyData = value; break;
+    case "audit": auditData = value; break;
+    case "services": serviceData = value; break;
+    case "monitor":
+      if (!monitorData || observationCanReplace(value.daemon_updated_at, monitorData.daemon_updated_at)) monitorData = value;
+      break;
+  }
+  if (key in loaded) loaded[key] = true;
+}
+function queueSectionRender() {
+  if (renderFrame) return;
+  renderFrame = requestAnimationFrame(() => {
+    renderFrame = 0;
     render();
     updateAlertBadge();
     updateBadges();
-    const stamp = new Date().toLocaleTimeString("ko-KR", { hour12: false });
-    if (failed.length) {
-      notify(`일부 갱신 실패: ${[...new Set(failed)].join(" · ")}`);
-      $("last-updated").textContent = `일부 갱신 실패 · ${stamp}`;
-    } else {
-      $("last-updated").textContent = "마지막 갱신 " + stamp;
-    }
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    loading = false;
-    $("refresh").disabled = false;
-    $("refresh").textContent = "↻ 지금 새로고침";
-    if (pendingForce) {
-      pendingForce = false;
-      refresh(true);
-    } else if (view !== currentView) refresh();
+    updateRefreshStatus();
+  });
+}
+function updateRefreshStatus() {
+  const jobs = viewJobs();
+  loading = jobs.some(({key}) => sectionReads.has(key));
+  $("refresh").disabled = loading;
+  $("refresh").textContent = loading ? "↻ 갱신 중" : "↻ 지금 새로고침";
+  const failed = jobs.filter(({key}) => sectionStates.get(key)?.error);
+  const success = jobs.map(({key}) => sectionStates.get(key)?.lastSuccess || 0);
+  if (failed.length) $("last-updated").textContent = `일부 갱신 실패 · ${failed.map(({key}) => SECTION_LABELS[key]).join(" · ")}`;
+  else if (loading) $("last-updated").textContent = "받은 데이터부터 표시 중 · 일부 조회 중";
+  else if (success.some(Boolean)) {
+    lastRefresh = Date.now();
+    $("last-updated").textContent = "마지막 갱신 " + new Date(Math.max(...success)).toLocaleTimeString("ko-KR", {hour12:false});
   }
+  if (!loading || success.some(Boolean)) $("loading").classList.add("hidden");
+}
+function renderSectionStatuses() {
+  const view = $("view-" + currentView);
+  view.querySelectorAll(".section-status").forEach((el) => el.remove());
+  const hosts = { monitor: {overview:"view-overview",top:"top-table",sessions:"sessions-table",mcp:"mcp-table"}[currentView],
+    services: currentView === "overview" ? "overview-services" : "services-list",
+    disks: "view-" + currentView, dockerDf: "docker-df", overviewHistory: "view-overview",
+    sessionHistory: "session-history", serviceMemory: "service-memory-chart",
+    history: "history-chart", attribution: "history-chart", alerts: "alerts-summary",
+    settings: "settings-meta", pushKey: "push-device", audit: "audit-table" };
+  for (const {key} of viewJobs()) {
+    const state = sectionStates.get(key);
+    if (!state || (!state.error && state.status !== "loading")) continue;
+    const host = $(hosts[key]) || view;
+    if (state.error && !state.lastSuccess) {
+      // First failure is not an empty successful dataset or endless loading.
+      host.querySelectorAll(".empty").forEach((el) => {
+        if (el.textContent.includes("불러오는 중")) el.textContent = "데이터를 불러오지 못했습니다.";
+      });
+      if (key === "pushKey") host.textContent = "";
+    }
+    const note = state.error
+      ? `갱신 실패${state.lastSuccess ? " · 이전 값" : ""}: ${state.error}`
+      : `조회 중${state.lastSuccess ? " · 이전 값 표시" : "…"}`;
+    const last = state.lastSuccess ? ` · 마지막 성공 ${when(state.lastSuccess / 1000)}` : "";
+    host.insertAdjacentHTML("afterbegin", `<div class="section-status" data-section="${key}" role="status"><span><strong>${SECTION_LABELS[key]}</strong> · ${esc(note + last)}</span>${state.error ? `<button class="button compact secondary" data-retry-section="${key}">다시 시도</button>` : ""}</div>`);
+  }
+}
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-retry-section]");
+  if (button) refresh(true, [button.dataset.retrySection]);
+});
+function startSection(job, force) {
+  const existing = sectionReads.get(job.key);
+  if (existing) {
+    existing.again ||= force;
+    return existing.promise;
+  }
+  const prior = sectionStates.get(job.key);
+  const state = prior?.path === job.path ? prior : { path: job.path, lastSuccess: 0 };
+  sectionStates.set(job.key, state);
+  const task = { controller: new AbortController(), again: false, promise: null,
+    signature: refreshSignature, path: job.path };
+  sectionReads.set(job.key, task);
+  task.promise = (async () => {
+    let forced = force;
+    do {
+      task.again = false;
+      state.status = "loading";
+      state.error = "";
+      queueSectionRender();
+      try {
+        const path = job.path + (forced && ["monitor", "disks"].includes(job.key) ? "?force=1" : "");
+        const data = await api(path, null, false, { signal: task.controller.signal });
+        if (task.signature !== refreshSignature || sectionReads.get(job.key) !== task) return;
+        applySection(job.key, data);
+        state.lastSuccess = Date.now();
+        state.status = "success";
+      } catch (error) {
+        if (task.signature !== refreshSignature || sectionReads.get(job.key) !== task || error.name === "AbortError") return;
+        state.error = error.message;
+        state.status = "error";
+        // Keep the global notice for primary failures as well as a local retry.
+        if (!["serviceMemory", "dockerDf", "overviewHistory", "attribution", "sessionHistory", "pushKey"].includes(job.key))
+          notify(`일부 갱신 실패: ${SECTION_LABELS[job.key]} · ${error.message}`);
+      }
+      queueSectionRender();
+      forced = true;
+    } while (task.again && task.signature === refreshSignature);
+  })().finally(() => {
+    if (sectionReads.get(job.key) === task) {
+      sectionReads.delete(job.key);
+      queueSectionRender();
+    }
+  });
+  return task.promise;
+}
+async function refresh(force = false, keys = null) {
+  if (busyAction) return;
+  const signature = querySignature();
+  const visibleJobs = viewJobs();
+  if (signature !== refreshSignature) {
+    refreshSignature = signature;
+    for (const [key, task] of sectionReads) {
+      // A shared query (e.g. overview -> services) is still useful. Reuse it
+      // instead of cancelling and immediately starting the identical fetch.
+      if (visibleJobs.some((job) => job.key === key && job.path === task.path)) {
+        task.signature = signature;
+        continue;
+      }
+      task.controller.abort();
+      const state = sectionStates.get(key);
+      if (state?.status === "loading") state.status = "idle";
+      sectionReads.delete(key);
+    }
+  }
+  const jobs = visibleJobs.filter(({key}) => !keys || keys.includes(key));
+  const requests = jobs.map((job) => startSection(job, force));
+  updateRefreshStatus();
+  await Promise.allSettled(requests);
 }
 function schedule() {
   clearInterval(timer);
@@ -2191,11 +2411,35 @@ function openMoreMenu() {
       }),
     );
 }
+let dialogVersion = 0, dialogAbort = null;
 function dialog(title, html) {
+  dialogAbort?.abort();
+  dialogAbort = new AbortController();
+  const version = ++dialogVersion;
   $("dialog-title").textContent = title;
-  $("dialog-content").innerHTML = html;
+  $("dialog-content").innerHTML = html + '<div id="dialog-error" class="dialog-error hidden" role="alert" tabindex="-1"></div>';
   if (!$("dialog").open) $("dialog").showModal();
+  return { version, signal: dialogAbort.signal };
 }
+const sameDialog = (scope) => scope.version === dialogVersion && $("dialog").open;
+function dialogError(message, input = null) {
+  const host = $("dialog-error");
+  if (!host) return;
+  host.textContent = message;
+  host.classList.remove("hidden");
+  if (input) {
+    input.setAttribute("aria-invalid", "true");
+    input.setAttribute("aria-describedby", "dialog-error");
+    input.focus();
+  } else host.focus();
+}
+$("dialog").addEventListener("input", (event) => {
+  if (event.target.getAttribute("aria-describedby") === "dialog-error") {
+    event.target.removeAttribute("aria-invalid");
+    event.target.removeAttribute("aria-describedby");
+    $("dialog-error")?.classList.add("hidden");
+  }
+});
 // Dialog sections: what runs now, what happens at the next WSL start, and
 // the destructive removal. Buttons that would not change anything are
 // disabled with the reason as a tooltip.
@@ -2235,7 +2479,7 @@ function manageService(id) {
       `<div class="action-group"><div class="action-group-label">${esc(label)}</div><div class="action-grid">${actions
         .map((action) => {
           const blocked = actionBlock(row, action);
-          return `<button class="button ${action === "remove" ? "danger" : "secondary"}" data-action="${action}" ${blocked ? `disabled title="${esc(blocked)}"` : `title="${esc(actionDescriptions[action])}"`}>${actionNames[action]}</button>`;
+          return `<div class="action-choice"><button class="button ${action === "remove" ? "danger" : "secondary"}" data-action="${action}" ${blocked ? `disabled aria-describedby="blocked-${action}" title="${esc(blocked)}"` : `title="${esc(actionDescriptions[action])}"`}>${actionNames[action]}</button>${blocked ? `<small id="blocked-${action}" class="muted">${esc(blocked)}</small>` : ""}</div>`;
         })
         .join("")}</div></div>`,
   ).join("");
@@ -2327,8 +2571,8 @@ function confirmKillStale() {
   const stale = (monitorData?.sessions || []).filter((r) => r.stale && r.killable !== false);
   if (!stale.length) return;
   dialog(
-    `오래된 세션 ${stale.length}개 종료`,
-    `<p class="dialog-text">아래 세션 트리에 SIGTERM을 보냅니다. 실행 직전에 서버가 다시 확인해, 그사이 활동을 재개한 세션은 건너뜁니다.</p><div class="health-description">${stale.map((r) => `${esc(r.provider)} · ${esc(r.project)} · PID ${num(r.root_pid)} · ${giB(r.rss_kib)} GiB · ${age(r.age_seconds)}`).join("<br>")}</div><div class="dialog-actions"><button id="cancel-action" class="button secondary">취소</button><button id="confirm-action" class="button danger">모두 종료</button></div>`,
+    `전체 오래된 세션 ${stale.length}개 종료`,
+    `<p class="dialog-text">검색 조건과 무관한 전체 오래된 후보입니다. 아래 세션 트리에 SIGTERM을 보냅니다. 실행 직전에 서버가 다시 확인해, 그사이 활동을 재개한 세션은 건너뜁니다.</p><div class="health-description">${stale.map((r) => `${esc(r.provider)} · ${esc(r.project)} · PID ${num(r.root_pid)} · ${giB(r.rss_kib)} GiB · ${age(r.age_seconds)}`).join("<br>")}</div><div class="dialog-actions"><button id="cancel-action" class="button secondary">취소</button><button id="confirm-action" class="button danger">모두 종료</button></div>`,
   );
   $("cancel-action").addEventListener("click", () => $("dialog").close());
   $("confirm-action").addEventListener("click", async () => {
@@ -2382,12 +2626,13 @@ function confirmKill(pid, label) {
   });
 }
 async function showLogs(row) {
-  dialog(
+  const scope = dialog(
     `${row.name} · 최근 로그`,
     '<div class="log-toolbar"><select id="log-lines" class="search" aria-label="로그 줄 수"><option value="50">최근 50줄</option><option value="200" selected>최근 200줄</option><option value="500">최근 500줄</option><option value="1000">최근 1000줄</option></select><input id="log-filter" class="search" placeholder="로그 필터" aria-label="로그 필터"><label class="log-follow"><input id="log-follow" type="checkbox" checked> 자동 스크롤</label><button id="refresh-logs" class="button compact secondary" title="로그 새로고침">↻</button><button id="copy-logs" class="button compact secondary">복사</button></div><pre id="log-content" class="log">불러오는 중…</pre>',
   );
-  let rawText = "";
+  let rawText = "", logRequest = 0, logAbort = null;
   const applyFilter = () => {
+    if (!sameDialog(scope)) return;
     const needle = ($("log-filter")?.value || "").trim().toLowerCase();
     const shown = needle
       ? rawText
@@ -2400,16 +2645,26 @@ async function showLogs(row) {
     if ($("log-follow")?.checked) pre.scrollTop = pre.scrollHeight;
   };
   const fetchLogs = async () => {
+    const version = ++logRequest;
+    logAbort?.abort();
+    const controller = logAbort = new AbortController();
+    const abort = () => controller.abort();
+    scope.signal.addEventListener("abort", abort, { once: true });
     try {
       const lines = $("log-lines")?.value || "200";
       const data = await api(
         `/api/services/${encodeURIComponent(row.id)}/logs?lines=${lines}`,
+        null, false, { signal: controller.signal },
       );
+      if (!sameDialog(scope) || version !== logRequest) return;
       rawText = data.text || "기록된 로그가 없습니다.";
       applyFilter();
     } catch (error) {
+      if (!sameDialog(scope) || version !== logRequest || error.name === "AbortError") return;
       rawText = "";
       $("log-content").textContent = error.message;
+    } finally {
+      scope.signal.removeEventListener("abort", abort);
     }
   };
   $("refresh-logs").addEventListener("click", fetchLogs);
@@ -2426,14 +2681,17 @@ async function showLogs(row) {
   await fetchLogs();
 }
 async function registerDialog() {
-  dialog(
+  const scope = dialog(
     "서비스 등록",
     '<p class="muted">이 PC의 서비스 목록을 검색하고 있습니다…</p>',
   );
   try {
-    const candidates = await api("/api/discover");
+    const candidates = await api("/api/discover", null, false, { signal: scope.signal });
+    if (!sameDialog(scope)) return;
     $("dialog-content").innerHTML =
       '<p class="dialog-text">현재 등록된 systemd 서비스나 기존 Docker Compose 프로젝트를 가져옵니다. 현재 실행 상태를 유지합니다.</p><input id="candidate-search" class="search full" placeholder="서비스 이름, 프로젝트 검색" aria-label="등록 대상 검색"><label>표시 이름 (선택)<input id="register-name" class="search full" maxlength="80" placeholder="기본 서비스 이름 사용"></label><label>접속 URL (선택)<input id="register-url" type="url" class="search full" placeholder="https://..."></label><div id="candidate-list"></div>';
+    $("dialog-content").insertAdjacentHTML("beforeend", '<div id="dialog-error" class="dialog-error hidden" role="alert" tabindex="-1"></div>');
+    let registering = false;
     const renderCandidates = () => {
       const filtered = candidates.filter((c) =>
         matches(c, $("candidate-search").value, ["name", "kind", "target"]),
@@ -2442,7 +2700,7 @@ async function registerDialog() {
         filtered
           .map(
             (c) =>
-              `<div class="candidate"><div><strong>${esc(c.name)}</strong><small>${esc(c.kind)} · ${esc(c.target)}</small></div><button class="button secondary" data-key="${esc(c.key)}">등록</button></div>`,
+              `<div class="candidate"><div><strong>${esc(c.name)}</strong><small>${esc(c.kind)} · ${esc(c.target)}</small></div><button class="button secondary" data-key="${esc(c.key)}" ${registering ? "disabled" : ""}>등록</button></div>`,
           )
           .join("") ||
         '<div class="empty">등록할 항목이 없습니다. 새 앱은 먼저 PC에서 서비스나 Compose 프로젝트로 생성하세요.</div>';
@@ -2450,7 +2708,9 @@ async function registerDialog() {
         .querySelectorAll("[data-key]")
         .forEach((b) =>
           b.addEventListener("click", async () => {
-            b.disabled = true;
+            if (registering || busyAction) return;
+            registering = true;
+            $("candidate-list").querySelectorAll("button").forEach((button) => button.disabled = true);
             busyAction = true;
             try {
               const result = await api("/api/services/register", {
@@ -2465,9 +2725,11 @@ async function registerDialog() {
               $("dialog").close();
               notify(result.message, true);
             } catch (error) {
-              notify(error.message);
+              if (sameDialog(scope)) dialogError(error.message, $("register-url"));
             } finally {
               busyAction = false;
+              registering = false;
+              if (sameDialog(scope)) renderCandidates();
               await refresh(true);
             }
           }),
@@ -2476,7 +2738,11 @@ async function registerDialog() {
     $("candidate-search").addEventListener("input", renderCandidates);
     renderCandidates();
   } catch (error) {
-    $("dialog-content").textContent = error.message;
+    if (sameDialog(scope) && error.name !== "AbortError") {
+      $("dialog-content").innerHTML = '<button id="retry-discovery" class="button secondary">다시 시도</button><div id="dialog-error" class="dialog-error" role="alert" tabindex="-1"></div>';
+      dialogError(error.message);
+      $("retry-discovery").addEventListener("click", registerDialog);
+    }
   }
 }
 document
@@ -2491,6 +2757,11 @@ $("refresh-interval").addEventListener("change", () => {
 });
 document.addEventListener("visibilitychange", () => {
   schedule();
+  if (document.hidden) {
+    clearTimeout(configPollTimer);
+    configPollAbort?.abort();
+    configPollAbort = null;
+  } else if (configTrack?.state === "pending") checkConfigRequest(true);
   if (
     !document.hidden &&
     Number($("refresh-interval").value) &&
@@ -2504,6 +2775,12 @@ $("dialog-close").addEventListener("click", () => {
 $("dialog").addEventListener("cancel", (e) => {
   if (busyAction) e.preventDefault();
 });
+$("dialog").addEventListener("close", () => {
+  if (!$("dialog").open) {
+    dialogAbort?.abort();
+    dialogVersion++;
+  }
+});
 $("register").addEventListener("click", registerDialog);
 for (const [id, event, fn] of [
   ["top-search", "input", () => renderTop()],
@@ -2514,6 +2791,7 @@ for (const [id, event, fn] of [
 ])
   $(id).addEventListener(event, () => {
     fn();
+    renderSectionStatuses();
     syncHash();
   });
 $("tab-more").addEventListener("click", openMoreMenu);
@@ -2521,7 +2799,7 @@ $("history-custom").addEventListener("click", customRangeDialog);
 $("kill-stale").addEventListener("click", confirmKillStale);
 $("settings-changed-only").addEventListener("change", (e) => {
   settingsChangedOnly = e.target.checked;
-  renderSettings();
+  render();
 });
 document.querySelectorAll(".range-picker [data-range]").forEach((b) =>
   b.addEventListener("click", () => {
@@ -2651,6 +2929,7 @@ if (window.ResizeObserver && mainEl)
     schedule();
     connectStream();
     registerServiceWorker();
+    restoreConfigTracking();
   } catch (error) {
     notify(error.message);
     $("loading").classList.add("hidden");
