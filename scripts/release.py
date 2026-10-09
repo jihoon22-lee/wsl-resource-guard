@@ -22,6 +22,7 @@ ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGEL
               'workthrough/2026-10-08-review-remediation.md', 'workthrough/2026-10-08-full-code-review.md',
               'workthrough/2026-10-09-scenario-usability-review.md',
               'workthrough/2026-10-09-usability-remediation.md',
+              'workthrough/2026-10-09-release-deploy.md',
               'pyproject.toml', 'uv.lock', 'install-user.sh',
               'install-root.sh', 'install-services.sh', '.github/workflows/checks.yml',
               '.github/workflows/release.yml', '.github/workflows/ci.yml',
