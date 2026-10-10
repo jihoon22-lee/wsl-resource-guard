@@ -2,7 +2,7 @@
 
 ## 범위와 진행 상태
 
-사용자는 Android의 Samsung Internet 웹 푸시와 Gmail에서 경보를 확인한다. 알림에서 실제 작업·공유 범위·현재 상태를 이해하고, 유지/재확인/개별 종료를 선택한 뒤 결과를 확인하는 흐름을 구현했다. 완료 후 문서·버전 갱신, 태그·Release 게시와 수동 운영 배포까지 요청받았다. 구현·후속 보완·문서·버전 0.2.0을 main에 병합하고 태그와 Release를 게시했다. **운영 배포는 관리자 실행 연결 실패로 미완료**이며 기존 v0.1.2 설치본을 유지한다.
+사용자는 Android의 Samsung Internet 웹 푸시와 Gmail에서 경보를 확인한다. 알림에서 실제 작업·공유 범위·현재 상태를 이해하고, 유지/재확인/개별 종료를 선택한 뒤 결과를 확인하는 흐름을 구현했다. 완료 후 문서·버전 갱신, 태그·Release 게시와 수동 운영 배포까지 요청받았다. 구현·후속 보완·문서·버전 0.2.0을 main에 병합하고 태그와 Release를 게시했다. 관리자 연결 문제로 한 차례 보류했던 운영 배포도 사용자의 단일 설치 명령 실행 후 검증을 마쳤다. 현재 운영본은 v0.2.0이다.
 
 ## 확인한 문제와 설계
 
@@ -38,31 +38,17 @@
 - [Release CI 37963913772](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/37963913772)의 전체 검사·두 언어 보안 분석·보안 결과 gate·패키징·게시 15개 job 모두 success다. [v0.2.0 Release](https://github.com/jihoon22-lee/wsl-resource-guard/releases/tag/v0.2.0)는 draft/prerelease가 아니다.
 - 게시된 tar.gz와 SHA256SUMS를 다시 다운로드해 해시, SOURCE manifest, 포함 파일을 검증했다. 같은 태그 커밋에서 로컬 재생성한 압축본과 바이트 단위로 일치했다. 버전 변경은 잠금 파일의 프로젝트 버전만 바꾸며 의존성 버전은 유지한다.
 
-## 운영 배포 차단과 후속 작업
+## 운영 배포 결과
 
-- 배포 승인은 받았지만 기존 `wsl.exe -d Ubuntu -u root` 실행 경로가 `Wsl/Service/0x8007274c` 및 `UtilAcceptVsock: accept4 failed 110`으로 실패했다. 현재 터미널의 `sudo -n`도 대화형 인증을 요구한다. 다른 WSL 연결과 최종 읽기 전용 재확인에서도 root 명령을 실행하지 못했다. 비밀번호를 요청하거나 WSL 전체를 재시작하지 않았다.
-- 설치기를 실행하지 않았고 운영 코드·설정·서비스를 변경하지 않았다. 읽기 전용 확인에서 웹/CLI BUILD는 모두 기존 `f4d971d`·dirty=false, Guard·웹·컨트롤러는 모두 active였다. 새 버전의 운영 표본·전달 결과·모바일 운영 API·실제 단말 수신은 아직 검증하지 않았다.
-- 사용자에게 WSL 터미널에서 설치 명령을 직접 실행할 수 있는지 요청했다. 다음 명령은 **사용자가 관리자 인증 가능한 터미널에서 실행할 후속 절차**이며 이번 작업에서 실행한 결과가 아니다. 태그의 검증된 배포 파일을 사용해 개발 체크아웃을 바꾸지 않는다.
-
-```bash
-cd ~/projects/wsl-resource-guard
-(
-  set -e
-  wrg_release_dir=$(mktemp -d /tmp/wrg-v0.2.0.XXXXXX)
-  gh release download v0.2.0 --repo jihoon22-lee/wsl-resource-guard \
-    --dir "$wrg_release_dir" --pattern '*.tar.gz' --pattern SHA256SUMS
-  (cd "$wrg_release_dir" && sha256sum -c SHA256SUMS)
-  .venv/bin/python scripts/release.py verify "$wrg_release_dir/wsl-resource-guard-0.2.0.tar.gz"
-  tar -xzf "$wrg_release_dir/wsl-resource-guard-0.2.0.tar.gz" -C "$wrg_release_dir"
-  sudo env PYTHONDONTWRITEBYTECODE=1 bash "$wrg_release_dir/wsl-resource-guard-0.2.0/install-services.sh" --owner "$(id -un)"
-  sudo env PYTHONDONTWRITEBYTECODE=1 bash "$wrg_release_dir/wsl-resource-guard-0.2.0/install-root.sh" --owner "$(id -un)"
-  systemctl is-active wsl-resource-guard.service wrg-web.service wrg-service-control.service
-  rm -r -- "$wrg_release_dir"
-)
-```
-
-설치 실패 시 위 절차는 중단하며 생성한 임시 다운로드 디렉터리는 원인 확인 후 정리한다. 설치 성공 후에도 BUILD 커밋, 새 Guard writer/표본·이력, 설정·무관한 서비스 보존, 실제 Tailscale 웹의 사건/공용 실행기 조회를 확인해야 운영 적용 검증이 완료된다. Samsung Internet/Gmail의 수신·링크 이동은 실제 단말에서 별도로 확인한다. 설치 복구 백업과 이전 실행 환경은 복구용으로 보존한다.
+- 처음에는 관리자 실행 연결 오류와 sudo 인증 요구로 배포를 진행하지 못했다. 이후 검증된 릴리스 파일과 설치·전후 확인 스크립트를 준비하고, 사용자가 WSL 터미널에서 한 번의 sudo 명령을 실행했다. WSL 전체나 무관한 서비스를 재시작하지 않았다.
+- 2026-10-10 10:35 KST에 v0.2.0 압축본에서 웹 설치기 → 시스템 Guard 설치기 순서로 적용했다. 웹·CLI BUILD는 모두 릴리스 커밋 `36086bb`·dirty=false이며 설치 파일은 릴리스 소스와 바이트 단위로 일치했다.
+- Guard·웹·컨트롤러 세 서비스는 active/running, NRestarts=0이며 PID가 새로 바뀌었다. 실제 Guard PID·시작 토큰과 상태 writer가 일치하고, 새 표본과 이력 추가를 확인했다. 후속 조회에서도 표본과 사건 저장소는 최신이었다.
+- 설정·인증 파일·웹 설정·서비스 등록부·Tailscale Serve의 배포 전후 해시가 일치했다. 무관한 실행 서비스 21개와 컨테이너 6개의 상태·PID가 유지됐고, 배포 이후 대상 서비스 journal의 error 항목은 0개였다.
+- 실제 Tailscale 웹의 PC/390px 모바일 smoke 검사를 통과했다. 전체 화면·검색/필터·자동/수동 갱신·숨김 탭 중단·중복 요청 방지를 확인했고 JavaScript 오류가 없었다.
+- 새 경보 API와 설정·서비스·감시 API가 정상 응답했다. 실시간 공용 실행기를 조회해 `killable=false`, 모바일 화면의 종료 미리보기 미제공과 가로 넘침 없음을 확인했다. 없는 사건 ID는 404로 처리됐다. 검증 중 운영 대상에 종료·설정 변경 요청을 보내지 않았다.
+- 확인 시 새 사건과 전달 기록은 0건이었다. 사건 저장소가 최신이라는 사실과 실제 경보 발생·알림 수신 검증은 구분한다. Samsung Internet/Gmail 실제 수신·링크 이동은 아직 실기기 확인이 필요하다.
+- 설치기가 만든 복구 백업 4개와 이전 실행 환경은 롤백을 위해 보존한다.
 
 ## 정리
 
-main 병합을 확인한 구현·버전·보완 브랜치와 원격 PR 브랜치를 삭제했다. 이번 임시 로그·스크린샷·다운로드한 uv·압축본·검증 보조 스크립트도 제거했다. 테스트 프로세스와 CI 추적은 종료됐으며 임시 worktree는 없다. 기존 개발 가상환경·캐시, 운영 데이터·인증정보·복구 백업은 보존한다. 최종 결과 문서도 별도 브랜치에서 커밋·main 병합·push한 뒤 해당 브랜치를 정리한다.
+main 병합을 확인한 구현·버전·보완 브랜치와 원격 PR 브랜치를 삭제했다. 이번 임시 로그·스크린샷·다운로드한 uv·압축본·검증 보조 스크립트도 제거했다. 테스트 프로세스와 CI 추적은 종료됐으며 임시 worktree는 없다. 기존 개발 가상환경·캐시, 운영 데이터·인증정보·복구 백업은 보존한다. 운영 검증 후 설치 준비물과 전후 비교 파일·로그·브라우저 화면도 정리한다. 최종 결과 문서는 별도 브랜치에서 커밋·main 병합·push한 뒤 해당 브랜치를 정리한다.
