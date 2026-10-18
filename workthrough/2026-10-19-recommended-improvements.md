@@ -2,7 +2,7 @@
 
 ## 범위와 진행 상태
 
-[후속 검토](2026-10-18-maintenance-followup.md)의 권장 1~3번을 한 번에 구현하고 반영까지 하라는 요청이다. 이전 릴리스와 같은 절차(PR → 병합 → 버전·태그·Release → 운영 배포)로 진행했고, 아래에 단계별 실제 결과를 구분해 기록한다.
+[후속 검토](2026-10-18-maintenance-followup.md)의 권장 1~3번을 한 번에 구현하고 반영까지 하라는 요청이다. 이전 릴리스와 같은 절차(PR → 병합 → 버전·태그·Release → 운영 배포)로 진행했고 모두 완료했다. 현재 운영본은 v0.2.2다. 아래에 단계별 실제 결과를 구분해 기록한다.
 
 1. 기준값 부근 반복 경보: 재발 병합과 회복 알림 지연
 2. 7일/14일 이력 조회 캐시 5분
@@ -55,6 +55,25 @@
 - `scripts/ci_unit.py` OK. 4개 JS `node --check`, 서비스 워커 검사 통과.
 - Chromium: `browser_offline.py`, `browser_actionable.py`(새 재발 관찰 시나리오 포함), `browser_review_scenarios.py` 통과.
 - 모든 검증은 fixture와 테스트 프로세스에서 수행했다. 운영 대상에 변경 요청을 보내지 않았다.
+
+## PR·릴리스
+
+- [PR #21](https://github.com/jihoon22-lee/wsl-resource-guard/pull/21)의 CI 13개 job이 모두 success였다(Python 3.11–3.14, 권한 경계, Guard 수명주기, Chromium/WebKit, 의존성, 두 언어 CodeQL, 압축본 왕복). merge commit `77f304d`의 main CI도 success였다.
+- annotated `v0.2.2` 태그의 Release 워크플로가 재실행 없이 전체 job success로 끝났다. [v0.2.2 Release](https://github.com/jihoon22-lee/wsl-resource-guard/releases/tag/v0.2.2)는 draft/prerelease가 아니다.
+- 게시된 tar.gz의 SHA256SUMS와 SOURCE manifest를 검증했다. 태그 커밋에서 로컬로 다시 만든 압축본과 바이트 단위로 일치했다.
+
+## 운영 배포
+
+- 2026-10-19 06:33:33 KST에 검증한 v0.2.2 압축본으로 웹 설치기 → 시스템 Guard 설치기 순서로 적용했다(`wsl.exe -u root`). WSL 전체나 무관한 서비스를 재시작하지 않았다.
+- 설치 BUILD는 `77f304d`·dirty=false·0.2.2이고 CLI도 0.2.2다. 세 서비스는 06:33:38~41에 새로 시작했고 active·NRestarts=0이다. 설치 이후 세 유닛의 warning 이상 로그는 0건이다.
+- 배포 전후 비교: 설정·인증·웹 설정·서비스 등록부·Tailscale Serve 해시가 같다. 무관한 실행 서비스와 컨테이너 12개는 PID·시작 시각까지 같다. 바뀐 것은 새 가상환경을 가리키는 `wrg-web.service`와 서비스 메모리 이력 파일뿐이다.
+- 배포 직후 state·사건 저장소는 7초 전, 이력은 22초 전에 갱신됐다.
+- 0.2.1이 남긴 해소 사건 61건은 `recovery_pending`이 없어 그대로였다. 배포 후 회복 알림 재발송과 새 전달 시도는 0건이다. 이전 기록 호환을 운영 데이터로 확인했다.
+- 드라이브: C/D/E와 WSL·VHDX 조회가 모두 `ok`이고 응답 없음 표시는 없었다. Guard 프로세스 스레드는 배포 직후와 7분 뒤 모두 2개(주 스레드, 알림 worker)로, 조회 스레드가 남거나 늘지 않았다.
+- 장기 이력 캐시: 운영 웹에서 14일 이력을 100초 뒤 다시 조회하자 0.04초(캐시 재사용)였고, 350초 뒤에는 3.4초(만료 후 재계산)였다. 이전에는 60초가 지나면 다시 계산했다.
+- 실제 Tailscale 웹의 기존 smoke 검사를 통과했다. 별도로 POST를 모두 차단한 상태에서 390px/1440px 경보 목록(61건)·사건 상세·디스크·14일 이력 화면을 확인했고, 차단된 변경 요청·JS 오류·가로 넘침은 모두 0건이었다.
+- 반복 경보 병합의 실제 효과(새 사건의 재발 병합, 30분 뒤 회복 알림 1회)는 배포 후 아직 해당 사건이 없어 운영에서 관측하지 못했다. fixture와 운영 기록 기반 추정까지만 확인했다.
+- 설치기가 만든 복구 백업 4개(`/var/backups/wrg-services/68f4cc1…`, `/var/backups/wrg-guard/0bd1901…`, owner 백업 2개)와 이전 실행 환경은 롤백용으로 보존한다.
 
 ## 남은 제약
 
