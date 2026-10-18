@@ -152,6 +152,33 @@ def run_review_fixes(browser,width):
     finally:context.close()
 
 
+def run_recurrence_view(browser,width):
+    """A resolved incident still inside the recurrence window says so."""
+    state,row=data();posts=[];gets=[];errors=[]
+    row.update(state='resolved',resolved_at=time.time()-300,recovery_pending=True,recurrences=2)
+    state['/api/incidents']['incidents']=[row]
+    context=browser.new_context(viewport={'width':width,'height':844},is_mobile=width<768,has_touch=width<768,service_workers='block')
+    context.add_init_script("localStorage.setItem('wrg-refresh','0')")
+    page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+    def route(r):
+        path=urlsplit(r.request.url).path
+        if path=='/api/incidents' and parse_qs(urlsplit(r.request.url).query).get('id'):
+            return r.fulfill(json={'incident':row,'stale':False,'updated_at':time.time()})
+        return serve(r,posts,gets,state)
+    page.route(ORIGIN+'/**',route)
+    try:
+        page.goto(ORIGIN+'/#alerts')
+        expect(page.locator('#incident-list .incident-card .pill.good').first).to_have_text('해소 확인 · 재발 관찰 중')
+        page.locator('#incident-list a.incident-card').first.click()
+        expect(page.locator('#incident-detail')).to_contain_text('해소 후 재발 2회')
+        expect(page.locator('#incident-detail')).to_contain_text('30분 동안 다시 기준을 넘지 않으면 회복 알림을 보냅니다')
+        expect(page.locator('[data-incident-choice]')).to_have_count(0)
+        assert not page.evaluate('document.documentElement.scrollWidth > innerWidth'),width
+        assert not errors,errors
+        print(f'PASS {width}px recurrence-window',flush=True)
+    finally:context.close()
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--browser',choices=['chromium','webkit'],default='chromium');args=parser.parse_args()
     with sync_playwright() as p:
@@ -161,6 +188,7 @@ def main():
                 for mode in ('cancel','partial','lost-response','scope-changed','stale','expired-link'):
                     run_case(browser,width,mode)
                 run_review_fixes(browser,width)
+                run_recurrence_view(browser,width)
         finally:browser.close()
 
 if __name__=='__main__':main()

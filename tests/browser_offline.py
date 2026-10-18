@@ -360,6 +360,10 @@ def check_overview_stale_and_channel_chips(page, overrides: dict) -> None:
     overrides['/api/monitor'] = stale_monitor
     try:
         page.goto(ORIGIN + '/#overview')
+        # Reload so the stale fixture is fetched now rather than relying on the
+        # previous view's monitor data expiring.
+        page.reload()
+        expect(page.locator('#refresh')).to_be_enabled()
         # daemon_updated_at is None here: cards must dim and report age.
         expect(page.locator('#view-overview .cards.stale')).to_have_count(1)
         expect(page.locator('#view-overview')).to_contain_text('분 전 값')
@@ -1300,17 +1304,28 @@ def check_psi_availability(browser) -> None:
             svg.scroll_into_view_if_needed()
             # Use the actual chart geometry to target the missing and partial rows.
             for index, label in [(1, '관측 불가'), (3, '일부 관측')]:
-                point = svg.evaluate("""(e, i) => {
-                    const c = e._chart, g = c.geo, r = c.rows[i];
-                    const x = g.left + (r.timestamp - g.t0) / g.span * (g.w - g.left - g.right);
-                    const p = new DOMPoint(x, g.top + 20).matrixTransform(e.getScreenCTM());
-                    return {x:p.x, y:p.y};
-                }""", index)
-                if mobile:
-                    page.touchscreen.tap(point['x'], point['y'])
-                else:
-                    page.mouse.move(point['x'], point['y'])
-                expect(svg.locator('..').locator('.chart-tip')).to_contain_text(label)
+                # The chart may be re-rendered by the resize observer between
+                # reading its geometry and the pointer event; a pointer that
+                # lands on a replaced chart leaves an empty tip, so re-aim.
+                for attempt in range(3):
+                    point = svg.evaluate("""(e, i) => {
+                        const c = e._chart, g = c.geo, r = c.rows[i];
+                        const x = g.left + (r.timestamp - g.t0) / g.span * (g.w - g.left - g.right);
+                        const p = new DOMPoint(x, g.top + 20).matrixTransform(e.getScreenCTM());
+                        return {x:p.x, y:p.y};
+                    }""", index)
+                    if mobile:
+                        page.touchscreen.tap(point['x'], point['y'])
+                    else:
+                        page.mouse.move(point['x'], point['y'])
+                    try:
+                        expect(svg.locator('..').locator('.chart-tip')).to_contain_text(label, timeout=2000)
+                        break
+                    except AssertionError:
+                        if attempt == 2:
+                            raise
+                        if not mobile:
+                            page.mouse.move(0, 0)
             assert not errors, errors
         finally:
             ctx.close()

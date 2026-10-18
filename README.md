@@ -54,7 +54,7 @@ pidfd 미지원 환경에서는 세션 종료 기능을 사용할 수 없습니�
 [사용성 후속 수정](workthrough/2026-10-09-usability-remediation.md)에서 설정 요청 유실·완료 오표시, 로그 창 혼합, 부분 조회와 재시도 문제를 수정했습니다. 설정은 한 건씩 적용하며 오래된 요청의 결과는 보관되지 않을 수 있습니다. 서비스 500개·세션 2,000개 규모에서는 정렬·렌더링이 느릴 수 있으며, 모바일 자동화와 실기기·운영 적용 여부는 검증 기록에서 구분합니다.
 
 공개 릴리스는 [GitHub Releases](https://github.com/jihoon22-lee/wsl-resource-guard/releases/latest)에서 확인합니다. 0.2.1의 리뷰 수정·검증·릴리스·운영 적용 상태는 [0.2.1 작업 기록](workthrough/2026-10-18-review-remediation.md), 발견 사항은 [상세 코드 리뷰](workthrough/2026-10-18-detailed-code-review.md), 경보·모바일 조치 도입은 [0.2.0 기록](workthrough/2026-10-10-actionable-alerts.md)에 구분합니다.
-실기기 알림 수신은 별도 확인이 필요합니다. 보류한 개선의 운영 실측과 권고 순서(기준값 부근 반복 경보, 장기 이력 조회 비용, 드라이브 조회 시간 제한 등)는 [후속 검토](workthrough/2026-10-18-maintenance-followup.md)에 있습니다.
+실기기 알림 수신은 별도 확인이 필요합니다. 보류한 개선의 운영 실측과 권고 순서는 [후속 검토](workthrough/2026-10-18-maintenance-followup.md), 그중 권장 1~3번을 구현한 0.2.2의 검증·릴리스·운영 적용은 [0.2.2 작업 기록](workthrough/2026-10-19-recommended-improvements.md)에 있습니다.
 
 Codex 앱 서버 같은 공용 실행기를 개별 대화로 취급하지 않습니다. 대화 제목은 명시적 작업 ID와 로컬 메타데이터가 연결될 때만 표시하며, 제공되지 않은 제목·활동·저장/재개 가능성은 미확인으로 남깁니다. 공용 서버 전체 종료는 일반 세션 조치에서 차단합니다. 실제 Samsung Internet/Gmail 수신과 절전·권한·네트워크 전환은 실기기 확인이 필요합니다.
 

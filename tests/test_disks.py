@@ -58,6 +58,36 @@ class DiskCollectionTests(unittest.TestCase):
         self.assertEqual(row['observed_at'],100)
         self.assertEqual(disks.disk_severity(row),'critical')
 
+    def test_stalled_drive_is_reported_without_blocking_or_piling_up_probes(self):
+        import threading
+        release = threading.Event()
+        calls = []
+        ok = SimpleNamespace(f_blocks=100, f_bfree=40, f_bavail=35, f_frsize=4096)
+
+        def statvfs(path):
+            calls.append(path)
+            if path == '/mnt/c' and not release.is_set():
+                release.wait(5)
+            return ok
+        mounts = {'/mnt/c': ('9p', 'C:\\'), '/': ('ext4', '/dev/sdd')}
+        self.addCleanup(release.set)
+        with patch.object(disks, 'mount_table', return_value=mounts), \
+             patch.object(disks.os, 'statvfs', side_effect=statvfs), \
+             patch.object(disks, 'PROBE_TIMEOUT_SECONDS', 0.05):
+            first = disks.collect_disks(['C'], previous=[disk(30)])
+            second = disks.collect_disks(['C'], previous=first)
+            self.assertEqual(calls.count('/mnt/c'), 1)  # The stuck probe is not duplicated.
+            for row in (first[0], second[0]):
+                self.assertEqual(row['status'], 'error')
+                self.assertIn('응답하지 않았습니다', row['error'])
+                self.assertEqual(row['available_percent'], 30)  # Last good value, marked stale.
+            self.assertEqual(first[1]['status'], 'ok')  # Other targets still measured.
+            release.set()
+            disks._PROBES['/mnt/c'].join(1)
+            third = disks.collect_disks(['C'])
+        self.assertEqual(third[0]['status'], 'ok')
+        self.assertEqual(third[0]['available_percent'], 35)
+
     def test_disk_errors_do_not_expose_exception_details(self):
         marker = 'private-exception-detail'
         with patch.object(disks, 'mount_table', return_value={'/mnt/c': ('9p', 'C:')}), \

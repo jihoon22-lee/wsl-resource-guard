@@ -11,7 +11,7 @@ from wsl_resource_guard.actions import Actions
 from wsl_resource_guard.config import Settings
 from wsl_resource_guard.delivery import Delivery
 from wsl_resource_guard.identity import describe_target, process_identity
-from wsl_resource_guard.incidents import atomic_write, read_store, reconcile, incident_message
+from wsl_resource_guard.incidents import RECURRENCE_MERGE_SECONDS, atomic_write, read_store, reconcile, incident_message
 from wsl_resource_guard.metrics import SystemMetrics
 from wsl_resource_guard.notifications import NotificationResult
 from wsl_resource_guard.processes import ProcessInfo, ProcessSnapshot, SessionUsage, ProjectUsage, is_stale_session, _persistent_provider
@@ -111,12 +111,58 @@ class IncidentTests(unittest.TestCase):
         pressured=reconcile({},[condition()],self.snap,metrics(1000,1),self.settings,boot='boot-a')['incidents'][0]
         self.assertEqual(pressured['priority'],'pressure')
 
-    def test_recurrence_uses_a_new_id_after_confirmed_recovery(self):
+    def resolved(self):
         first=self.update({},[condition()],1000)
         done=self.update(self.update(first,[],1015),[],1045)
-        again=self.update(done,[condition()],1060)
+        row=done['incidents'][0]
+        self.assertEqual((row['state'],row['revision'],row['recovery_pending']),('resolved',1,True))
+        return first,done
+
+    def test_recurrence_uses_a_new_id_after_confirmed_recovery(self):
+        first,done=self.resolved()
+        confirmed=self.update(done,[],1045+RECURRENCE_MERGE_SECONDS)
+        again=self.update(confirmed,[condition()],1060+RECURRENCE_MERGE_SECONDS)
         active=next(r for r in again['incidents'] if r['state']=='active')
         self.assertNotEqual(first['incidents'][0]['id'],active['id'])
+
+    def test_recurrence_within_window_continues_the_same_incident(self):
+        first,done=self.resolved()
+        again=self.update(done,[condition()],1060)
+        self.assertEqual(len(again['incidents']),1)
+        row=again['incidents'][0]
+        self.assertEqual((row['id'],row['state'],row['revision'],row['recurrences']),(first['incidents'][0]['id'],'active',1,1))
+        self.assertNotIn('resolved_at',row)
+        self.assertTrue(row['transitions'][-1]['recurred'])
+        # Resolving again restarts the quiet window from the new resolution.
+        later=self.update(self.update(again,[],1075),[],1105)
+        self.assertEqual((later['incidents'][0]['state'],later['incidents'][0]['revision']),('resolved',1))
+
+    def test_recovery_revision_only_after_a_quiet_window(self):
+        _,done=self.resolved()
+        waiting=self.update(done,[],1045+RECURRENCE_MERGE_SECONDS-1)['incidents'][0]
+        self.assertEqual((waiting['revision'],waiting['recovery_pending']),(1,True))
+        confirmed=self.update(done,[],1045+RECURRENCE_MERGE_SECONDS)['incidents'][0]
+        self.assertEqual(confirmed['revision'],2)
+        self.assertNotIn('recovery_pending',confirmed)
+        self.assertEqual(confirmed['recovery_confirmed_at'],1045+RECURRENCE_MERGE_SECONDS)
+
+    def test_escalation_on_recurrence_is_a_new_revision(self):
+        first,done=self.resolved()
+        again=self.update(done,[condition('critical.mcp_total','critical')],1060)['incidents'][0]
+        self.assertEqual((again['id'],again['severity'],again['revision']),(first['incidents'][0]['id'],'critical',2))
+
+    def test_legacy_resolved_record_is_neither_reannounced_nor_reopened(self):
+        first,_=self.resolved()
+        legacy=copy.deepcopy(first);legacy['incidents'][0].update(state='resolved',resolved_at=1045,revision=2)
+        after=self.update(legacy,[],1100)
+        self.assertEqual(after['incidents'][0]['revision'],2)
+        again=self.update(after,[condition()],1115)
+        self.assertEqual(len(again['incidents']),2)
+        self.assertNotEqual(again['incidents'][0]['id'],again['incidents'][1]['id'])
+
+    def test_backward_clock_does_not_hold_recovery_forever(self):
+        _,done=self.resolved()
+        self.assertEqual(self.update(done,[],1040)['incidents'][0]['revision'],2)
 
     def test_link_has_incident_identity_and_html_is_escaped(self):
         row=self.update({},[condition()],1000)['incidents'][0]
@@ -261,6 +307,27 @@ class DeliveryTests(unittest.TestCase):
         self.now=1070;self.store['updated_at']=1070;atomic_write(self.root/'incidents.json',self.store)
         self.engine.tick(send=self.send)
         self.assertEqual(self.ledger()['updated_at'],1070)
+
+    def test_flapping_condition_sends_one_alert_and_one_delayed_recovery(self):
+        self.engine.tick(send=self.send)
+        self.assertEqual(len(self.calls),2)
+        atomic_write(self.shared/'incident-decisions.json',{self.row['id']:{'choice':'defer','until':9000,'at':1000,'revision':self.row['revision']}})
+        store=self.store;snap=fixture(True)
+        # Below threshold, resolved, back above twice: the hovering pattern seen in production.
+        # Samples every 15 s: 135 s below (resolves after 120 s), one sample above, twice; then below.
+        plan=([[]]*10+[[condition()]])*2+[[]]*10
+        for step,conditions in enumerate(plan,1):
+            now=1000+15*step
+            store=reconcile(store,conditions,snap,metrics(now),self.settings,boot='test')
+            self.now=now;atomic_write(self.root/'incidents.json',store);self.engine.tick(send=self.send)
+        row=store['incidents'][0]
+        self.assertEqual((len(store['incidents']),row['id'],row['revision'],row['recurrences']),(1,self.row['id'],1,2))
+        self.assertEqual(len(self.calls),2)  # No new alert, no early recovery notice.
+        quiet=row['resolved_at']+RECURRENCE_MERGE_SECONDS
+        store=reconcile(store,[],snap,metrics(quiet),self.settings,boot='test')
+        self.now=quiet;atomic_write(self.root/'incidents.json',store);seen=[]
+        self.engine.tick(send=lambda destination,row,*rest:(seen.append((row['state'],row['revision'])) or NotificationResult('gmail',True,'accepted')))
+        self.assertEqual(seen,[('resolved',2),('resolved',2)])
 
     def test_ambiguous_timeout_is_not_automatically_retried(self):
         self.engine.tick(send=lambda *args:NotificationResult('gmail',False,'TimeoutError'))

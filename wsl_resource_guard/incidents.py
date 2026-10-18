@@ -13,6 +13,10 @@ from .identity import boot_id, describe_target, process_identity
 from .safe_read import read_text
 
 MAX_INCIDENTS = 256
+# A value hovering at its threshold resolves and re-opens within minutes. A
+# recurrence inside this window continues the same incident without a new
+# alert, and the recovery notice waits until the window passes quietly.
+RECURRENCE_MERGE_SECONDS = 1800
 IDENTIFIER = re.compile(r'^[0-9a-f]{32}$')
 
 
@@ -112,6 +116,12 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
     boot = boot_id() if boot is None else boot
     rows = copy.deepcopy(previous.get('incidents', []))
     active = {r['key']: r for r in rows if r.get('state') != 'resolved'}
+    # Resolved rows whose recovery has not been announced yet (newest wins).
+    recent = {}
+    for r in sorted(rows, key=lambda r: r.get('resolved_at', 0)):
+        if (r.get('state') == 'resolved' and r.get('recovery_pending')
+                and 0 <= now - r.get('resolved_at', now) <= RECURRENCE_MERGE_SECONDS):
+            recent[r['key']] = r
     seen = set()
     pressure = (metrics.mem_available_gib < settings.warning_available_gib
                 or (metrics.psi_some_avg60 is not None and metrics.psi_some_avg60 >= settings.warning_psi_some_avg60)
@@ -120,6 +130,17 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         key = _key(condition, snapshot, boot)
         seen.add(key)
         row = active.get(key)
+        recurred = False
+        if row is None and key in recent:
+            # Same cause again before the recovery was announced: continue the
+            # incident. Its revision (and any defer bound to it) is unchanged.
+            row = active[key] = recent.pop(key)
+            recurred = True
+            row.pop('resolved_at', None)
+            row.pop('recovery_pending', None)
+            row['recurrences'] = row.get('recurrences', 0) + 1
+            row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'active', 'recurred': True,
+                                                                  'severity': condition['severity']}])[-16:]
         if row is None:
             row = {'id': secrets.token_hex(16), 'key': key, 'opened_at': now, 'revision': 0,
                    'state': 'new', 'severity': '', 'transitions': [], 'initial_reason': condition['reason']}
@@ -127,7 +148,8 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         targets = _targets(condition, snapshot)
         # The top-session target list is refreshed in place; only a new or
         # escalated incident is a new revision that may re-alert or end a defer.
-        changed = row['state'] not in ('active', 'resolving') or row['severity'] != condition['severity']
+        changed = ((not recurred and row['state'] not in ('active', 'resolving'))
+                   or row['severity'] != condition['severity'])
         if changed:
             row['revision'] += 1
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'active',
@@ -157,6 +179,14 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         seen.add(key)
         row.update(state='active', normal_since=None, observed_at=now)
     for row in rows:
+        if row['state'] == 'resolved' and row.get('recovery_pending'):
+            # Announce recovery (new revision) only after the merge window, or
+            # at once when the clock moved backwards past the resolution.
+            elapsed = now - row.get('resolved_at', now)
+            if elapsed >= RECURRENCE_MERGE_SECONDS or elapsed < 0:
+                row.pop('recovery_pending', None)
+                row.update(revision=row['revision'] + 1, recovery_confirmed_at=now)
+            continue
         if row['key'] in seen or row['state'] == 'resolved':
             continue
         gap = now < row.get('observed_at', now) or now - row.get('observed_at', now) > max(60, 3 * settings.interval_seconds)
@@ -167,7 +197,7 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         since = now if since is None or since > now else since
         row.update(state='resolving', normal_since=since, observed_at=now)
         if now - since >= settings.recovery_sustain_seconds:
-            row.update(state='resolved', resolved_at=now, revision=row['revision'] + 1)
+            row.update(state='resolved', resolved_at=now, recovery_pending=True)
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'resolved'}])[-16:]
     cutoff = now - settings.retention_days * 86400
     rows = [r for r in rows if r['state'] != 'resolved' or r.get('resolved_at', now) >= cutoff]
