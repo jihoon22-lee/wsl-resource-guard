@@ -13,6 +13,44 @@ from .safe_read import read_text
 
 _CACHE: dict[tuple, tuple[float, list[dict]]] = {}
 _LOCK = threading.Lock()
+# Windows drives are 9p mounts; a host-side stall must not freeze the guard's
+# sample loop (and with it every alert). Each path has at most one probe in
+# flight: a stuck call keeps its thread, later samples report it unresponsive.
+PROBE_TIMEOUT_SECONDS = 5.0
+_PROBES: dict[str, threading.Thread] = {}
+_PROBES_LOCK = threading.Lock()
+
+
+class ProbeTimeout(TimeoutError):
+    """A filesystem call on a host-backed mount did not answer in time."""
+
+
+def bounded_probe(path: str, call, timeout: float | None = None):
+    timeout = PROBE_TIMEOUT_SECONDS if timeout is None else timeout
+    result: dict = {}
+
+    def run():
+        try:
+            result['value'] = call()
+        except BaseException as exc:  # Re-raised in the caller's thread.
+            result['error'] = exc
+
+    with _PROBES_LOCK:
+        running = _PROBES.get(path)
+        if running is not None and running.is_alive():
+            raise ProbeTimeout(path)
+        thread = threading.Thread(target=run, name='wrg-disk-probe', daemon=True)
+        _PROBES[path] = thread
+        thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise ProbeTimeout(path)
+    with _PROBES_LOCK:
+        if _PROBES.get(path) is thread:
+            del _PROBES[path]
+    if 'error' in result:
+        raise result['error']
+    return result['value']
 
 
 def mount_table(path: Path = Path('/proc/self/mountinfo')) -> dict[str, tuple[str, str]]:
@@ -65,7 +103,7 @@ def collect_disks(drives: list[str], vhd_path: str = '', previous: list[dict] | 
                 if fs_type not in ('9p', 'drvfs') or not source.upper().startswith(identifier):
                     row['status'] = 'unmounted'
                     raise OSError('드라이브가 연결 또는 마운트되어 있지 않습니다.')
-            stats = os.statvfs(path)
+            stats = bounded_probe(path, lambda: os.statvfs(path)) if kind == 'windows' else os.statvfs(path)
             total = stats.f_blocks * stats.f_frsize
             free = stats.f_bfree * stats.f_frsize
             available = stats.f_bavail * stats.f_frsize
@@ -75,11 +113,13 @@ def collect_disks(drives: list[str], vhd_path: str = '', previous: list[dict] | 
             row.update(observed_at=now, total_bytes=total, used_bytes=used, available_bytes=available,
                        reserved_bytes=free-available, available_percent=available/total*100,
                        used_percent=used/total*100)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             row['status'] = 'unmounted' if row['status'] == 'unmounted' else 'error'
             row['error'] = ('드라이브가 연결 또는 마운트되어 있지 않습니다.'
                             if row['status'] == 'unmounted' else
                             '마운트 정보를 읽지 못했습니다.' if kind == 'windows' and mount_error else
+                            f'드라이브가 {PROBE_TIMEOUT_SECONDS:g}초 안에 응답하지 않았습니다.'
+                            if isinstance(exc, ProbeTimeout) else
                             '디스크 용량을 읽지 못했습니다.')
             old = previous_by_id.get(identifier, {})
             # Keep last good measurements for alarm continuity, explicitly marked stale.
@@ -95,7 +135,7 @@ def collect_disks(drives: list[str], vhd_path: str = '', previous: list[dict] | 
                 try:
                     if match and '/mnt/' + match[1].lower() not in mounts:
                         raise OSError('VHDX 저장 드라이브가 마운트되어 있지 않습니다.')
-                    row['vhd']['file_bytes'] = Path(vhd_path).stat().st_size
+                    row['vhd']['file_bytes'] = bounded_probe(vhd_path, lambda: Path(vhd_path).stat().st_size)
                     row['vhd']['status'] = 'ok'
                 except OSError:
                     row['vhd'].update(status='error', error='VHDX 파일 정보를 읽지 못했습니다. 경로와 마운트를 확인하세요.')
