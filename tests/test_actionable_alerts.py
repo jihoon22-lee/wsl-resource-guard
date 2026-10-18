@@ -236,6 +236,23 @@ class DeliveryTests(unittest.TestCase):
         before=len(self.calls);self.engine.tick(send=self.send)
         self.assertEqual(len(self.calls)-before,2)
 
+    def test_top_session_change_neither_re_alerts_nor_ends_a_defer(self):
+        self.engine.tick(send=self.send)
+        atomic_write(self.shared/'incident-decisions.json',{self.row['id']:{'choice':'defer','until':9000,'at':1000,'revision':self.row['revision']}})
+        changed=fixture(True);changed.sessions=[]
+        self.now=1015
+        store=reconcile(self.store,[condition()],changed,metrics(1015),self.settings,boot='test')
+        row=store['incidents'][0]
+        self.assertEqual((row['id'],row['revision'],row['targets']),(self.row['id'],self.row['revision'],[]))
+        atomic_write(self.root/'incidents.json',store)
+        before=len(self.calls);self.engine.tick(send=self.send)
+        self.assertEqual(len(self.calls),before)
+        escalated=reconcile(store,[condition('critical.mcp_total','critical')],changed,metrics(1030),self.settings,boot='test')
+        self.assertEqual(escalated['incidents'][0]['revision'],self.row['revision']+1)
+        self.now=1030;atomic_write(self.root/'incidents.json',escalated)
+        self.engine.tick(send=self.send)
+        self.assertEqual(len(self.calls),before+2)
+
     def test_ambiguous_timeout_is_not_automatically_retried(self):
         self.engine.tick(send=lambda *args:NotificationResult('gmail',False,'TimeoutError'))
         self.now=1030

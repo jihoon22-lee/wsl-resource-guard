@@ -101,7 +101,13 @@ def _measurement(condition, snapshot, metrics, settings):
     return {}
 
 
-def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, settings, *, boot=None) -> dict:
+def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, settings, *, boot=None,
+              pending: list[dict] | None = None) -> dict:
+    """`pending` holds re-exceeded conditions whose sustain period is not yet met.
+
+    They keep an existing incident open, matching the guard which also holds its
+    severity, but never open one or change its revision.
+    """
     now = metrics.timestamp
     boot = boot_id() if boot is None else boot
     rows = copy.deepcopy(previous.get('incidents', []))
@@ -119,8 +125,9 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
                    'state': 'new', 'severity': '', 'transitions': [], 'initial_reason': condition['reason']}
             rows.append(row)
         targets = _targets(condition, snapshot)
-        changed = (row['state'] not in ('active', 'resolving') or row['severity'] != condition['severity']
-                   or (row.get('targets') is not None and {t['id'] for t in row['targets']} != {t['id'] for t in targets}))
+        # The top-session target list is refreshed in place; only a new or
+        # escalated incident is a new revision that may re-alert or end a defer.
+        changed = row['state'] not in ('active', 'resolving') or row['severity'] != condition['severity']
         if changed:
             row['revision'] += 1
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'active',
@@ -142,6 +149,13 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
                    guidance=('현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
                              '자원 압박이 관측됐습니다. 저장할 작업과 주요 점유 대상을 확인하세요.' if pressure else
                              '자원 기준을 넘었습니다. 점유량만으로 작업 중단이나 누수를 단정하지 않습니다.'))
+    for condition in pending or []:
+        key = _key(condition, snapshot, boot)
+        row = active.get(key)
+        if key in seen or row is None or row['state'] not in ('active', 'resolving'):
+            continue
+        seen.add(key)
+        row.update(state='active', normal_since=None, observed_at=now)
     for row in rows:
         if row['key'] in seen or row['state'] == 'resolved':
             continue

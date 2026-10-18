@@ -896,7 +896,10 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
             incident_path = settings.state_path / 'incidents.json'
             try:
                 previous_incidents = read_store(incident_path)
-                atomic_write(incident_path, reconcile(previous_incidents, evaluation.conditions, snapshot, metrics, settings))
+                active_keys = {c['key'] for c in evaluation.conditions}
+                pending = [{'key': key} for key in evaluation.condition_since if key not in active_keys]
+                atomic_write(incident_path, reconcile(previous_incidents, evaluation.conditions, snapshot,
+                                                      metrics, settings, pending=pending))
             except (OSError, ValueError):
                 # Do not erase damaged records or stop resource sampling.
                 print('incident storage unavailable; resource sample retained', flush=True)
