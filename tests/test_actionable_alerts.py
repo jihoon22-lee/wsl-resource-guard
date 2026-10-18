@@ -253,6 +253,15 @@ class DeliveryTests(unittest.TestCase):
         self.engine.tick(send=self.send)
         self.assertEqual(len(self.calls),before+2)
 
+    def test_idle_ticks_do_not_rewrite_the_ledger(self):
+        self.engine.tick(send=self.send)
+        inode=(self.root/'delivery.json').stat().st_ino
+        self.now=1010;self.engine.tick(send=self.send)
+        self.assertEqual((self.root/'delivery.json').stat().st_ino,inode)
+        self.now=1070;self.store['updated_at']=1070;atomic_write(self.root/'incidents.json',self.store)
+        self.engine.tick(send=self.send)
+        self.assertEqual(self.ledger()['updated_at'],1070)
+
     def test_ambiguous_timeout_is_not_automatically_retried(self):
         self.engine.tick(send=lambda *args:NotificationResult('gmail',False,'TimeoutError'))
         self.now=1030

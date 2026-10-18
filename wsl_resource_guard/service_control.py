@@ -89,6 +89,7 @@ def probe_url(url: str, opener=_probe_opener) -> dict:
             status = response.status
     except urllib.error.HTTPError as exc:
         status = exc.code
+        exc.close()  # An HTTP error still carries an open response body.
     except (urllib.error.URLError, OSError, ValueError) as exc:
         reason = getattr(exc, 'reason', exc)
         result.update(ok=False, status=None, error=f'{type(reason).__name__}: {reason}'[:200])
@@ -748,8 +749,12 @@ class Controller:
             for container in self.containers(entry['target'])[:12]:
                 # Docker logs writes application stderr to stderr; capture both streams.
                 if self.run is command:
+                    # Container output is arbitrary bytes; never fail the whole view on decoding.
                     result = subprocess.run(['docker', 'logs', '--tail', str(lines), container['id']],
-                                            capture_output=True, text=True, timeout=15)
+                                            capture_output=True, text=True, encoding='utf-8',
+                                            errors='replace', timeout=15,
+                                            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin',
+                                                 'LANG': 'C.UTF-8', 'HOME': '/root'})
                     text = result.stdout + result.stderr
                 else:
                     text = self.run('docker', 'logs', '--tail', str(lines), container['id'])
