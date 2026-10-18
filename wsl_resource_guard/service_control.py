@@ -1128,15 +1128,23 @@ class Controller:
             self._history_cache[key] = (time.monotonic(), result)
         return result
 
+    @staticmethod
+    def _history_ttl(key: str) -> int:
+        """7d/14d use 30/60-minute buckets and take seconds to rebuild from
+        days of JSONL; 5 minutes of reuse is invisible at that resolution."""
+        from .history import HISTORY_RANGES
+        return 300 if HISTORY_RANGES[key][1] >= 1800 else 60
+
     def history(self, range_key: str = '3h') -> list:
         from .history import HISTORY_RANGES
         key = range_key if range_key in HISTORY_RANGES else '3h'
-        return self._cached_owner_history(key, 'history', {'range': key})
+        return self._cached_owner_history(key, 'history', {'range': key}, ttl=self._history_ttl(key))
 
     def attribution(self, range_key: str = '3h') -> dict:
         from .history import HISTORY_RANGES
         key = range_key if range_key in HISTORY_RANGES else '3h'
-        return self._cached_owner_history('attribution:' + key, 'attribution', {'range': key})
+        return self._cached_owner_history('attribution:' + key, 'attribution', {'range': key},
+                                          ttl=self._history_ttl(key))
 
     def session_history(self, days: int = 7) -> list:
         return self._cached_owner_history('sessions', 'session-history', ttl=120)
