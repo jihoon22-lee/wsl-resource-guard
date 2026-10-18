@@ -13,6 +13,7 @@ from wsl_resource_guard.processes import (
     _session_roots,
     apply_cpu_rates,
     build_snapshot,
+    descendants_of,
     detect_provider,
     is_stale_session,
     kill_block_reason,
@@ -249,3 +250,11 @@ class ScopeLimitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DescendantTests(unittest.TestCase):
+    def test_inconsistent_parent_cycle_terminates(self) -> None:
+        # PID reuse during a /proc scan can momentarily describe a cycle.
+        processes = {10: process(10, 11, "node"), 11: process(11, 10, "node"), 12: process(12, 11, "mcp")}
+        self.assertEqual(sorted(p.pid for p in descendants_of(10, processes)), [10, 11, 12])
+

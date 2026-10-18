@@ -208,6 +208,14 @@ def create_app(config: dict | None = None, control=request_control,
             # 204 tells EventSource to stop without retrying or logging an
             # error; that tab simply keeps its regular polling.
             return Response(status=204)
+        released = []
+
+        def release():
+            # HEAD and early disconnects close the response without ever
+            # starting the generator, so its finally alone would leak a slot.
+            if not released:
+                released.append(True)
+                stream_slots.release()
 
         def events():
             try:
@@ -228,10 +236,12 @@ def create_app(config: dict | None = None, control=request_control,
                         yield ': keep-alive\n\n'
                     sleep(STREAM_POLL_SECONDS)
             finally:
-                stream_slots.release()
+                release()
 
-        return Response(stream_with_context(events()), mimetype='text/event-stream',
-                        headers={'X-Accel-Buffering': 'no'})
+        response = Response(stream_with_context(events()), mimetype='text/event-stream',
+                            headers={'X-Accel-Buffering': 'no'})
+        response.call_on_close(release)
+        return response
 
     @app.post('/api/alerts/snooze')
     def snooze():

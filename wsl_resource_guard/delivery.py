@@ -10,6 +10,8 @@ from .incidents import atomic_write, incident_message, read_store
 from .notifications import Notifier, NotificationResult
 from .safe_read import read_text
 
+LEDGER_STAMP_SECONDS = 60
+
 
 def read_json(path: Path, default):
     try:
@@ -116,6 +118,8 @@ class Delivery:
         if not isinstance(ledger, dict) or not isinstance(ledger.get('events'), dict):
             raise ValueError('Invalid delivery state')
         records = ledger['events']
+        saved_at = ledger.get('updated_at', 0)
+        saved_content = self._content(ledger)
         if ledger.get('updated_at', 0) > now:
             for entry in records.values():
                 entry['next_reminder_at'] = now + self.settings.reminder_cooldown_seconds
@@ -182,9 +186,16 @@ class Delivery:
                     finished_at=self.clock(), next_at=now + (60, 300, 900)[min(2, delivery['attempts'] - 1)])
                 self._save(ledger)
                 count += 1
-        ledger['updated_at'] = self.clock()
-        self._save(ledger)
+        # Persist only real changes, plus a periodic stamp for clock-rollback
+        # detection; an fsync every 2 s idle tick is pointless disk work.
+        if self._content(ledger) != saved_content or not 0 <= now - saved_at < LEDGER_STAMP_SECONDS:
+            ledger['updated_at'] = self.clock()
+            self._save(ledger)
         return count
+
+    @staticmethod
+    def _content(ledger):
+        return json.dumps({k: v for k, v in ledger.items() if k != 'updated_at'}, sort_keys=True)
 
     def reports(self):
         """Independent schedule; a report never advances an incident's reminder clock."""

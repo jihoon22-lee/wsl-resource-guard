@@ -720,3 +720,36 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertIn("가용 RAM 기록 없음", text)
         self.assertIn("0회", text)
         self.assertIn("<h3>디스크</h3>", html_body)
+
+
+class IncidentHoldTests(unittest.TestCase):
+    def test_brief_dip_then_re_exceed_keeps_one_incident(self):
+        # The guard holds warning while the re-exceeded condition re-sustains;
+        # the incident must not resolve and reopen under a new id meanwhile.
+        from wsl_resource_guard.incidents import read_store
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory, windows_toast_enabled=False, push_enabled=False,
+                                email_heartbeat_enabled=False, warning_available_gib=4,
+                                critical_available_gib=1, warning_available_sustain_seconds=30,
+                                recovery_sustain_seconds=30)
+            seen = []
+            with (patch("wsl_resource_guard.daemon.read_system_metrics") as reader,
+                  patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                  patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot())):
+                plan = [(100, 3), (115, 3), (130, 3), (145, 6), (160, 3), (175, 3), (190, 3), (205, 3)]
+                for stamp, available in plan:
+                    reader.return_value = metrics(available, timestamp=stamp)
+                    _, _, evaluation = sample(settings, notify=False, incident_mode=True)
+                    rows = read_store(Path(directory) / "incidents.json")["incidents"]
+                    seen.append((stamp, evaluation.severity, [(r["id"], r["state"], r["revision"]) for r in rows]))
+                rows = read_store(Path(directory) / "incidents.json")["incidents"]
+                self.assertEqual(len(rows), 1, seen)
+                self.assertEqual((rows[0]["state"], rows[0]["revision"]), ("active", 1), seen)
+                self.assertFalse(any(state == "resolved" for _, _, items in seen for _, state, _ in items), seen)
+                # A real, sustained recovery still resolves the same incident.
+                for stamp in (220, 235, 250, 265):
+                    reader.return_value = metrics(6, timestamp=stamp)
+                    sample(settings, notify=False, incident_mode=True)
+                rows = read_store(Path(directory) / "incidents.json")["incidents"]
+                self.assertEqual([r["state"] for r in rows], ["resolved"])
+

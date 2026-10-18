@@ -295,7 +295,7 @@ nav {
   background: var(--badge-bad-bg);
   color: var(--badge-bad-fg);
 }
-.nav-badge.dot {
+.nav-badge.badge-dot {
   min-width: 9px;
   width: 9px;
   height: 9px;
@@ -1348,12 +1348,28 @@ dialog::backdrop {
   .topbar {
     height: 48px;
   }
+  /* Keep the alert banner within the first screen on phones. */
   .page-heading {
-    padding: 23px 0;
-    gap: 20px;
+    padding: 14px 0;
+    gap: 10px;
+  }
+  .page-heading .eyebrow {
+    display: none;
+  }
+  .page-heading p {
+    margin-top: 4px;
+  }
+  .refresh-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .refresh-row {
+    margin-bottom: 0;
   }
   h1 {
-    font-size: 24px;
+    font-size: 22px;
   }
   .cards {
     grid-template-columns: 1fr 1fr;
@@ -2076,6 +2092,7 @@ body.live .live-dot {
 .investigation-panel .panel-body { line-height: 1.65; }
 .incident-cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,290px),1fr)); gap: 12px; }
 .incident-card { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 16px; color: inherit; text-decoration: none; overflow-wrap: anywhere; min-width: 0; }
+.incident-card > .pill { align-self: flex-start; }
 .incident-card:hover,.incident-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .path-text,.investigation-panel li { overflow-wrap: anywhere; }
 .impact-consent { display:flex; align-items:flex-start; gap:12px; padding:16px 0; }

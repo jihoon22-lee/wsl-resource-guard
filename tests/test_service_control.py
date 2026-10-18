@@ -155,9 +155,12 @@ class ControllerTests(unittest.TestCase):
 
         self.assertTrue(service_control.probe_url('https://x/', lambda *a, **k: Response(200))['ok'])
 
+        body = io.BytesIO(b'denied')
+
         def forbidden(*a, **k):
-            raise urllib.error.HTTPError('https://x/', 403, 'Forbidden', {}, None)
+            raise urllib.error.HTTPError('https://x/', 403, 'Forbidden', {}, body)
         self.assertTrue(service_control.probe_url('https://x/', forbidden)['ok'])
+        self.assertTrue(body.closed)
 
         def broken(*a, **k):
             raise urllib.error.HTTPError('https://x/', 503, 'Down', {}, None)
@@ -631,6 +634,18 @@ class ControllerTests(unittest.TestCase):
         result = self.controller.dispatch({'op': 'restore', 'dry_run': True}, uid=1, web_uid=999)
         self.assertIn('계획', result['message'])
         self.run.assert_not_called()
+
+    def test_compose_logs_survive_non_utf8_output(self):
+        import subprocess as real_subprocess
+        real_run = real_subprocess.run
+        self.controller.run = service_control.command
+
+        def fake_docker(args, **kwargs):
+            self.assertEqual(args[:2], ['docker', 'logs'])
+            return real_run(['printf', r'ok\377end'], **kwargs)
+        with patch.object(service_control.subprocess, 'run', side_effect=fake_docker):
+            result = self.controller.logs('compose-demo', lines=10)
+        self.assertIn('ok\ufffdend', result['text'])
 
     def test_logs_lines_are_clamped(self):
         entry = dict(self.entry, kind='systemd', target='demo.service')

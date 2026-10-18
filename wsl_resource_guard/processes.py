@@ -694,8 +694,12 @@ def descendants_of(pid: int, processes: dict[int, ProcessInfo]) -> list[ProcessI
     result: list[ProcessInfo] = []
     stack: list[tuple[int, int]] = [(pid, 0)]
     depth_by_pid: dict[int, int] = {pid: 0}
+    seen: set[int] = set()
     while stack:
         current, depth = stack.pop()
+        if current in seen:
+            continue  # A PID reused mid-scan can make an inconsistent ppid cycle.
+        seen.add(current)
         process = processes.get(current)
         if process:
             result.append(process)

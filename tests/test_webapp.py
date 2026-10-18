@@ -266,6 +266,14 @@ class StreamTests(unittest.TestCase):
         for _ in range(3):
             self.assertEqual(self.open().status_code, 200)
 
+    def test_head_and_unread_streams_return_their_slots(self):
+        for _ in range(3):
+            self.client.head('/api/stream', base_url=self.origin, headers=self.headers,
+                             environ_overrides=self.environ).close()
+            self.client.get('/api/stream', base_url=self.origin, headers=self.headers,
+                            environ_overrides=self.environ).close()
+        self.assertEqual(self.open().status_code, 200)
+
     def test_streams_over_the_cap_get_204_instead_of_an_error(self):
         import threading as _threading
         slots = [cell.cell_contents for cell in self.app.view_functions['stream'].__closure__

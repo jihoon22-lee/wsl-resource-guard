@@ -577,9 +577,25 @@ def check_history_tools(page, overrides: dict) -> None:
         page.locator('#history-unzoom').click()
         expect(page.locator('#history-window')).to_be_hidden()
         expect(page.locator('#history-table tbody tr')).to_have_count(30)
-        # 14-day range is offered.
+        # 14-day range is offered; multi-day axes name the day and use round ticks.
+        overrides['/api/history'] = multi_day_history()
         page.locator('.range-picker [data-range="14d"]').click()
         expect(page).to_have_url(re.compile(r'range=14d'))
+        chart = page.locator('#history-chart svg.chart').first
+        expect(chart.locator('text', has_text=re.compile(r'^\d{1,2}/\d{1,2} '))).not_to_have_count(0)
+        values = []
+        for text in chart.locator('text[text-anchor="end"]').all_text_contents():
+            try:
+                values.append(float(text))
+            except ValueError:
+                pass
+        values.sort()
+        steps = {round(b - a, 6) for a, b in zip(values, values[1:])}
+        assert values[:1] == [0.0], values
+        assert len(steps) == 1 and next(iter(steps)) in (0.5, 1, 2, 2.5, 5, 10, 20, 25, 50), values
+        hover_chart(page, chart, 0.5)
+        expect(page.locator('#history-chart .chart-tip').first).to_contain_text(re.compile(r'\d{1,2}/\d{1,2} \d{2}:\d{2}'))
+        overrides['/api/history'] = history_fixture(30)
         page.locator('.range-picker [data-range="3h"]').click()
         # Alert episode -> its window in history.
         page.goto(ORIGIN + '/#alerts')
@@ -612,7 +628,7 @@ def check_snooze_and_bulk_stale_kill(page, posts: list, overrides: dict) -> None
     try:
         page.goto(ORIGIN + '/#sessions')
         page.reload()
-        expect(page.locator('#kill-stale')).not_to_be_visible()
+        expect(page.locator('#kill-stale')).to_have_count(0)
         expect(page.locator('#sessions-table a[href^="#target?id="]')).to_have_count(2)
         assert posts == [], 'age alone must not authorize a bulk termination'
     finally:
@@ -934,6 +950,17 @@ def history_fixture(n: int = 30) -> list:
                          'swap_in_mib_per_minute': 0.0,
                          'swap_out_mib_per_minute': 0.0}}
             for i in range(n)]
+
+
+def multi_day_history() -> list:
+    """Three days every 30 minutes, with a non-round peak (14.5 GiB used)."""
+    base = int(time.time()) - 3 * 86400
+    return [{'timestamp': base + i * 1800, 'severity': 'normal',
+             'metrics': {'mem_total_kib': 20971520, 'mem_available_kib': 5767168 - (i % 7) * 100000,
+                         'swap_total_kib': 8388608, 'swap_free_kib': 8388608,
+                         'psi_some_avg60': 0.1, 'psi_full_avg60': 0.0,
+                         'swap_in_mib_per_minute': 0.0, 'swap_out_mib_per_minute': 0.0}}
+            for i in range(144)]
 
 
 def view_settled(page, view: str) -> None:
