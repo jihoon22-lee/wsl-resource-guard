@@ -21,6 +21,21 @@
 - PR #16의 CI 13개 job이 모두 success였다(CodeQL 두 언어, artifact 왕복 포함). 병합 후 원래 PR 5개에 반영 사실을 남기고 닫았다.
 - release.yml의 download-artifact 경로는 태그 없이 게시하지 않는 Release 리허설로 확인했다. 결과는 아래 "검증"에 적는다.
 
+### 그룹 설정 직후 새로 열린 PR
+
+`dependabot.yml`을 바꾸자 Dependabot이 바로 새 PR 3개를 열었다. 같은 기준으로 처리했다.
+
+| PR | 변경 | 처리 |
+|---|---|---|
+| #18 | codeql-action 그룹: init/analyze 4.38.3 → 4.39.0 | 그대로 병합. 그룹 설정대로 한 PR로 왔다. 최소 CodeQL bundle 2.20.7 요구와 `checkout_path` 경고는 기본 bundle·기본 체크아웃을 쓰는 이 저장소와 무관하다 |
+| #19 | actions/upload-artifact 7.0.1 → 7.0.2 | 그대로 병합. HTTP 429 재시도 개선 |
+| #17 | playwright 1.63.0 → 1.64.0 (개발·검사 전용) | [PR #20](https://github.com/jihoon22-lee/wsl-resource-guard/pull/20)으로 반영 후 닫음 |
+
+- #17은 Dependabot의 uv가 `uv.lock` 머리글을 revision 5에서 3으로 바꿨다. 고정 uv 0.12.23은 revision 3 파일을 그대로 두므로, 그대로 병합하면 이후 잠금 때 머리글이 다시 바뀐다. main의 잠금 파일에서 0.12.23으로 다시 잠가 revision 5를 유지했다. 패키지 항목은 Dependabot 결과와 같다.
+- 운영 설치 대상인 웹 의존성은 바뀌지 않는다. Playwright 1.64의 호환성 변경(숨겨진 iframe 안 요소를 숨김으로 처리)은 iframe을 쓰지 않는 이 저장소 검사와 무관하다.
+- 세 PR 모두 SHA 또는 PyPI 해시를 확인했고 CI 13개 job이 통과했다. #20의 브라우저 검사는 playwright 1.64.0(Chromium 1248, WebKit 27.2)으로 실행됐다.
+- 문서화된 절차대로 로컬 개발 가상환경도 고정 uv로 1.64.0에 맞추고 Chromium을 설치했다. 로컬 단위 검사와 Chromium 브라우저 검사 3종이 통과했다.
+
 ## 보류 항목 실측과 판단
 
 ### 새로 확인한 우선 과제: 기준값 부근의 경보 반복
@@ -95,7 +110,8 @@
 ## 검증
 
 - PR #16 CI 13개 job success. 병합 커밋 `ecc233f`의 main CI도 success.
-- 병합 후 main에서 게시 없는 Release 리허설(`tag=v0.2.1`, `scenario=none`)을 실행했다. 전체 검사, 두 언어 보안 분석, 패키징, 새 download-artifact를 쓰는 publish 단계까지 16개 job이 모두 success였다.
+- 병합 후 main에서 게시 없는 Release 리허설(`tag=v0.2.1`, `scenario=none`)을 실행했다. 전체 검사, 두 언어 보안 분석, 패키징, 새 download-artifact를 쓰는 publish 단계까지 15개 job이 모두 success였다.
 - 리허설은 "no tag or Release was created"로 끝났다. 기존 v0.2.1 Release의 파일 시각이 06:25로 그대로임을 확인했다.
+- 두 번째 병합(`263f549`) 후에도 main CI가 success였다. 같은 리허설을 다시 실행해 새 upload-artifact·CodeQL로 15개 job이 success였고 게시는 없었다. 열린 PR은 0개다.
 - 운영 설치본은 바꾸지 않았다. 이번 변경은 CI 설정과 문서뿐이라 제품 버전과 운영 배포 대상이 아니다.
 - 원래 Dependabot 브랜치는 PR을 닫으면서 원격에서 정리됐고, 이번 작업 브랜치도 병합 확인 후 삭제했다.
