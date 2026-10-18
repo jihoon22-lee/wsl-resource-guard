@@ -30,7 +30,9 @@ const when = (stamp) =>
 const age = (seconds) =>
   seconds >= 86400
     ? `${Math.floor(seconds / 86400)}일 ${Math.floor((seconds % 86400) / 3600)}시간`
-    : `${Math.floor(seconds / 3600)}시간 ${Math.floor((seconds % 3600) / 60)}분`;
+    : seconds >= 3600
+      ? `${Math.floor(seconds / 3600)}시간 ${Math.floor((seconds % 3600) / 60)}분`
+      : `${Math.floor(seconds / 60)}분`;
 // "1일 3시간" plus the absolute start time on hover/long-press.
 function ageCell(seconds) {
   const base = monitorData?.collected_at || Date.now() / 1000;
@@ -486,6 +488,12 @@ function channelChip(name, status, error) {
   if (status === "unsubscribed") return `<span class="pill" title="설정·진단에서 이 기기를 등록하세요">${esc(label)} 미등록</span>`;
   return `<span class="pill warn">${esc(label)} 설정 안 됨</span>`;
 }
+// The overview already loads incidents: a single open one opens directly.
+function overviewIncidentLink() {
+  const open = (incidentStore && !incidentStore.stale ? incidentStore.incidents : []).filter((r) => r.state !== "resolved");
+  if (open.length === 1) return `<a class="button secondary" href="#incident?id=${esc(open[0].id)}">원인과 영향 확인 →</a>`;
+  return `<a class="button secondary" href="#alerts">${open.length > 1 ? `진행 중 경보 ${open.length}건 확인 →` : "원인과 영향 확인 →"}</a>`;
+}
 function renderOverview() {
   if (!monitorData) {
     $("view-overview").innerHTML = loaded.monitor
@@ -549,7 +557,7 @@ function renderOverview() {
   const snoozeUntil = liveSummary?.snooze_until || d.snooze_until || 0;
   const snoozeText = snoozeUntil > Date.now() / 1000 ? `재알림 일시 정지 중 · ${shortWhen(snoozeUntil)}까지` : "";
   const alertActions = [
-    '<a class="button secondary" href="#alerts">원인과 영향 확인 →</a>',
+    overviewIncidentLink(),
     d.severity !== "normal" || snoozeText
       ? `<button class="button secondary" data-snooze>${snoozeText ? "일시 정지 변경" : "재알림 일시 정지"}</button>`
       : "",
@@ -848,11 +856,6 @@ function renderSessions() {
       ]) &&
       (!$("session-stale").checked || r.stale),
   );
-  const stale = monitorData.sessions.filter((r) => r.stale && r.killable !== false);
-  const bulk = $("kill-stale");
-  bulk.classList.add("hidden");
-  bulk.textContent = `전체 오래된 세션 ${stale.length}개 종료`;
-  bulk.title = "검색 조건과 무관한 전체 오래된 후보";
   preserveViewState($("sessions-table"), () => {
     $("sessions-table").innerHTML = table(
     [
@@ -1048,7 +1051,7 @@ function chartMove(e) {
     host = svg.parentElement.getBoundingClientRect();
   const label = info.labelAt
     ? info.labelAt(i)
-    : new Date(row.timestamp * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+    : chartTime(row.timestamp, info.geo.withDate);
   tip.innerHTML = `<div class="tip-time">${esc(label)}</div>${lines.join("")}`;
   // The strict CSP forbids style= attributes; paint the dots via CSSOM.
   tip.querySelectorAll("i[data-color]").forEach((el) => (el.style.background = el.dataset.color));
@@ -1147,6 +1150,26 @@ const psiValue = (value) => value == null ? "관측 불가" : `${Number(value).t
 const psiStatus = (m) => ({ normal: "수집 정상", missing: "미제공", error: "수집 오류",
   partial: "일부 관측", legacy: "과거 수집 상태 미확인" })[m.psi_status || "legacy"] || "수집 상태 미확인";
 
+// Ticks land on 1/2/2.5/5×10ⁿ steps instead of max/4 fractions (3.3, 6.6 …).
+function niceStep(raw) {
+  const unit = 10 ** Math.floor(Math.log10(raw));
+  return [1, 2, 2.5, 5, 10].map((m) => m * unit).find((v) => raw <= v + 1e-12);
+}
+function tickText(value, step) {
+  const exponent = Math.floor(Math.log10(step)),
+    digits = Math.max(0, Math.min(3, -exponent + (Number.isInteger(Number((step / 10 ** exponent).toFixed(6))) ? 0 : 1)));
+  return String(Number(value.toFixed(digits)));
+}
+// Multi-day charts must say which day a time belongs to (7/14-day history).
+function chartSpansDays(t0, t1) {
+  return t1 - t0 >= 86400 || new Date(t0 * 1000).toDateString() !== new Date(t1 * 1000).toDateString();
+}
+function chartTime(t, withDate, compact = false) {
+  const d = new Date(t * 1000),
+    time = d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (!withDate) return time;
+  return compact ? `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}시` : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
+}
 function lineChart(rows, title, unit, series, bands = [], opts = {}) {
   const log = opts.scaleToggle && chartScales[title] === "log";
   // Keep the viewBox close to the rendered width so text stays readable on
@@ -1173,10 +1196,14 @@ function lineChart(rows, title, unit, series, bands = [], opts = {}) {
   rows.forEach((r, i) => {
     for (const s of series) max = Math.max(max, finite(s.value(r.metrics, i)) ?? 0);
   });
+  const yStep = niceStep(max / 4);
+  if (!log) max = yStep * 4;
   const t0 = rows[0].timestamp,
     t1 = rows[rows.length - 1].timestamp,
-    span = Math.max(1, t1 - t0);
+    span = Math.max(1, t1 - t0),
+    withDate = chartSpansDays(t0, t1);
   chartDataPending[seq].geo.max = max;
+  chartDataPending[seq].geo.withDate = withDate;
   chartDataPending[seq].geo.t0 = t0;
   chartDataPending[seq].geo.span = span;
   const intervals = rows
@@ -1218,13 +1245,15 @@ function lineChart(rows, title, unit, series, bands = [], opts = {}) {
     }
   else
     for (let i = 0; i < 5; i++) {
-      const v = (max * i) / 4,
+      const v = yStep * i,
         yy = y(v);
-      grid += `<line x1="${left}" x2="${w - right}" y1="${yy}" y2="${yy}" stroke="var(--line)"/><text x="${left - 9}" y="${yy + 4}" text-anchor="end">${v < 10 ? v.toFixed(1) : v.toFixed(0)}</text>`;
+      grid += `<line x1="${left}" x2="${w - right}" y1="${yy}" y2="${yy}" stroke="var(--line)"/><text x="${left - 9}" y="${yy + 4}" text-anchor="end">${tickText(v, yStep)}</text>`;
     }
-  for (let i = 0; i < 5; i++) {
-    const t = t0 + (span * i) / 4;
-    grid += `<text x="${x(t)}" y="${h - 9}" text-anchor="${i === 0 ? "start" : i === 4 ? "end" : "middle"}">${esc(new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }))}</text>`;
+  // Dated labels are wider; narrow charts show three so they never overlap.
+  const xTicks = withDate && w < 560 ? 3 : 5;
+  for (let i = 0; i < xTicks; i++) {
+    const t = t0 + (span * i) / (xTicks - 1);
+    grid += `<text x="${x(t)}" y="${h - 9}" text-anchor="${i === 0 ? "start" : i === xTicks - 1 ? "end" : "middle"}">${esc(chartTime(t, withDate, w < 560))}</text>`;
   }
   // Alert bands shade the time ranges where severity was not normal (N1).
   const bandSvg = bands
@@ -1986,7 +2015,7 @@ function renderAudit() {
   $("audit-table").innerHTML = table(
     [
       { t: "시각", key: (r) => String(r.time) },
-      { t: "서비스", key: (r) => String(r.id) },
+      { t: "대상", key: (r) => String(r.id) },
       { t: "작업", key: (r) => String(r.action || r.op) },
       "결과",
     ],
@@ -2069,7 +2098,7 @@ function setBadge(view, count, level = "") {
   document.querySelectorAll(`[data-badge="${view}"]`).forEach((el) => {
     el.classList.toggle("hidden", !count);
     el.classList.toggle("bad", level === "bad");
-    el.classList.toggle("dot", count === true);
+    el.classList.toggle("badge-dot", count === true);
     el.textContent = count === true || !count ? "" : String(count);
     el.setAttribute("aria-label", count ? (count === true ? "확인 필요" : `확인 필요 ${count}건`) : "");
   });
@@ -2092,7 +2121,7 @@ function updateBadges() {
   setBadge("sessions", stale);
   // 더보기 carries a dot when a view hidden behind it needs attention.
   const hidden = document.querySelectorAll(
-    ".sidebar .nav-item:not([data-view=overview]):not([data-view=services]):not([data-view=sessions]):not([data-view=history]) .nav-badge:not(.hidden)",
+    ".sidebar .nav-item:not([data-view=overview]):not([data-view=alerts]):not([data-view=services]):not([data-view=sessions]) .nav-badge:not(.hidden)",
   );
   setBadge("more", hidden.length > 0 || false, [...hidden].some((b) => b.classList.contains("bad")) ? "bad" : "");
 }
@@ -2311,7 +2340,8 @@ function schedule() {
     timer = setInterval(() => refresh(), seconds * 1000);
 }
 // Views reachable from the mobile tab bar; the rest live under 더보기.
-const TAB_VIEWS = ["overview", "services", "sessions", "history"];
+// Alerts are the primary mobile flow (push → incident → action); history lives in 더보기.
+const TAB_VIEWS = ["overview", "alerts", "services", "sessions"];
 function navigate(view, initial = false, params = null) {
   if (!titles[view]) view = "overview";
   $("notice").classList.add("hidden");
@@ -2324,15 +2354,17 @@ function navigate(view, initial = false, params = null) {
     else location.hash = target;
   }
   let selectedNav = null;
+  // Investigation pages are reached from alerts; keep that tab lit there.
+  const tabView = ["incident", "target", "action"].includes(view) ? "alerts" : view;
   document.querySelectorAll(".nav-item, .tab-item[data-view]").forEach((b) => {
-    const selected = b.dataset.view === view;
+    const selected = b.dataset.view === (b.classList.contains("tab-item") ? tabView : view);
     b.classList.toggle("selected", selected);
     if (selected) {
       b.setAttribute("aria-current", "page");
       if (b.classList.contains("nav-item")) selectedNav = b;
     } else b.removeAttribute("aria-current");
   });
-  $("tab-more").classList.toggle("selected", !TAB_VIEWS.includes(view));
+  $("tab-more").classList.toggle("selected", !TAB_VIEWS.includes(tabView));
   document
     .querySelectorAll(".view")
     .forEach((el) => el.classList.toggle("hidden", el.id !== "view-" + view));
@@ -3056,7 +3088,7 @@ function renderDisks() {
     );
   $("view-disks").innerHTML =
     `<div class="panel"><div class="panel-heading"><h2>Windows 볼륨</h2><span class="muted">${diskData.sample_interval_seconds}초 간격 수집 · 수동 갱신 가능</span></div><div class="disk-grid windows-disks">${windows.map(diskRow).join("")}</div><div class="disk-footnote">남은 공간 ${thresholds.warning_free_percent}% 미만 Warning · ${thresholds.critical_free_percent}% 미만 Critical</div></div>
-  ${wsl ? `<div class="panel"><div class="panel-heading"><h2>WSL 저장 공간</h2><span class="pill">${esc(vhd?.host_drive || "저장 위치 미설정")}에 저장</span></div><div class="wsl-storage"><div>${diskRow(wsl)}<p class="disk-note">파일시스템 예약 공간 ${memory(wsl.reserved_bytes)} · 회색 막대는 예약 공간입니다.<br>WSL 내부 여유 비율은 표시용이며, 현재 경보 대상은 C/D/E입니다.</p></div><div class="vhd-info"><h3>Windows의 VHDX 파일</h3><div class="metric-value">${vhd?.file_bytes != null ? memory(vhd.file_bytes) : "조회 불가"}</div><p class="disk-path">${esc(vhd?.path || "config.toml에서 wsl_vhd_path를 설정하세요.")}</p><p class="health-description">${vhd?.status === "error" ? esc(vhd.error) : "WSL 내부 파일 사용량과 VHDX 파일 크기는 다릅니다. 파일 크기 차이가 즉시 회수 가능한 공간을 뜻하지는 않습니다."}</p>${vhd?.path ? '<button class="button secondary" data-vhd-guide>VHDX 정리 방법 보기</button>' : ""}${host?.available_bytes != null ? `<div class="host-space">저장 드라이브 ${esc(host.id)}의 여유 <strong>${memory(host.available_bytes)}</strong><small>${host.status !== "ok" ? "마지막 확인값 · 현재 조회 불가" : `남은 공간 ${Number(host.available_percent).toFixed(1)}%`}</small></div>` : ""}</div></div></div>` : ""}
+  ${wsl ? `<div class="panel"><div class="panel-heading"><h2>WSL 저장 공간</h2><span class="pill">${esc(vhd?.host_drive || "저장 위치 미설정")}에 저장</span></div><div class="wsl-storage"><div>${diskRow(wsl)}<p class="disk-note">파일시스템 예약 공간 ${memory(wsl.reserved_bytes)} · 회색 막대는 예약 공간입니다.<br>WSL 내부 여유 비율은 표시용이며, 경보 대상은 ${windows.length ? esc(windows.map((d) => d.id).join(", ")) + " 드라이브" : "설정된 Windows 드라이브"}입니다.</p></div><div class="vhd-info"><h3>Windows의 VHDX 파일</h3><div class="metric-value">${vhd?.file_bytes != null ? memory(vhd.file_bytes) : "조회 불가"}</div><p class="disk-path">${esc(vhd?.path || "config.toml에서 wsl_vhd_path를 설정하세요.")}</p><p class="health-description">${vhd?.status === "error" ? esc(vhd.error) : "WSL 내부 파일 사용량과 VHDX 파일 크기는 다릅니다. 파일 크기 차이가 즉시 회수 가능한 공간을 뜻하지는 않습니다."}</p>${vhd?.path ? '<button class="button secondary" data-vhd-guide>VHDX 정리 방법 보기</button>' : ""}${host?.available_bytes != null ? `<div class="host-space">저장 드라이브 ${esc(host.id)}의 여유 <strong>${memory(host.available_bytes)}</strong><small>${host.status !== "ok" ? "마지막 확인값 · 현재 조회 불가" : `남은 공간 ${Number(host.available_percent).toFixed(1)}%`}</small></div>` : ""}</div></div></div>` : ""}
   ${dockerPanel()}
   <div class="panel"><div class="panel-heading"><h2>일별 사용량 변화</h2><span class="muted">GiB · 일별 마지막 측정값 · 합산하지 않음</span></div><div class="panel-body">${diskChart(diskData.history, diskData.disks)}</div></div>
   <div class="panel"><div class="panel-heading"><h2>일별 측정 기록</h2><span class="muted">설치 이후 수집된 기록</span></div><div class="table-wrap">${table(["날짜", "볼륨", "사용 중", "여유 공간", "측정 시각"], historyRows)}</div></div>`;

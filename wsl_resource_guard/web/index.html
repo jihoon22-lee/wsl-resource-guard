@@ -195,7 +195,7 @@
                 /><label
                   ><input id="session-stale" type="checkbox" /> 오래된
                   후보만</label
-                ><button id="kill-stale" class="button compact danger hidden" type="button"></button>
+                >
               </div>
             </div>
             <div id="sessions-table" class="table-wrap"></div>
@@ -316,9 +316,9 @@
     </div>
     <nav class="tabbar" aria-label="하단 메뉴">
       <button data-view="overview" class="tab-item"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>개요</span><span class="nav-badge hidden" data-badge="overview"></span></button>
+      <button data-view="alerts" class="tab-item"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 3 8 3 8H3s3-2 3-8"/><path d="M10 21a2 2 0 0 0 4 0"/></svg><span>경보</span><span class="nav-badge hidden" data-badge="alerts"></span></button>
       <button data-view="services" class="tab-item"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>서비스</span><span class="nav-badge hidden" data-badge="services"></span></button>
       <button data-view="sessions" class="tab-item"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg><span>세션</span><span class="nav-badge hidden" data-badge="sessions"></span></button>
-      <button data-view="history" class="tab-item"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>이력</span><span class="nav-badge hidden" data-badge="history"></span></button>
       <button id="tab-more" class="tab-item" aria-haspopup="dialog"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg><span>더보기</span><span class="nav-badge hidden" data-badge="more"></span></button>
     </nav>
     <dialog id="dialog">

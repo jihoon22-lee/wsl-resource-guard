@@ -1,6 +1,7 @@
 """Decision-oriented mobile journeys. Fixture traffic only; never signal a real session."""
 import argparse
 import copy
+import re
 from pathlib import Path
 import sys
 import time
@@ -101,6 +102,56 @@ def run_case(browser,width,mode):
     finally:context.close()
 
 
+def run_review_fixes(browser,width):
+    """2026-10-18 review: severity, return path, mobile tab, badge colour, result polling."""
+    state,row=data();posts=[];gets=[];errors=[]
+    row.update(severity='critical')
+    state['/api/targets/'+TARGET].update(provider='codex',name='codex')
+    context=browser.new_context(viewport={'width':width,'height':844},is_mobile=width<768,has_touch=width<768,service_workers='block')
+    context.add_init_script("localStorage.setItem('wrg-refresh','0')")
+    page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+    def route(r):
+        path=urlsplit(r.request.url).path
+        if path=='/api/incidents' and parse_qs(urlsplit(r.request.url).query).get('id'):
+            return r.fulfill(json={'incident':row,'stale':False,'updated_at':time.time()})
+        if path.endswith('/execute'):
+            operation=state['/api/actions/'+TOOL]
+            pending=dict(operation,status='executing',message='종료 요청을 처리하고 있습니다.')
+            operation.update(status='completed',message='확인한 대상이 종료됐습니다.',signalled=[SESSION_PID+1],remaining=[])
+            return r.fulfill(json=pending)
+        return serve(r,posts,gets,state)
+    page.route(ORIGIN+'/**',route)
+    try:
+        page.goto(ORIGIN+'/#incident?id='+INCIDENT)
+        expect(page.locator('#incident-detail .pill.bad').first).to_contain_text('위험')
+        expect(page.locator('#incident-detail')).to_contain_text('정기 재알림은 계속됩니다')
+        if width<768:
+            expect(page.locator('.tabbar .tab-item[data-view="alerts"]')).to_have_class(re.compile(r'\bselected\b'))
+            colours=page.evaluate("""() => {
+                const badge = document.querySelector('[data-badge="more"]');
+                badge.classList.remove('hidden', 'bad'); badge.classList.add('badge-dot');
+                const dot = getComputedStyle(badge).backgroundColor;
+                badge.classList.remove('badge-dot'); badge.textContent = '1';
+                return [dot, getComputedStyle(badge).backgroundColor];
+            }""")
+            assert colours[0]==colours[1],colours
+        page.locator(f'a[href="#target?id={TARGET}"]').click()
+        expect(page.locator('#target-detail h3').first).to_have_text('codex')
+        back=page.locator('#target-detail a.button',has_text='← 경보 상세')
+        expect(back).to_have_attribute('href','#incident?id='+INCIDENT)
+        page.locator(f'a[href="#target?id={TOOL}"]').click()
+        page.locator('#preview-termination').click()
+        page.locator('#understand-impact').check()
+        page.locator('#execute-termination').click()
+        expect(page.locator('#operation-detail')).to_contain_text('종료 요청을 처리하고 있습니다')
+        expect(page.locator('#operation-detail')).to_contain_text('확인한 대상이 종료됐습니다',timeout=8000)
+        expect(page.locator('#operation-detail a',has_text='경보 해소 여부 확인')).to_have_attribute('href','#incident?id='+INCIDENT)
+        assert not page.evaluate('document.documentElement.scrollWidth > innerWidth'),width
+        assert not errors,errors
+        print(f'PASS {width}px review-2026-10-18',flush=True)
+    finally:context.close()
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--browser',choices=['chromium','webkit'],default='chromium');args=parser.parse_args()
     with sync_playwright() as p:
@@ -109,6 +160,7 @@ def main():
             for width in (1440,390):
                 for mode in ('cancel','partial','lost-response','scope-changed','stale','expired-link'):
                     run_case(browser,width,mode)
+                run_review_fixes(browser,width)
         finally:browser.close()
 
 if __name__=='__main__':main()
