@@ -4,6 +4,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # init and analyze must run the same CodeQL Action version; separate
+      # pull requests each fail CI with a version mismatch.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
   - package-ecosystem: uv
     directory: /
     schedule:
