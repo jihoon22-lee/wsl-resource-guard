@@ -32,7 +32,7 @@ Paseo를 기존 WRG 서비스 관리에 추가하되 현재 연결을 보호한�
 2026-10-22 20:22 KST에 사용자 승인과 터미널의 관리자 인증 후 운영 적용을 완료했다.
 검증 커밋 `957fe4015ea4`의 웹·컨트롤러·CLI reader·시스템 Guard를 기존 설치기로 배포했다.
 사용자 임시 Paseo를 중지하고 영구 시스템 `paseo-daemon.service`로 전환했으며 자동 시작을 켜고 WRG에 등록했다.
-전환 전후 Paseo 서버 ID와 config 해시가 일치한다. 복구 백업은 각 설치기의 root/owner 백업과 `wrg-paseo` 백업으로 보존했다.
+전환 전후 Paseo 서버 ID와 config 해시가 일치한다. 설치기의 root/owner 복구 백업은 보존했다. 전환용 `wrg-paseo` 유닛 복사본은 최종 정상 확인 후 사용자 정리 요청에 따라 삭제했다.
 
 운영 WRG의 검사 결과는 HTTP·로컬·릴레이 모두 정상(로컬 184ms, 릴레이 515ms)이었다.
 네 시스템 유닛은 active·NRestarts=0이고, 이전 사용자 Paseo는 inactive다.
