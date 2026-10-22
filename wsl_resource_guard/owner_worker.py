@@ -248,10 +248,15 @@ class OwnerData:
 def dispatch(operation: str, args: dict, reader=None):
     allowed = {'context', 'history', 'attribution', 'session-history', 'alerts',
                'disks', 'settings', 'config-result', 'gone-endpoints', 'logs',
-               'incidents', 'task-metadata'}
+               'incidents', 'task-metadata', 'paseo-health'}
     if operation not in allowed or not isinstance(args, dict):
         raise ValueError('Unsupported owner read operation')
     reader = reader or OwnerData()
+    if operation == 'paseo-health':
+        if args:
+            raise ValueError('Paseo probe accepts no paths, hosts or commands')
+        from .paseo import probe
+        return probe(reader.home)
     if operation == 'context':
         return reader.context()
     if operation in ('history', 'attribution'):
@@ -380,8 +385,11 @@ def main():
     import resource
     import sys
     resource.setrlimit(resource.RLIMIT_CPU, (15, 15))
-    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
     request = json.loads(sys.stdin.buffer.read(4097))
+    # V8 needs virtual address space even with its heap capped at 96 MiB.
+    # Only this fixed, unprivileged operation gets the larger address-space cap.
+    address_space = (2048 if request.get('op') == 'paseo-health' else 512) * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
     result = dispatch(request['op'], request.get('args', {}))
     output = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
     if len(output) > MAX_OUTPUT:

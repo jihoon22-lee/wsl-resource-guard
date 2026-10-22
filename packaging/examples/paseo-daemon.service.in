@@ -1,0 +1,29 @@
+[Unit]
+Description=Paseo daemon
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+ConditionPathIsDirectory=@HOME_PATH@/.paseo
+
+[Service]
+Type=simple
+User=@OWNER@
+Group=@GROUP@
+Environment="HOME=@HOME@"
+# Install stable node/paseo links here; include provider CLI directories explicitly.
+Environment="PATH=@HOME@/.local/bin:@HOME@/.cargo/bin:@HOME@/.bun/bin:@HOME@/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=@HOME_PATH@
+ExecStart=:"@HOME@/.local/bin/paseo" daemon run --home "@HOME@/.paseo"
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+# Stop/restart also stops agent processes and terminals owned by this daemon.
+KillMode=control-group
+MemoryAccounting=yes
+# Measure the daemon AND its agents before setting MemoryHigh/MemoryMax/TasksMax.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
