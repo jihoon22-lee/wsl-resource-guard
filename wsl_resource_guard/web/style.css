@@ -1649,6 +1649,9 @@ dialog::backdrop {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.services-table td:nth-child(3) {
+  white-space: normal;
+}
 .services-table td.num {
   overflow: visible;
   text-overflow: clip;
@@ -1776,43 +1779,64 @@ dialog::backdrop {
   .spark {
     margin-left: auto;
   }
-  /* Service cards: name + state on row 1, autostart + memory on row 2,
-     actions across row 3. Name, state and action cells drop their labels. */
+  /* Each service field owns a row: badges and memory limits must never
+     take width away from the service name or its autostart setting. */
   .services-table tbody tr {
     display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 4px 10px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
     align-items: center;
   }
-  .services-table td:nth-child(1) {
+  .services-table td {
+    min-width: 0;
     grid-column: 1;
+    overflow-wrap: anywhere;
+  }
+  .services-table td:nth-child(1) {
     grid-row: 1;
   }
   .services-table td:nth-child(3) {
-    grid-column: 2;
-    grid-row: 1;
-    justify-content: flex-end;
+    grid-row: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
   }
   .services-table td:nth-child(3)::before {
     content: none;
   }
+  .services-table td:nth-child(3) .subline,
+  .services-table td:nth-child(3) .row-error {
+    flex-basis: 100%;
+    text-align: left;
+  }
+  .services-table .pill.health {
+    margin-left: 0;
+  }
   .services-table td:nth-child(2) {
-    grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
   }
   .services-table td:nth-child(4) {
-    grid-column: 2;
-    grid-row: 2;
+    grid-row: 4;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+  .services-table td:nth-child(4)::before {
+    margin-right: auto;
+  }
+  .services-table .limit {
+    flex-basis: 100%;
+    min-width: 0;
   }
   .services-table td:nth-child(5) {
-    grid-column: 1 / -1;
-    grid-row: 3;
+    grid-row: 5;
   }
   .services-table .spark {
     display: inline-block;
     vertical-align: middle;
-    margin: 0 8px 0 0;
+    margin: 0;
+    flex-shrink: 0;
   }
   /* The history table folds past 20 rows; the toggle button reopens it. */
   .table-wrap.collapsed tbody tr:nth-child(n + 21) {
