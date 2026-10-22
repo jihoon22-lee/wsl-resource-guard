@@ -1148,6 +1148,32 @@ def check_legend_shown_count(page, overrides: dict) -> None:
         overrides.pop('/api/service-memory', None)
 
 
+def check_service_card_text_geometry(page) -> None:
+    if page.viewport_size['width'] > 1000:
+        return
+    rows = page.locator('#services-list .services-table tbody tr')
+    for row in rows.all():
+        title = row.locator('td').first
+        name = title.locator('strong')
+        if not name.count():
+            continue
+        geometry = title.evaluate("""e => {
+          const box = e.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(e.querySelector('strong'));
+          const text = range.getBoundingClientRect();
+          return {width:box.width, rowWidth:e.parentElement.getBoundingClientRect().width,
+                  left:box.left, right:box.right, textLeft:text.left, textRight:text.right,
+                  textWidth:text.width, label:e.innerText};
+        }""")
+        assert geometry['width'] >= geometry['rowWidth'] - 8, geometry
+        assert geometry['textWidth'] > 0, geometry
+        assert geometry['textLeft'] >= geometry['left'] - 1, geometry
+        assert geometry['textRight'] <= geometry['right'] + 1, geometry
+        for cell in row.locator('td').all():
+            assert cell.evaluate('e => e.scrollWidth <= e.clientWidth + 1'), cell.inner_text()
+
+
 def check_paseo_health(page, overrides: dict, posts: list) -> None:
     original = fixtures()['/api/services']
     row = {'id': 'paseo-daemon', 'name': 'Paseo', 'kind': 'systemd',
@@ -1170,6 +1196,7 @@ def check_paseo_health(page, overrides: dict, posts: list) -> None:
             service = page.locator('#services-list tr').filter(has=page.locator('[data-manage="paseo-daemon"]'))
             expect(service).to_contain_text(label)
             expect(service).to_contain_text('로컬 오래됨' if stale else '로컬 정상')
+            check_service_card_text_geometry(page)
             expect(service.locator('[data-quick]')).to_have_count(0)
             service.locator('[data-manage]').click()
             expect(page.locator('#dialog-content')).to_contain_text('모바일 단말 접속 여부와는 별개')
@@ -1530,6 +1557,9 @@ def main() -> None:
         check_mobile_layout(mobile, overrides, gets)
         check_oneshot_status(mobile)
         check_paseo_health(mobile, overrides, posts)
+        mobile.set_viewport_size({'width': 320, 'height': 800})
+        check_paseo_health(mobile, overrides, posts)
+        mobile.set_viewport_size({'width': 390, 'height': 800})
         check_log_viewer(mobile, gets, overrides)
         check_disk_chart_hover(mobile, overrides, max_viewbox=420)
         assert not mobile_errors, mobile_errors
@@ -1543,6 +1573,7 @@ def main() -> None:
         tablet.route(ORIGIN + '/**',
                      lambda route: serve(route, posts, gets, overrides))
         check_tablet_card_mode(tablet)
+        check_paseo_health(tablet, overrides, posts)
         assert not tablet_errors, tablet_errors
         tablet.close()
         wide = browser.new_page(viewport={'width': 1440, 'height': 1000})
