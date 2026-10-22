@@ -37,6 +37,7 @@ wrg status
 - [설정](docs/configuration.md)
 - [구조와 권한 경계](docs/architecture.md)
 - [운영·복구·문제 해결](docs/operations.md)
+- [Paseo 서비스 등록과 연결 검사](docs/paseo.md)
 - [개발·검증·릴리스](CONTRIBUTING.md), [보안 제보](SECURITY.md), [변경 기록](CHANGELOG.md)
 
 ## 지원 조건과 제한
@@ -48,6 +49,7 @@ Windows interop가 없으면 Windows 관측·토스트를 사용할 수 없습�
 PSI 미관측은 실제 0과 구분합니다. 이전 버전이 0으로 남긴 기록의 관측 여부는 복원할 수 없습니다.
 설치는 완전한 원자적 전환이 아니며 복구 백업과 이전 가상환경을 보존합니다.
 GitHub Actions의 fixture 검증과 실제 WSL 설치 검증은 별도입니다.
+Paseo 연결 검사는 npm 0.12.x·기본 home·loopback TCP를 대상으로 하며, 릴레이 왕복 성공과 모바일 단말 접속은 구분합니다. 기존 실행 주체에서 시스템 서비스로 전환할 때에는 작업 중단과 재연결이 필요합니다.
 pidfd 미지원 환경에서는 세션 종료 기능을 사용할 수 없습니다. 시스템 guard의 사용자 지정 상태 경로는 소유자 HOME 아래 정규 디렉터리로 제한됩니다.
 개발 경로는 하나를 사용하며 기존 실행 사본은 설치기가 관리합니다. 의존성은 `pyproject.toml`과 `uv.lock`에서 관리합니다.
 실제 검증 환경·운영 적용 여부·남은 제약은 [후속 검증 기록](workthrough/2026-10-08-review-remediation.md)에 구분해 기록합니다.

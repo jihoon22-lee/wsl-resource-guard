@@ -638,7 +638,7 @@ function renderOverview() {
       serviceProblems
         .map(
           (s) =>
-            `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">웹 응답 없음 · ${esc(s.health.error || "")}</div>` : ""}</div>${pill(s.state)}</div>`,
+            `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">${esc(s.health.kind === "paseo" ? healthDescription(s.health) : `웹 응답 없음 · ${s.health.error || ""}`)}</div>` : ""}</div>${pill(s.state)}</div>`,
         )
         .join("") || `<div class="empty">${loaded.services ? "모든 앱이 설정대로 동작 중입니다" : "서비스 상태를 아직 확인하지 못했습니다"}</div>`
     }</div></div></div>
@@ -696,9 +696,28 @@ function memoryLimit(s) {
   const mark = s.memory_high && s.memory_max ? `<i class="meter-mark" data-mark="${clampPercent((s.memory_high / s.memory_max) * 100)}"></i>` : "";
   return `<div class="limit ${tone}" title="systemd 메모리 한도"><div class="meter"><span data-percent="${clampPercent((used / limit) * 100)}"></span>${mark}</div><span class="subline">${esc(parts.join(" · "))}</span></div>`;
 }
+function healthDescription(h) {
+  if (h?.kind !== "paseo") return h?.ok ? `웹 응답 정상 (HTTP ${h.status})` : `웹 응답 확인 실패: ${h?.error || ""}`;
+  const labels = { http: "HTTP", local: "로컬 연결", relay: "릴레이 연결" };
+  const states = { ok: "정상", failed: "실패", unknown: "미확인", disabled: "꺼짐" };
+  const facts = Object.entries(labels).map(([key, label]) => {
+    const check = h.checks?.[key];
+    return `${label} ${h.stale ? "오래된 결과" : states[check?.state] || "미확인"}${check?.latency_ms != null && !h.stale ? ` (${check.latency_ms}ms)` : ""}`;
+  });
+  return facts.join(" · ");
+}
 function healthPill(h) {
   if (!h) return "";
   const when_ = `확인 ${when(h.checked_at)}`;
+  if (h.kind === "paseo") {
+    const labels = { http: "HTTP", local: "로컬", relay: "릴레이" };
+    const states = { ok: "정상", failed: "실패", unknown: "미확인", disabled: "꺼짐" };
+    return Object.entries(labels).map(([key, label]) => {
+      const state = h.stale ? "unknown" : h.checks?.[key]?.state || "unknown";
+      const tone = state === "ok" ? "good" : state === "failed" ? "bad" : "warn";
+      return `<span class="pill ${tone} health" title="${esc(`${healthDescription(h)} · ${when_}`)}">${label} ${h.stale ? "오래됨" : states[state] || "미확인"}</span>`;
+    }).join(" ");
+  }
   return h.ok
     ? `<span class="pill good health" title="${esc(`HTTP ${h.status} · ${h.latency_ms ?? "?"}ms · ${when_}`)}">응답 정상</span>`
     : `<span class="pill bad health" title="${esc(`${h.error || "응답 없음"} · ${when_}`)}">응답 없음</span>`;
@@ -730,7 +749,7 @@ function renderServices() {
       rowsOf(rows, (s) => {
         const link = safeLink(s.url);
         const quick =
-          s.category === "app"
+          s.category === "app" && s.target !== "paseo-daemon.service"
             ? s.state === "active"
               ? `<button class="button compact secondary${isArmed(s.id, "restart") ? " armed" : ""}" data-quick="${esc(s.id)}" data-quick-action="restart" title="3초 안에 두 번 눌러 재시작">${isArmed(s.id, "restart") ? QUICK_ARMED_LABEL : "↻ 재시작"}</button>`
               : `<button class="button compact secondary${isArmed(s.id, "start") ? " armed" : ""}" data-quick="${esc(s.id)}" data-quick-action="start" title="3초 안에 두 번 눌러 시작">${isArmed(s.id, "start") ? QUICK_ARMED_LABEL : "▶ 시작"}</button>`
@@ -738,7 +757,7 @@ function renderServices() {
         return [
           `<strong>${link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${esc(s.name)} ↗</a>` : esc(s.name)}</strong><span class="subline">${esc(s.kind === "compose" ? "Docker Compose" : s.target)}</span>`,
           `<span class="pill ${s.autostart ? "good" : ""}">${s.autostart ? "켜짐" : "꺼짐"}</span>${s.drift ? ' <span class="pill warn">설정 불일치</span>' : ""}`,
-          `${pill(s.state)} ${s.state === "active" ? healthPill(s.health) : ""}<span class="subline">${esc(s.detail)}</span>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">웹 응답 확인 실패: ${esc(s.health.error || "")}</div>` : ""}`,
+          `${pill(s.state)} ${s.state === "active" ? healthPill(s.health) : ""}<span class="subline">${esc(s.detail)}</span>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">${esc(healthDescription(s.health))}</div>` : ""}`,
           `${memory(s.memory_bytes)}${sparkline(memRecords, s.id)}${memoryLimit(s)}`,
           `<div class="row-actions">${quick}<button class="button secondary" data-manage="${esc(s.id)}">관리 ⋯</button></div>`,
         ];
@@ -2528,7 +2547,9 @@ function manageService(id) {
   const facts = [
     `${row.detail} · 자동 실행 ${row.autostart ? "켜짐" : "꺼짐"}`,
     row.memory_bytes != null ? `메모리 ${memory(row.memory_bytes)}${row.memory_high ? ` · High ${memory(row.memory_high)}` : ""}${row.memory_max ? ` · Max ${memory(row.memory_max)}` : ""}` : "",
-    row.health ? `웹 응답 ${row.health.ok ? `정상 (HTTP ${row.health.status})` : `없음 — ${row.health.error || ""}`} · ${when(row.health.checked_at)}` : "",
+    row.health ? `${row.health.kind === "paseo" ? healthDescription(row.health) : `웹 응답 ${row.health.ok ? `정상 (HTTP ${row.health.status})` : `없음 — ${row.health.error || ""}`}`} · ${when(row.health.checked_at)}` : "",
+    row.health?.kind === "paseo" ? "릴레이 검사는 서버에서 확인한 결과입니다. 모바일 단말 접속 여부와는 별개입니다." : "",
+    row.restart_count != null ? `서비스 자동 재시작 ${row.restart_count}회` : "",
     row.notice,
     row.directory,
   ].filter(Boolean);
