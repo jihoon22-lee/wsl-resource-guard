@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 from .owner_worker import LOG_TAILS, MAX_LOG_LINES
+from . import paseo
 
 REGISTRY = Path('/var/lib/wrg-services/registry.json')
 # Root-written, owner-group-readable hand-off to the guard daemon (which runs
@@ -211,6 +212,8 @@ class Controller:
         self._snapshot_at = 0.0
         # Per-service HTTP health from the background sampler, keyed by id.
         self._health: dict[str, dict] = {}
+        self._paseo_health: dict | None = None
+        self._paseo_invocation: str | None = None
         self._summary_rows: list | None = None
         self._summary_rows_at = 0.0
         self._docker_df_cache: dict | None = None
@@ -453,7 +456,7 @@ class Controller:
 
     def unit_state(self, target: str) -> dict:
         fields = ('Id,LoadState,ActiveState,SubState,Type,RemainAfterExit,UnitFileState,MemoryCurrent,'
-                  'MemoryHigh,MemoryMax,Result,TriggeredBy,FragmentPath')
+                  'MemoryHigh,MemoryMax,Result,TriggeredBy,FragmentPath,NRestarts,InvocationID')
         output = self.run('systemctl', 'show', target, '--property=' + fields)
         return dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
 
@@ -490,6 +493,8 @@ class Controller:
                     or target.startswith(EXCLUDED) or '@.' in target or state in ('alias', 'masked', 'masked-runtime')):
                 continue
             name, notice = FOUNDATION.get(target, (target.removesuffix('.service'), ''))
+            if target == paseo.UNIT:
+                name, notice = 'Paseo', paseo.NOTICE
             candidates.append({'key': 'systemd:' + target, 'id': target.removesuffix('.service'),
                                'kind': 'systemd', 'target': target,
                                'name': 'OpenCode Web' if target == 'opencode-web.service' else name,
@@ -566,6 +571,10 @@ class Controller:
                     row['memory_high'] = _memory_limit(state.get('MemoryHigh', ''))
                     row['memory_max'] = _memory_limit(state.get('MemoryMax', ''))
                     row['triggers'] = state.get('TriggeredBy', '').split()
+                    if entry['target'] == paseo.UNIT:
+                        restarts = state.get('NRestarts', '')
+                        row['restart_count'] = int(restarts) if restarts.isdigit() else None
+                        row['notice'] = paseo.NOTICE
                     if state.get('Result', 'success') != 'success':
                         row['error'] = state['Result']
                 else:
@@ -605,6 +614,12 @@ class Controller:
             health = self._health.get(entry['id'])
             if health and health.get('url') == entry.get('url'):
                 row['health'] = {k: v for k, v in health.items() if k != 'url'}
+            if entry['kind'] == 'systemd' and entry['target'] == paseo.UNIT:
+                row.pop('health', None)
+                if row['state'] == 'active':
+                    same_run = self._paseo_invocation and self._paseo_invocation == state.get('InvocationID')
+                    row['health'] = (paseo.fresh_health(self._paseo_health)
+                                     if self._paseo_health and same_run else paseo.pending_health())
             rows.append(row)
         return {'services': rows, 'origin': data['origin'], 'updated_at': time.time()}
 
@@ -888,7 +903,9 @@ class Controller:
         problems = [r for r in rows if r.get('category') == 'app' and (
             r.get('state') in ('failed', 'degraded', 'unknown', 'missing') or r.get('error')
             or r.get('drift') or (r.get('autostart') and r.get('state') != 'active')
-            or (r.get('state') == 'active' and (r.get('health') or {}).get('ok') is False))]
+            or (r.get('state') == 'active' and ((r.get('health') or {}).get('ok') is False
+                or ((r.get('health') or {}).get('kind') == 'paseo'
+                    and (r.get('health') or {}).get('ok') is None))))]
         cached = self._monitor_cache or {}
         return {'severity': state.get('severity', 'unknown'),
                 'updated_at': state.get('updated_at'),
@@ -975,6 +992,7 @@ class Controller:
         own_host = (urlsplit(data.get('origin', '')).hostname or '').lower()
         entries = [s for s in data['services']
                    if s.get('category') == 'app' and s.get('url') and own_host
+                   and not (s.get('kind') == 'systemd' and s.get('target') == paseo.UNIT)
                    and (urlsplit(s['url']).hostname or '').lower() == own_host]
         fresh = {}
         for entry in entries:
@@ -983,6 +1001,35 @@ class Controller:
             fresh[entry['id']] = result
         self._health = fresh
         self._invalidate_snapshot()
+
+    def check_paseo_health(self) -> None:
+        """Probe in its own sampler; never block HTTP checks or restart an app."""
+        entries = self.load()['services']
+        registered = any(s.get('kind') == 'systemd' and s.get('target') == paseo.UNIT for s in entries)
+        state = self.unit_state(paseo.UNIT) if registered else {}
+        if state.get('ActiveState') != 'active':
+            self._paseo_health = None
+            self._paseo_invocation = None
+        else:
+            if self._paseo_invocation != state.get('InvocationID'):
+                self._paseo_health = None
+            self._paseo_invocation = state.get('InvocationID')
+            try:
+                self._paseo_health = paseo.normalize(self._owner_read('paseo-health'))
+            except (OSError, ValueError, ControlError, subprocess.TimeoutExpired):
+                self._paseo_health = paseo.normalize(None)
+        self._invalidate_snapshot()
+
+    def paseo_health_loop(self, interval: float = 60.0, stop: threading.Event | None = None) -> None:
+        while stop is None or not stop.is_set():
+            try:
+                self.check_paseo_health()
+            except Exception as exc:
+                print(f'paseo health check error={type(exc).__name__}', flush=True)
+            if stop is not None:
+                stop.wait(interval)
+            else:
+                time.sleep(interval)
 
     def docker_df(self) -> dict:
         """Read-only `docker system df`; cached because it walks image layers."""
@@ -1479,6 +1526,8 @@ def main() -> int:
             os.chmod(path, 0o660)
             sampler_stop = threading.Event()
             threading.Thread(target=controller.service_memory_loop,
+                             kwargs={'stop': sampler_stop}, daemon=True).start()
+            threading.Thread(target=controller.paseo_health_loop,
                              kwargs={'stop': sampler_stop}, daemon=True).start()
             try:
                 server.serve_forever()

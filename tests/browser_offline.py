@@ -1148,6 +1148,68 @@ def check_legend_shown_count(page, overrides: dict) -> None:
         overrides.pop('/api/service-memory', None)
 
 
+def check_service_card_text_geometry(page) -> None:
+    if page.viewport_size['width'] > 1000:
+        return
+    rows = page.locator('#services-list .services-table tbody tr')
+    for row in rows.all():
+        title = row.locator('td').first
+        name = title.locator('strong')
+        if not name.count():
+            continue
+        geometry = title.evaluate("""e => {
+          const box = e.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(e.querySelector('strong'));
+          const text = range.getBoundingClientRect();
+          return {width:box.width, rowWidth:e.parentElement.getBoundingClientRect().width,
+                  left:box.left, right:box.right, textLeft:text.left, textRight:text.right,
+                  textWidth:text.width, label:e.innerText};
+        }""")
+        assert geometry['width'] >= geometry['rowWidth'] - 8, geometry
+        assert geometry['textWidth'] > 0, geometry
+        assert geometry['textLeft'] >= geometry['left'] - 1, geometry
+        assert geometry['textRight'] <= geometry['right'] + 1, geometry
+        for cell in row.locator('td').all():
+            assert cell.evaluate('e => e.scrollWidth <= e.clientWidth + 1'), cell.inner_text()
+
+
+def check_paseo_health(page, overrides: dict, posts: list) -> None:
+    original = fixtures()['/api/services']
+    row = {'id': 'paseo-daemon', 'name': 'Paseo', 'kind': 'systemd',
+           'target': 'paseo-daemon.service', 'category': 'app', 'state': 'active',
+           'detail': 'running', 'autostart': True, 'memory_bytes': 2**29, 'url': '',
+           'restart_count': 2, 'notice': '중지·재시작하면 하위 에이전트·터미널이 중단될 수 있습니다.'}
+    before = len(posts)
+    try:
+        for state, label, stale in [('failed', '릴레이 실패', False),
+                                    ('unknown', '릴레이 미확인', False),
+                                    ('disabled', '릴레이 꺼짐', False),
+                                    ('ok', '릴레이 오래됨', True)]:
+            row['health'] = {'kind': 'paseo', 'ok': False if state == 'failed' else None,
+                             'checked_at': time.time(), 'stale': stale,
+                             'checks': {'http': {'state': 'ok'}, 'local': {'state': 'ok'},
+                                        'relay': {'state': state}}}
+            overrides['/api/services'] = {**original, 'services': [*original['services'], row]}
+            page.goto(ORIGIN + '/#services')
+            page.reload()
+            service = page.locator('#services-list tr').filter(has=page.locator('[data-manage="paseo-daemon"]'))
+            expect(service).to_contain_text(label)
+            expect(service).to_contain_text('로컬 오래됨' if stale else '로컬 정상')
+            check_service_card_text_geometry(page)
+            expect(service.locator('[data-quick]')).to_have_count(0)
+            service.locator('[data-manage]').click()
+            expect(page.locator('#dialog-content')).to_contain_text('모바일 단말 접속 여부와는 별개')
+            expect(page.locator('#dialog-content')).to_contain_text('자동 재시작 2회')
+            expect(page.locator('#dialog-content')).to_contain_text('하위 에이전트')
+            page.locator('#dialog-close').click()
+        assert len(posts) == before, 'health inspection must never mutate services'
+    finally:
+        overrides.pop('/api/services', None)
+        page.goto(ORIGIN + '/#services')
+        page.reload()
+
+
 def check_oneshot_status(page) -> None:
     page.goto(ORIGIN + '/#services')
     row = page.locator('#services-list tr').filter(has=page.locator('[data-manage="devin-web"]'))
@@ -1461,6 +1523,7 @@ def main() -> None:
         check_legend_toggles_series(page)
         check_quick_service_action(page, posts)
         check_oneshot_status(page)
+        check_paseo_health(page, overrides, posts)
         check_service_limits_health_and_dialog(page)
         check_log_viewer(page, gets, overrides)
         posts.clear()
@@ -1493,6 +1556,10 @@ def main() -> None:
         # stays sticky, and touch targets reach 44px.
         check_mobile_layout(mobile, overrides, gets)
         check_oneshot_status(mobile)
+        check_paseo_health(mobile, overrides, posts)
+        mobile.set_viewport_size({'width': 320, 'height': 800})
+        check_paseo_health(mobile, overrides, posts)
+        mobile.set_viewport_size({'width': 390, 'height': 800})
         check_log_viewer(mobile, gets, overrides)
         check_disk_chart_hover(mobile, overrides, max_viewbox=420)
         assert not mobile_errors, mobile_errors
@@ -1506,6 +1573,7 @@ def main() -> None:
         tablet.route(ORIGIN + '/**',
                      lambda route: serve(route, posts, gets, overrides))
         check_tablet_card_mode(tablet)
+        check_paseo_health(tablet, overrides, posts)
         assert not tablet_errors, tablet_errors
         tablet.close()
         wide = browser.new_page(viewport={'width': 1440, 'height': 1000})

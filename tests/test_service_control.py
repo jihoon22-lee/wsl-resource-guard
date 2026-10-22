@@ -45,6 +45,66 @@ class ControllerTests(unittest.TestCase):
     def commands(self):
         return [call.args for call in self.run.call_args_list]
 
+    def paseo_entry(self):
+        self.entry.update(id='paseo-daemon', key='systemd:paseo-daemon.service',
+                          target='paseo-daemon.service', kind='systemd', url='https://test:6767')
+        atomic_json(self.path, self.data)
+        self.controller.unit_state = Mock(return_value={'ActiveState': 'active', 'NRestarts': '2',
+                                                        'InvocationID': 'first'})
+
+    def test_paseo_registration_reuses_existing_unit_and_does_not_start_it(self):
+        self.run.return_value = 'paseo-daemon.service disabled'
+        self.controller.register('systemd:paseo-daemon.service')
+        entry = self.controller.load()['services'][-1]
+        self.assertEqual(entry['name'], 'Paseo')
+        self.assertFalse(entry['owned'])
+        self.assertIn('에이전트', entry['notice'])
+        self.assertFalse(any(c[1] in ('start', 'restart', 'enable') for c in self.commands()))
+
+    def test_paseo_probe_runs_only_when_registered_and_active(self):
+        self.controller._owner_read = Mock()
+        self.controller.check_paseo_health()
+        self.controller._owner_read.assert_not_called()
+        self.paseo_entry()
+        self.controller.unit_state.return_value['ActiveState'] = 'inactive'
+        self.controller.check_paseo_health()
+        self.controller._owner_read.assert_not_called()
+        self.assertNotIn('health', self.controller.snapshot()['services'][0])
+
+    def test_paseo_http_does_not_mask_relay_failure_or_restart_service(self):
+        self.paseo_entry()
+        self.controller._owner_read = Mock(return_value={'checks': {
+            'http': {'state': 'ok'}, 'local': {'state': 'ok'}, 'relay': {'state': 'failed'}}})
+        probe = Mock()
+        self.controller.check_health(probe)
+        probe.assert_not_called()
+        self.controller.check_paseo_health()
+        row = self.controller.snapshot()['services'][0]
+        self.assertFalse(row['health']['ok'])
+        self.assertEqual(row['health']['checks']['local']['state'], 'ok')
+        self.assertEqual(row['restart_count'], 2)
+        self.assertEqual(self.commands(), [])
+        self.controller._owner_read.assert_called_once_with('paseo-health')
+
+    def test_paseo_cache_cannot_survive_a_service_restart(self):
+        self.paseo_entry()
+        self.controller._owner_read = Mock(return_value={'checks': {
+            k: {'state': 'ok'} for k in ('http', 'local', 'relay')}})
+        self.controller.check_paseo_health()
+        self.assertTrue(self.controller.snapshot()['services'][0]['health']['ok'])
+        self.controller.unit_state.return_value['InvocationID'] = 'replacement'
+        self.controller._invalidate_snapshot()
+        self.assertIsNone(self.controller.snapshot()['services'][0]['health']['ok'])
+
+    def test_paseo_sampler_failures_invalidate_previous_success(self):
+        self.paseo_entry()
+        self.controller._owner_read = Mock(side_effect=OSError('private secret'))
+        self.controller.check_paseo_health()
+        health = self.controller.snapshot()['services'][0]['health']
+        self.assertIsNone(health['ok'])
+        self.assertNotIn('private', json.dumps(health))
+        self.assertEqual(self.commands(), [])
+
     def test_disable_persists_and_clears_docker_restart_then_stops(self):
         self.controller.act('compose-demo', 'disable')
         self.assertFalse(self.controller.load()['services'][0]['autostart'])
