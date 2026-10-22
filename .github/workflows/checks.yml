@@ -143,6 +143,14 @@ jobs:
         env:
           RUNNER_ENVIRONMENT: '${{ runner.environment }}'
         run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT /usr/bin/python3 -B tests/guard_install_smoke.py
+      - name: Exercise the disposable Paseo service lifecycle
+        run: |
+          owner_uid=$(id -u)
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$owner_uid.service"
+          export XDG_RUNTIME_DIR="/run/user/$owner_uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          /usr/bin/python3 tests/integration_paseo_service.py
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

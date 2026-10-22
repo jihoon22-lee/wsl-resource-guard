@@ -29,6 +29,7 @@ def wait_for(predicate):
 def main():
     name = f'wrg-paseo-test-{uuid.uuid4().hex}.service'
     link = Path.home() / '.config/systemd/user' / name
+    link.parent.mkdir(parents=True, exist_ok=True)
     template = Path(__file__).resolve().parents[1] / 'packaging/examples/paseo-daemon.service.in'
     with tempfile.TemporaryDirectory(prefix='wrg-paseo-') as directory:
         home = Path(directory)
