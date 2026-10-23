@@ -45,7 +45,7 @@ HTTP 프로토콜 예외를 실패로 변환하고 서비스별 예외를 격리
 
 ### R6 — 수집 주기에 맞는 신선도
 
-monitor와 실시간 summary가 서버의 `stale_after_seconds = max(60, interval_seconds × 3)`를 제공하고 개요·제목·배지가 이를 사용한다. 미래 시각도 사건 API와 동일하게 미확인으로 처리한다. 15/60/300/600초 주기의 정상·기한 직전 경계(기한과 같음)·기한 초과·미래 시각을 서버와 1440/390px의 폴링·SSE에서 확인했다. 수정 전 API 16개 오류와 브라우저 경계 실패를 확인했고, 수정 후 전체 522개 OK(root 전용 2 skip), JS 문법·전체 offline 검사가 통과했다.
+monitor와 실시간 summary가 서버의 `stale_after_seconds = max(60, interval_seconds × 3)`를 제공하고 개요·제목·배지가 이를 사용한다. 미래 시각도 사건 API와 동일하게 미확인으로 처리한다. 15/60/300/600초 주기의 정상·기한과 같은 경계·기한 초과·미래 시각을 서버와 1440/390px의 폴링·SSE에서 확인했다. 수정 전 API 16개 오류와 브라우저 경계 실패를 확인했고, 수정 후 전체 522개 OK(root 전용 2 skip), JS 문법·전체 offline 검사가 통과했다.
 
 ### R7 — 압축본 문서 링크 검증
 
@@ -54,14 +54,18 @@ Paseo 안내·0.2.3 릴리스 기록·이번 리뷰/수정 기록을 배포 허�
 ## 릴리스 전 종합 검증
 
 - 버전은 `pyproject.toml`, 패키지, `uv.lock`을 모두 0.2.4로 맞췄다. 저장소 지정 uv 0.12.23으로 잠금을 갱신했으며 다른 의존성 버전은 바뀌지 않았다.
-- `scripts/ci_unit.py`: 523개 통과, 예상 밖 skip 없음. root 전용 2개는 로컬 권한이 없어 GitHub의 격리된 CI에서 확인한다.
+- `scripts/ci_unit.py`: 523개 통과, 예상 밖 skip 없음. root 전용 2개는 로컬 권한이 없어 GitHub의 격리된 CI에서 별도로 통과했다.
 - Chromium 전체 offline, 사용성 회귀, 조치 시나리오(1440/390px)가 통과했다. 390px 서비스 카드의 오래된 HTTP 표시와 1440px의 긴 수집 주기 개요도 직접 확인했다.
 - JS 4개 문법·알림 worker·ShellCheck·bash 문법·actionlint·공개정보/문서 링크 검사가 통과했다. 실제 격리 Gunicorn TCP/Unix 검사 3개도 통과했다.
 - web 8개/dev 44개 설치 버전이 잠금과 일치하며 두 의존성 profile의 감사에서 알려진 취약점이 없었다.
 - 대규모 검사는 첫 실행에서 이력 읽기 제한 시간 초과가 발생했다. 단독 재검사는 120,600개 이력과 50/500개 서비스·200/2,000개 세션의 데이터·조치 대상·레이아웃 검사를 모두 통과했다. 단회 측정에서 큰 목록의 모바일 세션 렌더는 13.2초, 서비스 렌더는 4.5초로 목표를 초과했다. 작은 목록도 일부 PC 측정이 목표를 넘었다. 당시 호스트 부하가 높았으며 안정된 환경의 p95 측정이나 성능 개선 완료를 뜻하지 않는다. 기존 대규모 성능 제약은 유지한다.
-- 버전 커밋 `490b3f2`의 0.2.4 압축본은 manifest·동봉 문서 링크·CLI 실행을 통과했고, 두 번 빌드한 파일이 바이트 단위로 같았다. 게시된 태그 커밋과 다운로드 파일도 별도로 확인한다.
-- WebKit은 로컬 시스템 라이브러리가 부족해 CI에서 실행한다. 운영 서비스·WSL 재시작과 실제 이메일·휴대전화 수신 검사는 수행하지 않았다.
+- 버전 커밋 `490b3f2`의 0.2.4 압축본은 manifest·동봉 문서 링크·CLI 실행을 통과했고, 두 번 빌드한 파일이 바이트 단위로 같았다. 태그 커밋과 게시본의 대조 결과는 아래에 기록했다.
+- WebKit은 로컬 시스템 라이브러리가 부족해 GitHub CI에서 실행했고 Chromium과 함께 통과했다. 운영 서비스·WSL 재시작과 실제 이메일·휴대전화 수신 검사는 수행하지 않았다.
 
 ## 공개·정리 상태
 
-구현·검증 후 로컬 no-ff 병합, 작업 브랜치 push와 PR, 태그의 전체 검사·보안·패키징 검증을 거친 Release 게시 순서로 진행한다. 임시 서버·파일과 병합된 작업 브랜치를 정리하고, 운영 데이터와 기존 실행 환경은 보존한다.
+- 작업 브랜치의 수정·검증 커밋을 로컬 main에 no-ff 병합(`6f55662`)한 뒤 push했다. [PR #24](https://github.com/jihoon22-lee/wsl-resource-guard/pull/24)는 [전체 CI](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/39938656666)의 13개 작업 통과 후 `654f095`로 병합했다. Python 3.11~3.14, Chromium·WebKit, 실제 root 권한 경계, Guard·Paseo 설치/복구 수명주기, 두 언어 CodeQL, 비밀값·의존성, 압축본 왕복 검증이 포함됐다.
+- main에 포함된 `654f0959ba4adafd493968404c25583a915e53c7`에 annotated 태그 `v0.2.4`를 생성하고 push했다. [Release 실행](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/39939394202)의 15개 작업과 [병합 후 main CI](https://github.com/jihoon22-lee/wsl-resource-guard/actions/runs/39939366480)가 모두 성공했다.
+- [v0.2.4 Release](https://github.com/jihoon22-lee/wsl-resource-guard/releases/tag/v0.2.4)는 latest이며 draft/prerelease가 아니다. 게시된 압축본·SHA256SUMS를 내려받아 검증했고 같은 태그 커밋의 로컬 빌드와 바이트 단위로 일치했다. `SOURCE.json`의 버전·커밋, Paseo/최신 작업 문서 포함, 상대 링크, CLI 실행도 통과했다. 압축본 SHA-256은 `96ab0508070d648f651d4ceefaee086a40e43acac69a101d7c1b5d4a9dd99700`이다.
+- 임시 브라우저 다운로드·도구 캐시·확인용 스크린샷·검증한 로컬/다운로드 압축본을 제거했다. 검증 서버와 브라우저는 종료했고 임시 worktree는 만들지 않았다. 구현 브랜치는 로컬/원격 main 포함 여부를 확인한 뒤 양쪽에서 삭제했다. 이 최종 기록용 브랜치도 main 병합 뒤 삭제한다.
+- 운영 설치·서비스·설정·인증정보·데이터는 변경하지 않았다. 기존 `.venv`와 작업 전부터 있던 ignored 캐시는 실행 환경으로 보존했다. 대규모 목록 성능과 실제 모바일 수신은 위 검증 한계를 유지한다.
