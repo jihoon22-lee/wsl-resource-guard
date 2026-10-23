@@ -638,7 +638,7 @@ function renderOverview() {
       serviceProblems
         .map(
           (s) =>
-            `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">${esc(s.health.kind === "paseo" ? healthDescription(s.health) : `웹 응답 없음 · ${s.health.error || ""}`)}</div>` : ""}</div>${pill(s.state)}</div>`,
+            `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">${esc(healthDescription(s.health))}</div>` : ""}</div>${pill(s.state)}</div>`,
         )
         .join("") || `<div class="empty">${loaded.services ? "모든 앱이 설정대로 동작 중입니다" : "서비스 상태를 아직 확인하지 못했습니다"}</div>`
     }</div></div></div>
@@ -697,7 +697,9 @@ function memoryLimit(s) {
   return `<div class="limit ${tone}" title="systemd 메모리 한도"><div class="meter"><span data-percent="${clampPercent((used / limit) * 100)}"></span>${mark}</div><span class="subline">${esc(parts.join(" · "))}</span></div>`;
 }
 function healthDescription(h) {
-  if (h?.kind !== "paseo") return h?.ok ? `웹 응답 정상 (HTTP ${h.status})` : `웹 응답 확인 실패: ${h?.error || ""}`;
+  if (h?.kind !== "paseo") return h?.ok === true ? `웹 응답 정상 (HTTP ${h.status})`
+    : h?.ok == null ? `웹 응답 미확인: ${h?.error || "검사 대기 중"}`
+    : `웹 응답 확인 실패: ${h?.error || ""}`;
   const labels = { http: "HTTP", local: "로컬 연결", relay: "릴레이 연결" };
   const states = { ok: "정상", failed: "실패", unknown: "미확인", disabled: "꺼짐" };
   const facts = Object.entries(labels).map(([key, label]) => {
@@ -718,6 +720,8 @@ function healthPill(h) {
       return `<span class="pill ${tone} health" title="${esc(`${healthDescription(h)} · ${when_}`)}">${label} ${h.stale ? "오래됨" : states[state] || "미확인"}</span>`;
     }).join(" ");
   }
+  if (h.ok == null)
+    return `<span class="pill warn health" title="${esc(`${healthDescription(h)} · ${when_}`)}">${h.stale ? "응답 오래됨" : "응답 미확인"}</span>`;
   return h.ok
     ? `<span class="pill good health" title="${esc(`HTTP ${h.status} · ${h.latency_ms ?? "?"}ms · ${when_}`)}">응답 정상</span>`
     : `<span class="pill bad health" title="${esc(`${h.error || "응답 없음"} · ${when_}`)}">응답 없음</span>`;

@@ -1174,6 +1174,26 @@ def check_service_card_text_geometry(page) -> None:
             assert cell.evaluate('e => e.scrollWidth <= e.clientWidth + 1'), cell.inner_text()
 
 
+def check_http_health_freshness(page, overrides: dict) -> None:
+    original = fixtures()['/api/services']
+    row = dict(original['services'][0])
+    try:
+        for stale, label in ((True, '응답 오래됨'), (False, '응답 미확인')):
+            row['health'] = {'ok': None, 'status': None, 'stale': stale,
+                             'checked_at': time.time() - 3600 if stale else None,
+                             'error': '최근 HTTP 검사 결과를 확인할 수 없습니다.'}
+            overrides['/api/services'] = {**original, 'services': [row]}
+            page.goto(ORIGIN + '/#services')
+            page.reload()
+            expect(page.locator('#services-list .health')).to_have_text(label)
+            expect(page.locator('#services-list .health.good')).to_have_count(0)
+            page.goto(ORIGIN + '/#overview')
+            expect(page.locator('#overview-services')).to_contain_text('웹 응답 미확인')
+            expect(page.locator('#overview-services')).not_to_contain_text('웹 응답 없음')
+    finally:
+        overrides.pop('/api/services', None)
+
+
 def check_paseo_health(page, overrides: dict, posts: list) -> None:
     original = fixtures()['/api/services']
     row = {'id': 'paseo-daemon', 'name': 'Paseo', 'kind': 'systemd',
@@ -1523,6 +1543,7 @@ def main() -> None:
         check_legend_toggles_series(page)
         check_quick_service_action(page, posts)
         check_oneshot_status(page)
+        check_http_health_freshness(page, overrides)
         check_paseo_health(page, overrides, posts)
         check_service_limits_health_and_dialog(page)
         check_log_viewer(page, gets, overrides)
@@ -1556,6 +1577,7 @@ def main() -> None:
         # stays sticky, and touch targets reach 44px.
         check_mobile_layout(mobile, overrides, gets)
         check_oneshot_status(mobile)
+        check_http_health_freshness(mobile, overrides)
         check_paseo_health(mobile, overrides, posts)
         mobile.set_viewport_size({'width': 320, 'height': 800})
         check_paseo_health(mobile, overrides, posts)

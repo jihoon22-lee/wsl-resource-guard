@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
+import http.client
 import json
 import math
 import os
@@ -68,6 +69,7 @@ def _memory_limit(raw: str) -> int | None:
 # A registered URL counts as up for any HTTP answer below 500: login pages and
 # 401/403 still prove the app is serving. Timeouts and 5xx count as down.
 HEALTH_TIMEOUT_SECONDS = 4
+HEALTH_STALE_SECONDS = 180
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -91,6 +93,9 @@ def probe_url(url: str, opener=_probe_opener) -> dict:
     except urllib.error.HTTPError as exc:
         status = exc.code
         exc.close()  # An HTTP error still carries an open response body.
+    except http.client.HTTPException as exc:
+        result.update(ok=False, status=None, error=f'HTTP 응답 형식 오류 ({type(exc).__name__})')
+        return result
     except (urllib.error.URLError, OSError, ValueError) as exc:
         reason = getattr(exc, 'reason', exc)
         result.update(ok=False, status=None, error=f'{type(reason).__name__}: {reason}'[:200])
@@ -99,6 +104,23 @@ def probe_url(url: str, opener=_probe_opener) -> dict:
                   latency_ms=round((time.monotonic() - started) * 1000))
     if status >= 500:
         result['error'] = f'HTTP {status}'
+    return result
+
+
+def _container_runtime(containers: list[dict]) -> tuple:
+    return tuple(sorted((c['id'], c['state'].get('StartedAt', '')) for c in containers))
+
+
+def _http_health(health: dict, runtime) -> dict:
+    result = {k: v for k, v in health.items() if k not in ('url', '_runtime')}
+    if health.get('_runtime') != runtime:
+        return {'ok': None, 'status': None, 'checked_at': None,
+                'error': '서비스 실행이 변경돼 HTTP 응답을 다시 확인 중입니다.'}
+    checked = health.get('checked_at')
+    if (type(checked) not in (int, float)
+            or not 0 <= time.time() - checked <= HEALTH_STALE_SECONDS):
+        result.update(ok=None, status=None, stale=True,
+                      error='최근 HTTP 검사 결과를 확인할 수 없습니다.')
     return result
 
 
@@ -557,9 +579,11 @@ class Controller:
         for entry in data['services']:
             row = dict(entry)
             row.update(memory_bytes=None, error='', drift=False)
+            runtime = None
             try:
                 if entry['kind'] == 'systemd':
                     state = self.unit_state(entry['target'])
+                    runtime = state.get('InvocationID')
                     row['state'] = state.get('ActiveState', 'unknown')
                     row['systemd_substate'] = state.get('SubState', '')
                     row['detail'] = unit_detail(state)
@@ -579,6 +603,7 @@ class Controller:
                         row['error'] = state['Result']
                 else:
                     group = [c for c in containers if c['labels'].get('com.docker.compose.project') == entry['target']]
+                    runtime = _container_runtime(group)
                     running = sum(c['state']['Status'] == 'running' for c in group)
                     # Docker keeps the last health result on exited containers;
                     # only a running container can be unhealthy now.
@@ -613,7 +638,7 @@ class Controller:
                            detail='상태 조회 실패')
             health = self._health.get(entry['id'])
             if health and health.get('url') == entry.get('url'):
-                row['health'] = {k: v for k, v in health.items() if k != 'url'}
+                row['health'] = _http_health(health, runtime)
             if entry['kind'] == 'systemd' and entry['target'] == paseo.UNIT:
                 row.pop('health', None)
                 if row['state'] == 'active':
@@ -719,6 +744,7 @@ class Controller:
                 self._set_autostart(data, entry, action in ('enable', 'autostart-on'), containers)
             operation = {'enable': 'start', 'disable': 'stop', 'remove': 'stop'}.get(action, action)
             if operation in ('start', 'stop', 'restart'):
+                self._health.pop(identifier, None)
                 if entry['kind'] == 'systemd':
                     activation_socket = ACTIVATION_SOCKETS.get(entry['target'])
                     if activation_socket and operation == 'stop':
@@ -903,9 +929,8 @@ class Controller:
         problems = [r for r in rows if r.get('category') == 'app' and (
             r.get('state') in ('failed', 'degraded', 'unknown', 'missing') or r.get('error')
             or r.get('drift') or (r.get('autostart') and r.get('state') != 'active')
-            or (r.get('state') == 'active' and ((r.get('health') or {}).get('ok') is False
-                or ((r.get('health') or {}).get('kind') == 'paseo'
-                    and (r.get('health') or {}).get('ok') is None))))]
+            or (r.get('state') == 'active' and r.get('health')
+                and r['health'].get('ok') is not True))]
         cached = self._monitor_cache or {}
         return {'severity': state.get('severity', 'unknown'),
                 'updated_at': state.get('updated_at'),
@@ -996,8 +1021,17 @@ class Controller:
                    and (urlsplit(s['url']).hostname or '').lower() == own_host]
         fresh = {}
         for entry in entries:
-            result = probe(entry['url'])
-            result['url'] = entry['url']
+            runtime = None
+            try:
+                runtime = (self.unit_state(entry['target']).get('InvocationID')
+                           if entry['kind'] == 'systemd' else _container_runtime(self.containers(entry['target'])))
+                result = probe(entry['url'])
+            except Exception as exc:
+                # Isolate each app, including malformed HTTP replies. Never keep
+                # yesterday's success or expose raw command/protocol diagnostics.
+                result = {'ok': False, 'status': None, 'checked_at': time.time(),
+                          'error': f'HTTP 검사 실패 ({type(exc).__name__})'}
+            result.update(url=entry['url'], _runtime=runtime)
             fresh[entry['id']] = result
         self._health = fresh
         self._invalidate_snapshot()
