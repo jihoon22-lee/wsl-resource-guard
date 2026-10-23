@@ -14,8 +14,8 @@ from .safe_read import read_text
 
 MAX_INCIDENTS = 256
 # A value hovering at its threshold resolves and re-opens within minutes. A
-# recurrence inside this window continues the same incident without a new
-# alert, and the recovery notice waits until the window passes quietly.
+# recurrence before an observed quiet window continues the same incident;
+# time without observations cannot confirm recovery.
 RECURRENCE_MERGE_SECONDS = 1800
 IDENTIFIER = re.compile(r'^[0-9a-f]{32}$')
 
@@ -83,7 +83,7 @@ def _targets(condition: dict, snapshot) -> list[dict]:
 def _unobserved(row: dict, metrics) -> bool:
     key = row['key']
     if 'psi' in key:
-        return metrics.psi_some_avg60 is None
+        return metrics.psi_some_avg60 is None or metrics.psi_full_avg60 is None
     if key.startswith('disk.'):
         drive = key.split(':', 1)[0].split('.', 1)[1]
         # Windows drive IDs contain ':', so match the letter as well.
@@ -116,12 +116,13 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
     boot = boot_id() if boot is None else boot
     rows = copy.deepcopy(previous.get('incidents', []))
     active = {r['key']: r for r in rows if r.get('state') != 'resolved'}
-    # Resolved rows whose recovery has not been announced yet (newest wins).
+    # Until recovery is confirmed by observations, a recurrence continues the
+    # same incident even when a collection gap outlasted the wall-clock window.
     recent = {}
     for r in sorted(rows, key=lambda r: r.get('resolved_at', 0)):
-        if (r.get('state') == 'resolved' and r.get('recovery_pending')
-                and 0 <= now - r.get('resolved_at', now) <= RECURRENCE_MERGE_SECONDS):
+        if r.get('state') == 'resolved' and r.get('recovery_pending'):
             recent[r['key']] = r
+    pending_keys = {_key(c, snapshot, boot) for c in pending or []}
     seen = set()
     pressure = (metrics.mem_available_gib < settings.warning_available_gib
                 or (metrics.psi_some_avg60 is not None and metrics.psi_some_avg60 >= settings.warning_psi_some_avg60)
@@ -138,6 +139,8 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             recurred = True
             row.pop('resolved_at', None)
             row.pop('recovery_pending', None)
+            for field in ('recovery_since', 'recovery_checked_at', 'recovery_paused'):
+                row.pop(field, None)
             row['recurrences'] = row.get('recurrences', 0) + 1
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'active', 'recurred': True,
                                                                   'severity': condition['severity']}])[-16:]
@@ -180,10 +183,18 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         row.update(state='active', normal_since=None, observed_at=now)
     for row in rows:
         if row['state'] == 'resolved' and row.get('recovery_pending'):
-            # Announce recovery (new revision) only after the merge window, or
-            # at once when the clock moved backwards past the resolution.
-            elapsed = now - row.get('resolved_at', now)
-            if elapsed >= RECURRENCE_MERGE_SECONDS or elapsed < 0:
+            checked = row.get('recovery_checked_at')
+            continuous = (type(checked) in (int, float)
+                          and 0 <= now - checked <= max(1, 2 * settings.interval_seconds))
+            row['recovery_checked_at'] = now
+            if _unobserved(row, metrics) or row['key'] in pending_keys:
+                row.update(recovery_since=None, recovery_paused=True)
+                continue
+            since = row.get('recovery_since')
+            if not continuous or type(since) not in (int, float) or not 0 <= since <= now:
+                since = now  # Includes old pending records and clock rollback.
+            row.update(recovery_since=since, recovery_paused=False)
+            if now - since >= RECURRENCE_MERGE_SECONDS:
                 row.pop('recovery_pending', None)
                 row.update(revision=row['revision'] + 1, recovery_confirmed_at=now)
             continue
@@ -197,7 +208,8 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         since = now if since is None or since > now else since
         row.update(state='resolving', normal_since=since, observed_at=now)
         if now - since >= settings.recovery_sustain_seconds:
-            row.update(state='resolved', resolved_at=now, recovery_pending=True)
+            row.update(state='resolved', resolved_at=now, recovery_pending=True,
+                       recovery_since=now, recovery_checked_at=now, recovery_paused=False)
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'resolved'}])[-16:]
     cutoff = now - settings.retention_days * 86400
     rows = [r for r in rows if r['state'] != 'resolved' or r.get('resolved_at', now) >= cutoff]
@@ -228,7 +240,8 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
         body = '이 경보의 조건이 회복 기준 시간 동안 해소됐습니다.\n이전 원인: ' + body
     else:
         body += '\n' + row.get('guidance', '')
-    body += '\n관측 시각: ' + datetime.fromtimestamp(row['observed_at']).astimezone().isoformat(timespec='seconds')
+    observed = row.get('recovery_confirmed_at', row['observed_at']) if row['state'] == 'resolved' else row['observed_at']
+    body += '\n관측 시각: ' + datetime.fromtimestamp(observed).astimezone().isoformat(timespec='seconds')
     body += '\nTailscale 연결 후 원인과 영향을 확인하세요.'
     plain = body + ('\n' + url if url else '\n웹 주소 미설정: Resource Guard 웹의 경보 화면에서 확인하세요.')
     link = f'<p><a href="{html.escape(url, quote=True)}">원인과 영향 확인</a></p>' if url else ''

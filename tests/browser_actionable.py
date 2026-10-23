@@ -171,7 +171,12 @@ def run_recurrence_view(browser,width):
         expect(page.locator('#incident-list .incident-card .pill.good').first).to_have_text('해소 확인 · 재발 관찰 중')
         page.locator('#incident-list a.incident-card').first.click()
         expect(page.locator('#incident-detail')).to_contain_text('해소 후 재발 2회')
-        expect(page.locator('#incident-detail')).to_contain_text('30분 동안 다시 기준을 넘지 않으면 회복 알림을 보냅니다')
+        expect(page.locator('#incident-detail')).to_contain_text('정상 관측이 30분 동안 이어지면 회복 알림을 보냅니다')
+        expect(page.locator('[data-incident-choice]')).to_have_count(0)
+        row['recovery_paused'] = True
+        page.reload()
+        expect(page.locator('#incident-detail .pill.warn')).to_have_text('해소 확인 · 회복 알림 보류')
+        expect(page.locator('#incident-detail')).to_contain_text('관측 실패 또는 기준 재초과로 회복 알림을 보류합니다')
         expect(page.locator('[data-incident-choice]')).to_have_count(0)
         assert not page.evaluate('document.documentElement.scrollWidth > innerWidth'),width
         assert not errors,errors
