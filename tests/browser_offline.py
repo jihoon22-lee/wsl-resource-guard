@@ -640,6 +640,48 @@ def check_snooze_and_bulk_stale_kill(page, posts: list, overrides: dict) -> None
         posts.clear()
 
 
+def check_sampling_freshness(browser) -> None:
+    """Poll and SSE use the server's deadline at normal, boundary and future times."""
+    for width in (1440, 390):
+        context = browser.new_context(viewport={'width': width, 'height': 900})
+        context.add_init_script("""Date.now=()=>10000000; window.__streams=[];
+          window.EventSource=class {
+            static CLOSED=2; constructor(){this.listeners={};this.readyState=1;__streams.push(this)}
+            addEventListener(name,fn){this.listeners[name]=fn} close(){this.readyState=2}
+            emit(name,data){this.listeners[name]?.({data:JSON.stringify(data)})}
+          };""")
+        page = context.new_page()
+        errors, posts, gets = [], [], []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        monitor = fixtures()['/api/monitor']
+        overrides = {'/api/monitor': monitor}
+        page.route(ORIGIN+'/**', lambda r: serve(r, posts, gets, overrides))
+        try:
+            for interval in (15, 60, 300, 600):
+                limit = max(60, interval * 3)
+                for age in (interval, limit, limit + 1, -1):
+                    stale = not 0 <= age <= limit
+                    title = re.compile('상태 미확인' if stale else '^🔴')
+                    for transport in ('poll', 'stream'):
+                        monitor.update(severity='critical', stale_after_seconds=limit,
+                                       daemon_updated_at=10000-age if transport == 'poll' else None)
+                        page.goto(ORIGIN+'/#overview')
+                        page.reload()
+                        expect(page.locator('#overview-status')).to_be_visible()
+                        if transport == 'stream':
+                            page.evaluate("d => __streams.at(-1).emit('summary',d)", {
+                                'severity': 'critical', 'updated_at': 10000-age,
+                                'stale_after_seconds': limit})
+                        else:
+                            expect(page.locator('#view-overview .cards.stale')).to_have_count(int(stale))
+                        expect(page).to_have_title(title)
+                        assert page.evaluate('currentResourceSeverity()') == ('unknown' if stale else 'critical')
+            assert not posts, posts
+            assert not errors, errors
+        finally:
+            context.close()
+
+
 def check_stream_freshness(browser) -> None:
     for mobile in (False, True):
         context=browser.new_context(viewport={'width':390 if mobile else 1280,'height':900},
@@ -1567,6 +1609,7 @@ def main() -> None:
         check_disk_docker_and_vhd_guide(page, overrides)
         check_history_tools(page, overrides)
         check_snooze_and_bulk_stale_kill(page, posts, overrides)
+        check_sampling_freshness(browser)
         check_stream_freshness(browser)
         check_live_summary_stream(browser)
         # Narrow screens must not shrink chart text: viewBox follows the width.

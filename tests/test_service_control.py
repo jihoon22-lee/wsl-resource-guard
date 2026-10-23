@@ -610,6 +610,32 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(json.loads(kept[0])['n'], 400)
         self.assertEqual(json.loads(kept[-1])['op'], 'action')
 
+    def test_monitor_summary_and_incidents_share_the_sampling_freshness_limit(self):
+        from dataclasses import asdict
+        from wsl_resource_guard.config import Settings
+        from wsl_resource_guard.processes import ProcessSnapshot
+        for interval in (15, 60, 300, 600):
+            limit = max(60, interval * 3)
+            for age in (interval, limit, limit + 1, -1):
+                with self.subTest(interval=interval, age=age):
+                    settings = Settings(state_dir=self.temp.name, interval_seconds=interval)
+                    context = {'settings': asdict(settings), 'channels': {},
+                               'state': {'updated_at': 10000 - age, 'metrics': {'mem_total_kib': 100}}}
+                    self.controller._monitor_cache = {}
+                    with (patch.object(self.controller, '_owner_context', return_value=context),
+                          patch.object(self.controller, '_owner_read', return_value={
+                              'updated_at': 10000 - age, 'incidents': []}),
+                          patch('wsl_resource_guard.service_control.time.time', return_value=10000),
+                          patch('wsl_resource_guard.processes.build_snapshot',
+                                return_value=ProcessSnapshot({}, [], [], {}, {}))):
+                        monitor = self.controller.monitor()
+                        summary = self.controller.summary()
+                        incidents = self.controller.incidents()
+                    self.assertEqual(monitor['stale_after_seconds'], limit)
+                    self.assertEqual(summary['stale_after_seconds'], limit)
+                    self.assertEqual(monitor['daemon_updated_at'], summary['updated_at'])
+                    self.assertEqual(incidents['stale'], not 0 <= age <= limit)
+
     def test_monitor_exposes_channel_errors(self):
         from wsl_resource_guard.config import Settings
         from wsl_resource_guard.processes import ProcessSnapshot

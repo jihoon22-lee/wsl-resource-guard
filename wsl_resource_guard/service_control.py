@@ -934,6 +934,7 @@ class Controller:
         cached = self._monitor_cache or {}
         return {'severity': state.get('severity', 'unknown'),
                 'updated_at': state.get('updated_at'),
+                'stale_after_seconds': max(60, self._owner_settings().interval_seconds * 3),
                 'reasons': state.get('reasons', []),
                 'disk_alerts': sorted({k.split('.disk.', 1)[-1] for k in disk_keys}),
                 'disk_critical': any(k.startswith('critical.') for k in disk_keys),
@@ -1153,6 +1154,7 @@ class Controller:
                 'warning_swap_out_mib_per_minute',
                 'warning_disk_free_percent', 'critical_disk_free_percent')}
             result = {'collected_at': time.time(), 'daemon_updated_at': state.get('updated_at'),
+                      'stale_after_seconds': max(60, settings.interval_seconds * 3),
                       'metrics': metrics, 'severity': state.get('severity', 'unknown'),
                       'thresholds': thresholds,
                       'reasons': state.get('reasons', []), 'observations': state.get('observations', []),

@@ -505,7 +505,7 @@ function renderOverview() {
     m = d.metrics,
     available = m.mem_available_kib,
     swap = m.swap_total_kib - m.swap_free_kib,
-    stale = observationIsStale(d.daemon_updated_at);
+    stale = observationIsStale(d.daemon_updated_at, d.stale_after_seconds);
   const staleMin =
     stale && d.daemon_updated_at
       ? Math.max(1, Math.floor((Date.now() / 1000 - d.daemon_updated_at) / 60))
@@ -2087,9 +2087,11 @@ function render() {
 // Menu badges: where attention is needed, without opening each view. Fed
 // by whatever data is loaded plus the live summary stream (see liveSummary).
 let liveSummary = null;
-function observationIsStale(timestamp) {
+function observationIsStale(timestamp, staleAfter = 60) {
   const stamp = Number(timestamp), now = Date.now() / 1000;
-  return !Number.isFinite(stamp) || stamp <= 0 || stamp > now + 5 || now - stamp > 90;
+  const limit = Number(staleAfter);
+  return !Number.isFinite(stamp) || stamp <= 0 || stamp > now ||
+    now - stamp > (Number.isFinite(limit) && limit > 0 ? limit : 60);
 }
 function observationCanReplace(incoming, previous) {
   const next = Number(incoming) || 0, cached = Number(previous) || 0;
@@ -2100,8 +2102,8 @@ function observationCanReplace(incoming, previous) {
   return !next || !cached || cached > now + 5 || next >= cached;
 }
 function currentResourceSeverity() {
-  const liveAt = observationIsStale(liveSummary?.updated_at) ? 0 : Number(liveSummary.updated_at);
-  const pollAt = observationIsStale(monitorData?.daemon_updated_at) ? 0 : Number(monitorData.daemon_updated_at);
+  const liveAt = observationIsStale(liveSummary?.updated_at, liveSummary?.stale_after_seconds) ? 0 : Number(liveSummary.updated_at);
+  const pollAt = observationIsStale(monitorData?.daemon_updated_at, monitorData?.stale_after_seconds) ? 0 : Number(monitorData.daemon_updated_at);
   const source = liveAt > pollAt ? liveSummary : monitorData;
   if (!source || !(liveAt || pollAt)) return "unknown";
   return source.severity || "unknown";
