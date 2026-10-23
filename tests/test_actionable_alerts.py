@@ -118,9 +118,68 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual((row['state'],row['revision'],row['recovery_pending']),('resolved',1,True))
         return first,done
 
+    def observe_until(self, store, end):
+        while store['updated_at'] < end:
+            store = self.update(store, [], min(end, store['updated_at'] + 15))
+        return store
+
+    def test_recovery_confirmation_requires_observations_for_each_resource(self):
+        for kind, key in (('psi', 'warning.psi_some'), ('psi_full', 'critical.psi_full'),
+                          ('disk', 'warning.disk.C:')):
+            with self.subTest(kind=kind):
+                def reading(now, available=True):
+                    value = metrics(now)
+                    if kind == 'psi' and not available:
+                        value.psi_some_avg60 = value.psi_full_avg60 = None
+                    if kind == 'psi_full' and not available:
+                        value.psi_full_avg60 = None
+                    if kind == 'disk':
+                        value.disks = [{'id': 'C:', 'status': 'ok' if available else 'error'}]
+                    return value
+                def update(store, conditions, now, available=True):
+                    return reconcile(store, conditions, self.snap, reading(now, available),
+                                     self.settings, boot='boot-a')
+                store = update({}, [condition(key, 'critical' if key.startswith('critical') else 'warning')], 1000)
+                store = update(update(store, [], 1015), [], 1045)
+                for now in range(1060, 2846, 15):
+                    store = update(store, [], now, False)
+                row = store['incidents'][0]
+                self.assertEqual(row['revision'], 1)
+                self.assertTrue(row['recovery_pending'])
+                self.assertTrue(row['recovery_paused'])
+                for now in range(2860, 4661, 15):
+                    store = update(store, [], now)
+                row = store['incidents'][0]
+                self.assertEqual(row['revision'], 2)
+                self.assertEqual(row['recovery_confirmed_at'], 4660)
+                self.assertEqual(update(store, [], 4675)['incidents'][0]['revision'], 2)
+
+    def test_gap_and_legacy_pending_record_restart_the_confirmation_window(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                _, store = self.resolved()
+                if legacy:
+                    for key in ('recovery_since', 'recovery_checked_at'):
+                        store['incidents'][0].pop(key, None)
+                store = self.update(store, [], 3000)
+                self.assertEqual(store['incidents'][0]['revision'], 1)
+                store = self.observe_until(store, 4800)
+                self.assertEqual(store['incidents'][0]['recovery_confirmed_at'], 4800)
+
+    def test_pending_recurrence_cannot_confirm_recovery_or_split_an_unconfirmed_incident(self):
+        first, store = self.resolved()
+        store = self.observe_until(store, 2830)
+        store = reconcile(store, [], self.snap, metrics(2845), self.settings, boot='boot-a',
+                          pending=[{'key': 'warning.mcp_total'}])
+        self.assertEqual(store['incidents'][0]['revision'], 1)
+        again = self.update(store, [condition()], 2860)
+        self.assertEqual(len(again['incidents']), 1)
+        self.assertEqual(again['incidents'][0]['id'], first['incidents'][0]['id'])
+        self.assertEqual(again['incidents'][0]['revision'], 1)
+
     def test_recurrence_uses_a_new_id_after_confirmed_recovery(self):
         first,done=self.resolved()
-        confirmed=self.update(done,[],1045+RECURRENCE_MERGE_SECONDS)
+        confirmed=self.observe_until(done,1045+RECURRENCE_MERGE_SECONDS)
         again=self.update(confirmed,[condition()],1060+RECURRENCE_MERGE_SECONDS)
         active=next(r for r in again['incidents'] if r['state']=='active')
         self.assertNotEqual(first['incidents'][0]['id'],active['id'])
@@ -139,9 +198,10 @@ class IncidentTests(unittest.TestCase):
 
     def test_recovery_revision_only_after_a_quiet_window(self):
         _,done=self.resolved()
-        waiting=self.update(done,[],1045+RECURRENCE_MERGE_SECONDS-1)['incidents'][0]
+        observed=self.observe_until(done,1045+RECURRENCE_MERGE_SECONDS-1)
+        waiting=observed['incidents'][0]
         self.assertEqual((waiting['revision'],waiting['recovery_pending']),(1,True))
-        confirmed=self.update(done,[],1045+RECURRENCE_MERGE_SECONDS)['incidents'][0]
+        confirmed=self.update(observed,[],1045+RECURRENCE_MERGE_SECONDS)['incidents'][0]
         self.assertEqual(confirmed['revision'],2)
         self.assertNotIn('recovery_pending',confirmed)
         self.assertEqual(confirmed['recovery_confirmed_at'],1045+RECURRENCE_MERGE_SECONDS)
@@ -150,6 +210,21 @@ class IncidentTests(unittest.TestCase):
         first,done=self.resolved()
         again=self.update(done,[condition('critical.mcp_total','critical')],1060)['incidents'][0]
         self.assertEqual((again['id'],again['severity'],again['revision']),(first['incidents'][0]['id'],'critical',2))
+
+    def test_downgrade_keeps_revision_but_records_the_new_severity(self):
+        first = self.update({}, [condition('critical.available_ram', 'critical')], 1000)
+        down = self.update(first, [condition('warning.available_ram')], 1015)
+        row = down['incidents'][0]
+        self.assertEqual((row['severity'], row['revision']), ('warning', 1))
+        self.assertEqual(row['transitions'][-1]['severity'], 'warning')
+        up = self.update(down, [condition('critical.available_ram', 'critical')], 1030)
+        self.assertEqual(up['incidents'][0]['revision'], 2)
+
+    def test_lower_severity_recurrence_preserves_the_original_revision(self):
+        first = self.update({}, [condition('critical.available_ram', 'critical')], 1000)
+        done = self.update(self.update(first, [], 1015), [], 1045)
+        again = self.update(done, [condition('warning.available_ram')], 1060)['incidents'][0]
+        self.assertEqual((again['id'], again['revision']), (first['incidents'][0]['id'], 1))
 
     def test_legacy_resolved_record_is_neither_reannounced_nor_reopened(self):
         first,_=self.resolved()
@@ -160,9 +235,12 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual(len(again['incidents']),2)
         self.assertNotEqual(again['incidents'][0]['id'],again['incidents'][1]['id'])
 
-    def test_backward_clock_does_not_hold_recovery_forever(self):
+    def test_backward_clock_requires_a_new_observed_window(self):
         _,done=self.resolved()
-        self.assertEqual(self.update(done,[],1040)['incidents'][0]['revision'],2)
+        restarted=self.update(done,[],1040)
+        self.assertEqual(restarted['incidents'][0]['revision'],1)
+        confirmed=self.observe_until(restarted,1040+RECURRENCE_MERGE_SECONDS)
+        self.assertEqual(confirmed['incidents'][0]['revision'],2)
 
     def test_link_has_incident_identity_and_html_is_escaped(self):
         row=self.update({},[condition()],1000)['incidents'][0]
@@ -264,6 +342,59 @@ class DeliveryTests(unittest.TestCase):
 
     def ledger(self):return json.loads((self.root/'delivery.json').read_text())
 
+    def test_sampler_downgrade_preserves_defer_and_reminder_but_escalation_alerts(self):
+        from wsl_resource_guard import daemon
+        for deferred in (False, True):
+            with self.subTest(deferred=deferred):
+                for name in ('delivery.json', 'state.json', 'incidents.json'):
+                    (self.root/name).unlink(missing_ok=True)
+                (self.shared/'incident-decisions.json').unlink(missing_ok=True)
+                sent = []
+                def send(destination, row, *args):
+                    sent.append((row['severity'], row['revision']))
+                    return NotificationResult('gmail', True, 'fixture')
+                with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
+                      patch.object(daemon, 'read_disks', return_value=[]),
+                      patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0))):
+                    for now, available in ((1000, 1), (1015, 3), (1030, 3), (1045, 3), (1060, 1)):
+                        self.now = now
+                        with patch.object(daemon, 'read_system_metrics', return_value=metrics(now, available)):
+                            daemon.sample(self.settings, incident_mode=True, shared_dir=self.shared)
+                        row = read_store(self.root/'incidents.json')['incidents'][0]
+                        self.engine.tick(send=send)
+                        if now == 1000:
+                            reminder = self.ledger()['events'][row['id']]['next_reminder_at']
+                            if deferred:
+                                atomic_write(self.shared/'incident-decisions.json', {row['id']: {
+                                    'choice': 'defer', 'at': now, 'until': 4600, 'revision': row['revision']}})
+                        if now == 1045:
+                            self.assertEqual(sent, [('critical', 1)] * 2)
+                            self.assertEqual(self.ledger()['events'][row['id']]['next_reminder_at'], reminder)
+                    self.assertEqual(sent, [('critical', 1)] * 2 + [('critical', 2)] * 2)
+
+    def test_sampler_to_delivery_waits_for_observed_recovery_after_psi_failure(self):
+        from wsl_resource_guard import daemon
+        atomic_write(self.root/'incidents.json', {'version': 1, 'updated_at': 0, 'incidents': []})
+        sent = []
+        def send(destination, row, *args):
+            sent.append((row['state'], row['revision']))
+            return NotificationResult('gmail', True, 'fixture')
+        with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
+              patch.object(daemon, 'read_disks', return_value=[]),
+              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0))):
+            for now in range(1000, 4781, 15):
+                self.now = now
+                lost = 1180 <= now <= 2965
+                value = replace(metrics(now), psi_some_avg60=None if lost else 50 if now <= 1030 else 0,
+                                psi_full_avg60=None if lost else 25 if now <= 1030 else 0,
+                                psi_status='error' if lost else 'normal')
+                with patch.object(daemon, 'read_system_metrics', return_value=value):
+                    daemon.sample(self.settings, incident_mode=True, shared_dir=self.shared)
+                self.engine.tick(send=send)
+                if now < 4780:
+                    self.assertNotIn(('resolved', 2), sent)
+        self.assertEqual(sent, [('active', 1)] * 2 + [('resolved', 2)] * 2)
+
     def test_partial_delivery_preserved_and_only_failed_destination_retries(self):
         self.engine.tick(send=self.send)
         states=[d['status'] for d in self.ledger()['events'][self.row['id']]['destinations'].values()]
@@ -324,7 +455,9 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual((len(store['incidents']),row['id'],row['revision'],row['recurrences']),(1,self.row['id'],1,2))
         self.assertEqual(len(self.calls),2)  # No new alert, no early recovery notice.
         quiet=row['resolved_at']+RECURRENCE_MERGE_SECONDS
-        store=reconcile(store,[],snap,metrics(quiet),self.settings,boot='test')
+        while store['updated_at'] < quiet:
+            stamp=min(quiet,store['updated_at']+15)
+            store=reconcile(store,[],snap,metrics(stamp),self.settings,boot='test')
         self.now=quiet;atomic_write(self.root/'incidents.json',store);seen=[]
         self.engine.tick(send=lambda destination,row,*rest:(seen.append((row['state'],row['revision'])) or NotificationResult('gmail',True,'accepted')))
         self.assertEqual(seen,[('resolved',2),('resolved',2)])

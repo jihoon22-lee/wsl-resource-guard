@@ -182,7 +182,7 @@ class ControllerTests(unittest.TestCase):
         atomic_json(self.path, self.data)
         self.controller.unit_state = Mock(return_value={'ActiveState': 'active'})
         self.controller.check_health(probe=lambda url: {'ok': False, 'status': 502,
-                                                        'error': 'HTTP 502', 'checked_at': 1})
+                                                        'error': 'HTTP 502', 'checked_at': time.time()})
         row = self.controller.snapshot()['services'][0]
         self.assertEqual(row['health']['status'], 502)
         self.assertNotIn('url', row['health'])
@@ -199,6 +199,65 @@ class ControllerTests(unittest.TestCase):
         probed = []
         self.controller.check_health(probe=lambda url: probed.append(url) or {'ok': True})
         self.assertEqual(probed, ['https://test:7100/'])
+
+    def test_http_protocol_error_is_a_failure_without_raw_response(self):
+        import http.client
+        for error in (http.client.BadStatusLine('private response'), http.client.RemoteDisconnected()):
+            with self.subTest(error=type(error).__name__):
+                result = service_control.probe_url('https://test/', Mock(side_effect=error))
+                self.assertIs(result['ok'], False)
+                self.assertNotIn('private', json.dumps(result))
+
+    def test_one_probe_exception_does_not_keep_success_or_skip_later_apps(self):
+        self.data['services'] = [dict(self.entry, id=name, url=f'https://test:8080/{name}')
+                                 for name in ('broken', 'working')]
+        atomic_json(self.path, self.data)
+        self.controller.check_health(probe=lambda url: {'ok': True, 'checked_at': time.time()})
+        probe = Mock(side_effect=[RuntimeError('private'), {'ok': True, 'checked_at': time.time()}])
+        self.controller.check_health(probe)
+        rows = self.controller.snapshot()['services']
+        self.assertEqual(probe.call_count, 2)
+        self.assertIs(rows[0]['health']['ok'], False)
+        self.assertIs(rows[1]['health']['ok'], True)
+        self.assertNotIn('private', json.dumps(rows))
+
+    def test_http_health_expires_and_rejects_future_observations(self):
+        self.entry['url'] = 'https://test:8080/'
+        atomic_json(self.path, self.data)
+        with patch.object(service_control.time, 'time', return_value=1000):
+            self.controller.check_health(probe=lambda url: {'ok': True, 'status': 200, 'checked_at': 1000})
+        for now, fresh in ((1180, True), (1181, False), (999, False)):
+            with self.subTest(now=now), patch.object(service_control.time, 'time', return_value=now):
+                self.controller._invalidate_snapshot()
+                health = self.controller.snapshot()['services'][0]['health']
+                self.assertIs(health['ok'], True if fresh else None)
+                self.assertEqual(bool(health.get('stale')), not fresh)
+
+    def test_http_health_is_bound_to_the_service_execution(self):
+        for kind in ('systemd', 'compose'):
+            with self.subTest(kind=kind):
+                self.entry.update(kind=kind, url='https://test:8080/')
+                atomic_json(self.path, self.data)
+                state = {'ActiveState': 'active', 'InvocationID': 'first'}
+                group = [container()]
+                group[0]['state']['StartedAt'] = 'first'
+                self.controller.unit_state = Mock(return_value=state)
+                self.controller.containers.return_value = group
+                self.controller.check_health(probe=lambda url: {'ok': True, 'checked_at': time.time()})
+                self.assertIs(self.controller.snapshot()['services'][0]['health']['ok'], True)
+                state['InvocationID'] = 'second'
+                group[0]['state']['StartedAt'] = 'second'
+                self.controller._invalidate_snapshot()
+                health = self.controller.snapshot()['services'][0]['health']
+                self.assertIsNone(health['ok'])
+                self.assertNotIn('_runtime', health)
+
+    def test_restart_invalidates_http_health_before_the_next_probe(self):
+        self.entry['url'] = 'https://test:8080/'
+        atomic_json(self.path, self.data)
+        self.controller.check_health(probe=lambda url: {'ok': True, 'checked_at': time.time()})
+        self.controller.act(self.entry['id'], 'restart')
+        self.assertNotIn('health', self.controller.snapshot()['services'][0])
 
     def test_probe_url_classifies_answers(self):
         import urllib.error
@@ -550,6 +609,32 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(kept), 201)
         self.assertEqual(json.loads(kept[0])['n'], 400)
         self.assertEqual(json.loads(kept[-1])['op'], 'action')
+
+    def test_monitor_summary_and_incidents_share_the_sampling_freshness_limit(self):
+        from dataclasses import asdict
+        from wsl_resource_guard.config import Settings
+        from wsl_resource_guard.processes import ProcessSnapshot
+        for interval in (15, 60, 300, 600):
+            limit = max(60, interval * 3)
+            for age in (interval, limit, limit + 1, -1):
+                with self.subTest(interval=interval, age=age):
+                    settings = Settings(state_dir=self.temp.name, interval_seconds=interval)
+                    context = {'settings': asdict(settings), 'channels': {},
+                               'state': {'updated_at': 10000 - age, 'metrics': {'mem_total_kib': 100}}}
+                    self.controller._monitor_cache = {}
+                    with (patch.object(self.controller, '_owner_context', return_value=context),
+                          patch.object(self.controller, '_owner_read', return_value={
+                              'updated_at': 10000 - age, 'incidents': []}),
+                          patch('wsl_resource_guard.service_control.time.time', return_value=10000),
+                          patch('wsl_resource_guard.processes.build_snapshot',
+                                return_value=ProcessSnapshot({}, [], [], {}, {}))):
+                        monitor = self.controller.monitor()
+                        summary = self.controller.summary()
+                        incidents = self.controller.incidents()
+                    self.assertEqual(monitor['stale_after_seconds'], limit)
+                    self.assertEqual(summary['stale_after_seconds'], limit)
+                    self.assertEqual(monitor['daemon_updated_at'], summary['updated_at'])
+                    self.assertEqual(incidents['stale'], not 0 <= age <= limit)
 
     def test_monitor_exposes_channel_errors(self):
         from wsl_resource_guard.config import Settings

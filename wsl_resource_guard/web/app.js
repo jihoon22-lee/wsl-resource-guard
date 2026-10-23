@@ -505,7 +505,7 @@ function renderOverview() {
     m = d.metrics,
     available = m.mem_available_kib,
     swap = m.swap_total_kib - m.swap_free_kib,
-    stale = observationIsStale(d.daemon_updated_at);
+    stale = observationIsStale(d.daemon_updated_at, d.stale_after_seconds);
   const staleMin =
     stale && d.daemon_updated_at
       ? Math.max(1, Math.floor((Date.now() / 1000 - d.daemon_updated_at) / 60))
@@ -638,7 +638,7 @@ function renderOverview() {
       serviceProblems
         .map(
           (s) =>
-            `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">${esc(s.health.kind === "paseo" ? healthDescription(s.health) : `웹 응답 없음 · ${s.health.error || ""}`)}</div>` : ""}</div>${pill(s.state)}</div>`,
+            `<div class="mini-row"><div>${esc(s.name)}<small>자동 실행 ${s.autostart ? "켜짐" : "꺼짐"}</small>${s.error ? `<div class="row-error">${esc(s.error)}</div>` : ""}${s.state === "active" && s.health && !s.health.ok ? `<div class="row-error">${esc(healthDescription(s.health))}</div>` : ""}</div>${pill(s.state)}</div>`,
         )
         .join("") || `<div class="empty">${loaded.services ? "모든 앱이 설정대로 동작 중입니다" : "서비스 상태를 아직 확인하지 못했습니다"}</div>`
     }</div></div></div>
@@ -697,7 +697,9 @@ function memoryLimit(s) {
   return `<div class="limit ${tone}" title="systemd 메모리 한도"><div class="meter"><span data-percent="${clampPercent((used / limit) * 100)}"></span>${mark}</div><span class="subline">${esc(parts.join(" · "))}</span></div>`;
 }
 function healthDescription(h) {
-  if (h?.kind !== "paseo") return h?.ok ? `웹 응답 정상 (HTTP ${h.status})` : `웹 응답 확인 실패: ${h?.error || ""}`;
+  if (h?.kind !== "paseo") return h?.ok === true ? `웹 응답 정상 (HTTP ${h.status})`
+    : h?.ok == null ? `웹 응답 미확인: ${h?.error || "검사 대기 중"}`
+    : `웹 응답 확인 실패: ${h?.error || ""}`;
   const labels = { http: "HTTP", local: "로컬 연결", relay: "릴레이 연결" };
   const states = { ok: "정상", failed: "실패", unknown: "미확인", disabled: "꺼짐" };
   const facts = Object.entries(labels).map(([key, label]) => {
@@ -718,6 +720,8 @@ function healthPill(h) {
       return `<span class="pill ${tone} health" title="${esc(`${healthDescription(h)} · ${when_}`)}">${label} ${h.stale ? "오래됨" : states[state] || "미확인"}</span>`;
     }).join(" ");
   }
+  if (h.ok == null)
+    return `<span class="pill warn health" title="${esc(`${healthDescription(h)} · ${when_}`)}">${h.stale ? "응답 오래됨" : "응답 미확인"}</span>`;
   return h.ok
     ? `<span class="pill good health" title="${esc(`HTTP ${h.status} · ${h.latency_ms ?? "?"}ms · ${when_}`)}">응답 정상</span>`
     : `<span class="pill bad health" title="${esc(`${h.error || "응답 없음"} · ${when_}`)}">응답 없음</span>`;
@@ -2083,9 +2087,11 @@ function render() {
 // Menu badges: where attention is needed, without opening each view. Fed
 // by whatever data is loaded plus the live summary stream (see liveSummary).
 let liveSummary = null;
-function observationIsStale(timestamp) {
+function observationIsStale(timestamp, staleAfter = 60) {
   const stamp = Number(timestamp), now = Date.now() / 1000;
-  return !Number.isFinite(stamp) || stamp <= 0 || stamp > now + 5 || now - stamp > 90;
+  const limit = Number(staleAfter);
+  return !Number.isFinite(stamp) || stamp <= 0 || stamp > now ||
+    now - stamp > (Number.isFinite(limit) && limit > 0 ? limit : 60);
 }
 function observationCanReplace(incoming, previous) {
   const next = Number(incoming) || 0, cached = Number(previous) || 0;
@@ -2096,8 +2102,8 @@ function observationCanReplace(incoming, previous) {
   return !next || !cached || cached > now + 5 || next >= cached;
 }
 function currentResourceSeverity() {
-  const liveAt = observationIsStale(liveSummary?.updated_at) ? 0 : Number(liveSummary.updated_at);
-  const pollAt = observationIsStale(monitorData?.daemon_updated_at) ? 0 : Number(monitorData.daemon_updated_at);
+  const liveAt = observationIsStale(liveSummary?.updated_at, liveSummary?.stale_after_seconds) ? 0 : Number(liveSummary.updated_at);
+  const pollAt = observationIsStale(monitorData?.daemon_updated_at, monitorData?.stale_after_seconds) ? 0 : Number(monitorData.daemon_updated_at);
   const source = liveAt > pollAt ? liveSummary : monitorData;
   if (!source || !(liveAt || pollAt)) return "unknown";
   return source.severity || "unknown";
@@ -2547,7 +2553,7 @@ function manageService(id) {
   const facts = [
     `${row.detail} · 자동 실행 ${row.autostart ? "켜짐" : "꺼짐"}`,
     row.memory_bytes != null ? `메모리 ${memory(row.memory_bytes)}${row.memory_high ? ` · High ${memory(row.memory_high)}` : ""}${row.memory_max ? ` · Max ${memory(row.memory_max)}` : ""}` : "",
-    row.health ? `${row.health.kind === "paseo" ? healthDescription(row.health) : `웹 응답 ${row.health.ok ? `정상 (HTTP ${row.health.status})` : `없음 — ${row.health.error || ""}`}`} · ${when(row.health.checked_at)}` : "",
+    row.health ? `${healthDescription(row.health)} · ${when(row.health.checked_at)}` : "",
     row.health?.kind === "paseo" ? "릴레이 검사는 서버에서 확인한 결과입니다. 모바일 단말 접속 여부와는 별개입니다." : "",
     row.restart_count != null ? `서비스 자동 재시작 ${row.restart_count}회` : "",
     row.notice,
