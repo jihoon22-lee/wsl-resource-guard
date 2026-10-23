@@ -9,6 +9,7 @@ import time
 
 KIB_PER_GIB = 1024 * 1024
 POWERSHELL = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+HOST_MEMORY_TIMEOUT_SECONDS = 15
 
 
 @dataclass(slots=True)
@@ -150,23 +151,27 @@ def read_host_memory(
     last_try = previous_attempt if 0 < previous_attempt <= now else previous_at
     if not force and 0 < last_try <= now and now - last_try < interval:
         return keep, previous_at, previous_attempt
-    if not POWERSHELL.exists():
-        return keep, previous_at, now
     try:
-        completed = subprocess.run(
-            [
-                str(POWERSHELL), "-NoProfile", "-NonInteractive", "-Command",
-                "(Get-Process vmmem* -ErrorAction SilentlyContinue | "
-                "Measure-Object WorkingSet64 -Sum).Sum",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        text = completed.stdout.strip()
-        if completed.returncode == 0 and text:
-            return int(float(text)), now, now
+        # stat/exec on the Windows mount can block before subprocess's own
+        # timeout starts. Bound the whole operation, with at most one in flight.
+        from .disks import bounded_probe
+        value = bounded_probe('host-memory', _collect_host_memory,
+                              timeout=HOST_MEMORY_TIMEOUT_SECONDS)
+        if value is not None:
+            return value, now, now
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return keep, previous_at, now
+
+
+def _collect_host_memory() -> int | None:
+    if not POWERSHELL.exists():
+        return None
+    completed = subprocess.run(
+        [str(POWERSHELL), "-NoProfile", "-NonInteractive", "-Command",
+         "(Get-Process vmmem* -ErrorAction SilentlyContinue | "
+         "Measure-Object WorkingSet64 -Sum).Sum"],
+        capture_output=True, text=True, timeout=HOST_MEMORY_TIMEOUT_SECONDS, check=False,
+    )
+    text = completed.stdout.strip()
+    return int(float(text)) if completed.returncode == 0 and text else None

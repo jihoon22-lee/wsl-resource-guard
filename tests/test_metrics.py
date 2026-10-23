@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -77,6 +78,50 @@ class MetricsTests(unittest.TestCase):
 
 
 class HostMemoryTests(unittest.TestCase):
+    def test_entire_host_probe_is_bounded_and_not_duplicated(self) -> None:
+        from wsl_resource_guard import metrics
+        for stalled in ('exists', 'run'):
+            with self.subTest(stalled=stalled):
+                entered, release = threading.Event(), threading.Event()
+                result = []
+                completed = subprocess.CompletedProcess([], 0, stdout='42\n', stderr='')
+
+                def block(value):
+                    entered.set()
+                    release.wait(2)
+                    return value
+
+                with (patch.object(metrics, 'POWERSHELL') as ps,
+                      patch.object(metrics.subprocess, 'run', return_value=completed) as run,
+                      patch.object(metrics, 'HOST_MEMORY_TIMEOUT_SECONDS', .04, create=True)):
+                    ps.exists.return_value = True
+                    if stalled == 'exists':
+                        ps.exists.side_effect = lambda: block(True)
+                    else:
+                        run.side_effect = lambda *a, **kw: block(completed)
+                    caller = threading.Thread(target=lambda: result.append(read_host_memory(1234, 50, force=True)))
+                    caller.start()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        caller.join(.5)
+                        self.assertFalse(caller.is_alive(), 'host I/O must not hold the sampler')
+                        self.assertEqual(result[0][:2], (1234, 50))
+                        self.assertGreater(result[0][2], 50)
+                        self.assertEqual(read_host_memory(1234, 50, force=True)[:2], (1234, 50))
+                        self.assertEqual(ps.exists.call_count, 1)
+                        self.assertEqual(run.call_count, 0 if stalled == 'exists' else 1)
+                    finally:
+                        release.set()
+                        caller.join(3)
+                        # Join our blocked probe before restoring its mocked dependencies.
+                        from wsl_resource_guard.disks import _PROBES
+                        probe = _PROBES.get('host-memory')
+                        if probe:
+                            probe.join(3)
+                    ps.exists.side_effect = None
+                    run.side_effect = None
+                    self.assertEqual(read_host_memory(force=True)[0], 42)
+
     def test_parses_powershell_sum(self) -> None:
         completed = subprocess.CompletedProcess([], 0, stdout="7000000000\n", stderr="")
         with (
