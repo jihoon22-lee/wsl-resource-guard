@@ -2551,7 +2551,7 @@ function manageService(id) {
   const facts = [
     `${row.detail} · 자동 실행 ${row.autostart ? "켜짐" : "꺼짐"}`,
     row.memory_bytes != null ? `메모리 ${memory(row.memory_bytes)}${row.memory_high ? ` · High ${memory(row.memory_high)}` : ""}${row.memory_max ? ` · Max ${memory(row.memory_max)}` : ""}` : "",
-    row.health ? `${row.health.kind === "paseo" ? healthDescription(row.health) : `웹 응답 ${row.health.ok ? `정상 (HTTP ${row.health.status})` : `없음 — ${row.health.error || ""}`}`} · ${when(row.health.checked_at)}` : "",
+    row.health ? `${healthDescription(row.health)} · ${when(row.health.checked_at)}` : "",
     row.health?.kind === "paseo" ? "릴레이 검사는 서버에서 확인한 결과입니다. 모바일 단말 접속 여부와는 별개입니다." : "",
     row.restart_count != null ? `서비스 자동 재시작 ${row.restart_count}회` : "",
     row.notice,

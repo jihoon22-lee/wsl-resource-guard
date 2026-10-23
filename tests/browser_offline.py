@@ -417,7 +417,7 @@ def check_overview_alert_banner(page) -> None:
     expect(mini).to_contain_text('start-limit-hit')
     # Demo runs, but its web health probe fails: it needs attention too.
     expect(mini).to_contain_text('Demo')
-    expect(mini).to_contain_text('웹 응답 없음 · HTTP 502')
+    expect(mini).to_contain_text('웹 응답 확인 실패: HTTP 502')
     assert 'Devin Web' not in mini.inner_text(), mini.inner_text()
 
 
@@ -473,7 +473,7 @@ def check_service_limits_health_and_dialog(page) -> None:
     assert start.get_attribute('title') == '이미 실행 중입니다'
     expect(page.locator('#dialog-content [data-action="restart"]')).to_be_enabled()
     expect(page.locator('#dialog-content [data-action="autostart-on"]')).to_be_disabled()
-    expect(page.locator('#dialog-content .dialog-text')).to_contain_text('웹 응답 없음')
+    expect(page.locator('#dialog-content .dialog-text')).to_contain_text('웹 응답 확인 실패: HTTP 502')
     page.keyboard.press('Escape')
     # Log axis toggle re-renders the chart and remembers the choice.
     toggle = page.locator('#service-memory-chart [data-chart-scale]')
@@ -1151,27 +1151,30 @@ def check_legend_shown_count(page, overrides: dict) -> None:
 def check_service_card_text_geometry(page) -> None:
     if page.viewport_size['width'] > 1000:
         return
-    rows = page.locator('#services-list .services-table tbody tr')
-    for row in rows.all():
-        title = row.locator('td').first
-        name = title.locator('strong')
-        if not name.count():
-            continue
-        geometry = title.evaluate("""e => {
+    expect(page.locator('#refresh')).to_be_enabled()
+    geometries = page.evaluate("""() => Array.from(
+      document.querySelectorAll('#services-list .services-table tbody tr'), row => {
+          const e = row.querySelector('td'), name = e?.querySelector('strong');
+          if (!name) return null;
           const box = e.getBoundingClientRect();
           const range = document.createRange();
-          range.selectNodeContents(e.querySelector('strong'));
+          range.selectNodeContents(name);
           const text = range.getBoundingClientRect();
-          return {width:box.width, rowWidth:e.parentElement.getBoundingClientRect().width,
+          return {connected:row.isConnected, width:box.width, rowWidth:row.getBoundingClientRect().width,
                   left:box.left, right:box.right, textLeft:text.left, textRight:text.right,
-                  textWidth:text.width, label:e.innerText};
-        }""")
+                  textWidth:text.width, label:e.innerText,
+                  cells:Array.from(row.querySelectorAll('td'), cell => ({
+                    width:cell.clientWidth, scrollWidth:cell.scrollWidth, label:cell.innerText}))};
+        }).filter(Boolean)""")
+    assert geometries, 'No service cards to measure'
+    for geometry in geometries:
+        assert geometry['connected'], geometry
         assert geometry['width'] >= geometry['rowWidth'] - 8, geometry
         assert geometry['textWidth'] > 0, geometry
         assert geometry['textLeft'] >= geometry['left'] - 1, geometry
         assert geometry['textRight'] <= geometry['right'] + 1, geometry
-        for cell in row.locator('td').all():
-            assert cell.evaluate('e => e.scrollWidth <= e.clientWidth + 1'), cell.inner_text()
+        for cell in geometry['cells']:
+            assert cell['scrollWidth'] <= cell['width'] + 1, cell
 
 
 def check_http_health_freshness(page, overrides: dict) -> None:
@@ -1187,6 +1190,10 @@ def check_http_health_freshness(page, overrides: dict) -> None:
             page.reload()
             expect(page.locator('#services-list .health')).to_have_text(label)
             expect(page.locator('#services-list .health.good')).to_have_count(0)
+            page.locator('#services-list [data-manage]').click()
+            expect(page.locator('#dialog-content')).to_contain_text('웹 응답 미확인')
+            expect(page.locator('#dialog-content')).not_to_contain_text('웹 응답 확인 실패')
+            page.locator('#dialog-close').click()
             page.goto(ORIGIN + '/#overview')
             expect(page.locator('#overview-services')).to_contain_text('웹 응답 미확인')
             expect(page.locator('#overview-services')).not_to_contain_text('웹 응답 없음')
