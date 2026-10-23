@@ -151,10 +151,13 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         targets = _targets(condition, snapshot)
         # The top-session target list is refreshed in place; only a new or
         # escalated incident is a new revision that may re-alert or end a defer.
-        changed = ((not recurred and row['state'] not in ('active', 'resolving'))
-                   or row['severity'] != condition['severity'])
-        if changed:
+        severity_changed = row['severity'] != condition['severity']
+        ranks = {'warning': 1, 'critical': 2}
+        new_revision = (row['revision'] == 0
+                        or ranks.get(condition['severity'], 0) > ranks.get(row['severity'], 0))
+        if new_revision:
             row['revision'] += 1
+        if not recurred and (new_revision or severity_changed or row['state'] == 'unknown'):
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'active',
                                     'severity': condition['severity']}])[-16:]
         measurement = _measurement(condition, snapshot, metrics, settings)

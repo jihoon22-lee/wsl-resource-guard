@@ -211,6 +211,21 @@ class IncidentTests(unittest.TestCase):
         again=self.update(done,[condition('critical.mcp_total','critical')],1060)['incidents'][0]
         self.assertEqual((again['id'],again['severity'],again['revision']),(first['incidents'][0]['id'],'critical',2))
 
+    def test_downgrade_keeps_revision_but_records_the_new_severity(self):
+        first = self.update({}, [condition('critical.available_ram', 'critical')], 1000)
+        down = self.update(first, [condition('warning.available_ram')], 1015)
+        row = down['incidents'][0]
+        self.assertEqual((row['severity'], row['revision']), ('warning', 1))
+        self.assertEqual(row['transitions'][-1]['severity'], 'warning')
+        up = self.update(down, [condition('critical.available_ram', 'critical')], 1030)
+        self.assertEqual(up['incidents'][0]['revision'], 2)
+
+    def test_lower_severity_recurrence_preserves_the_original_revision(self):
+        first = self.update({}, [condition('critical.available_ram', 'critical')], 1000)
+        done = self.update(self.update(first, [], 1015), [], 1045)
+        again = self.update(done, [condition('warning.available_ram')], 1060)['incidents'][0]
+        self.assertEqual((again['id'], again['revision']), (first['incidents'][0]['id'], 1))
+
     def test_legacy_resolved_record_is_neither_reannounced_nor_reopened(self):
         first,_=self.resolved()
         legacy=copy.deepcopy(first);legacy['incidents'][0].update(state='resolved',resolved_at=1045,revision=2)
@@ -326,6 +341,36 @@ class DeliveryTests(unittest.TestCase):
         return NotificationResult('gmail',destination['recipient'].startswith('one'),'fixture')
 
     def ledger(self):return json.loads((self.root/'delivery.json').read_text())
+
+    def test_sampler_downgrade_preserves_defer_and_reminder_but_escalation_alerts(self):
+        from wsl_resource_guard import daemon
+        for deferred in (False, True):
+            with self.subTest(deferred=deferred):
+                for name in ('delivery.json', 'state.json', 'incidents.json'):
+                    (self.root/name).unlink(missing_ok=True)
+                (self.shared/'incident-decisions.json').unlink(missing_ok=True)
+                sent = []
+                def send(destination, row, *args):
+                    sent.append((row['severity'], row['revision']))
+                    return NotificationResult('gmail', True, 'fixture')
+                with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
+                      patch.object(daemon, 'read_disks', return_value=[]),
+                      patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0))):
+                    for now, available in ((1000, 1), (1015, 3), (1030, 3), (1045, 3), (1060, 1)):
+                        self.now = now
+                        with patch.object(daemon, 'read_system_metrics', return_value=metrics(now, available)):
+                            daemon.sample(self.settings, incident_mode=True, shared_dir=self.shared)
+                        row = read_store(self.root/'incidents.json')['incidents'][0]
+                        self.engine.tick(send=send)
+                        if now == 1000:
+                            reminder = self.ledger()['events'][row['id']]['next_reminder_at']
+                            if deferred:
+                                atomic_write(self.shared/'incident-decisions.json', {row['id']: {
+                                    'choice': 'defer', 'at': now, 'until': 4600, 'revision': row['revision']}})
+                        if now == 1045:
+                            self.assertEqual(sent, [('critical', 1)] * 2)
+                            self.assertEqual(self.ledger()['events'][row['id']]['next_reminder_at'], reminder)
+                    self.assertEqual(sent, [('critical', 1)] * 2 + [('critical', 2)] * 2)
 
     def test_sampler_to_delivery_waits_for_observed_recovery_after_psi_failure(self):
         from wsl_resource_guard import daemon
