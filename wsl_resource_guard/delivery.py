@@ -27,27 +27,45 @@ def destination_id(channel: str, value: str = '') -> str:
 def merge_delivery_summary(state: dict, state_path: Path) -> dict:
     """Present the new worker's outcomes without letting it write the sampler's state.json."""
     ledger = read_json(state_path / 'delivery.json', None)
-    if ledger is None:
+    scheduled = read_json(state_path / 'scheduled-delivery.json', {})
+    if ledger is None and not scheduled:
         return state
     latest = {}
-    for event in ledger.get('events', {}).values():
+    mail = []
+    for event in (ledger or {}).get('events', {}).values():
         for key, row in event.get('destinations', {}).items():
+            if row['channel'] == 'gmail':
+                mail.append(row)
             if row.get('attempted_at', 0) >= latest.get(key, {}).get('attempted_at', 0):
                 latest[key] = row
     state = dict(state)
     errors = {}
     for row in latest.values():
-        if row['status'] in ('retry', 'failed', 'unknown'):
+        if row['status'] in ('retry', 'failed', 'unknown', 'sending'):
             errors[row['channel']] = '일부 전달 실패 또는 접수 여부 미확인 · 경보 상세에서 기기별 상태를 확인하세요.'
+    if scheduled.get('status') in ('failed', 'unknown'):
+        detail = ('정기 이메일 전송 실패.' if scheduled['status'] == 'failed' else
+                  '정기 이메일 접수 여부 미확인. 중복 발송을 피하기 위해 자동 재전송하지 않습니다.')
+        errors['gmail'] = (errors.get('gmail', '') + ' ' + detail).strip()
     state['last_channel_errors'] = errors
-    state['last_alert'] = max((r.get('attempted_at', 0) for r in latest.values()), default=state.get('last_alert', 0))
-    mail = [r for r in latest.values() if r['channel'] == 'gmail']
-    state['last_email_status'] = max((r.get('attempted_at', 0) for r in mail), default=state.get('last_email_status', 0))
-    state['last_email_success'] = max((r.get('finished_at', 0) for r in mail if r['status'] == 'accepted'), default=state.get('last_email_success', 0))
-    scheduled = read_json(state_path / 'scheduled-delivery.json', {})
+    state['last_alert'] = max([state.get('last_alert', 0)] + [r.get('attempted_at', 0) for r in latest.values()])
+    attempted, succeeded = _scheduled_times(scheduled)
+    state['last_email_status'] = max([state.get('last_email_status', 0), attempted]
+                                    + [r.get('attempted_at', 0) for r in mail])
+    state['last_email_success'] = max([state.get('last_email_success', 0), succeeded]
+                                     + [r.get('finished_at', 0) for r in mail if r['status'] == 'accepted'])
     if scheduled.get('slot'):
         state['last_email_hour_slot'] = scheduled['slot']
     return state
+
+
+def _scheduled_times(record):
+    """Read both durable timestamps and the previous single-slot format."""
+    attempted = max(record.get('last_attempt_at', 0),
+                    record.get('attempted_at', 0) if record.get('status') != 'skipped' else 0)
+    succeeded = max(record.get('last_success_at', 0),
+                    record.get('finished_at', 0) if record.get('status') == 'accepted' else 0)
+    return attempted, succeeded
 
 
 class Delivery:
@@ -211,15 +229,27 @@ class Delivery:
         observed = state.get('updated_at', 0)
         if not observed or not 0 <= now - observed <= max(60, self.settings.interval_seconds * 3):
             return
-        record.update(slot=email_heartbeat_slot(now, self.settings), attempted_at=now, status='unknown')
+        last_attempt, last_success = _scheduled_times(record)
+        record.update(slot=email_heartbeat_slot(now, self.settings), attempted_at=now, status='unknown',
+                      last_attempt_at=now, last_success_at=last_success, finished_at=0)
         atomic_write(path, record)
         origin = read_json(self.shared / 'dashboard.json', {}).get('origin', '')
         text = ('WSL 정기 상태\n관측 시각: ' + datetime.fromtimestamp(observed).astimezone().isoformat(timespec='seconds')
                 + '\n상태: ' + str(state.get('severity', 'unknown')) + '\n' + '\n'.join(state.get('reasons', []))
                 + '\nTailscale 연결 후 경보별 원인과 영향을 확인하세요.\n' + str(origin) + '/#alerts')
-        results = Notifier(self.settings, self.shared).send('WSL 정기 상태', text, 'report', channels={'gmail'})
+        try:
+            results = Notifier(self.settings, self.shared).send('WSL 정기 상태', text, 'report', channels={'gmail'})
+        except Exception as exc:
+            results = [NotificationResult('gmail', False, type(exc).__name__)]
         result = next((r for r in results if r.channel == 'gmail'), None)
-        record.update(status='accepted' if result and result.sent else 'failed', finished_at=self.clock())
+        ambiguous = result and any(word in result.detail for word in ('Timeout', 'timed out', 'Disconnected'))
+        status = ('accepted' if result and result.sent else 'skipped' if not result or result.skipped else
+                  'unknown' if ambiguous else 'failed')
+        record.update(status=status, finished_at=self.clock())
+        if status == 'accepted':
+            record['last_success_at'] = record['finished_at']
+        elif status == 'skipped':
+            record.update(attempted_at=0, last_attempt_at=last_attempt)
         atomic_write(path, record)
 
     def _save(self, ledger):
