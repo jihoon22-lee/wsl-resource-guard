@@ -6,11 +6,13 @@ import hashlib
 import io
 import json
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -28,13 +30,16 @@ ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGEL
               'workthrough/2026-10-18-review-remediation.md',
               'workthrough/2026-10-18-maintenance-followup.md',
               'workthrough/2026-10-19-recommended-improvements.md',
+              'workthrough/2026-10-22-release-0.2.3.md',
+              'workthrough/2026-10-23-five-stage-code-review.md',
+              'workthrough/2026-10-23-review-remediation.md',
               'pyproject.toml', 'uv.lock', 'install-user.sh',
               'install-root.sh', 'install-services.sh', '.github/workflows/checks.yml',
               '.github/workflows/release.yml', '.github/workflows/ci.yml',
               '.github/workflows/public-checks.yml', '.github/dependabot.yml'}
 PREFIXES = ('bin/', 'wsl_resource_guard/', 'config/', 'packaging/', 'tests/', 'scripts/')
 DOCS = {'docs/installation.md', 'docs/usage.md', 'docs/configuration.md',
-        'docs/architecture.md', 'docs/operations.md'}
+        'docs/architecture.md', 'docs/operations.md', 'docs/paseo.md'}
 
 
 def git(*args):
@@ -78,6 +83,22 @@ def build(output: Path, ref='HEAD') -> Path:
     return archive
 
 
+def verify_documentation(source: Path):
+    """Check inline/image and reference targets against the extracted inventory."""
+    destination = r'(?:<([^>]+)>|([^\s)]+))'
+    inline = re.compile(r'\]\(\s*' + destination + r'''(?:\s+["'][^"']*["'])?\s*\)''')
+    reference = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*' + destination, re.M)
+    for path in source.rglob('*.md'):
+        text = path.read_text()
+        for angle, bare in inline.findall(text) + reference.findall(text):
+            url = urlsplit(angle or bare)
+            if url.scheme or url.netloc or not url.path or url.path.startswith('/'):
+                continue
+            target = (path.parent / unquote(url.path)).resolve()
+            if not target.is_relative_to(source.resolve()) or not target.exists():
+                raise ValueError(f'Missing relative documentation target: {path.relative_to(source)} -> {url.path}')
+
+
 def verify(archive: Path):
     with tempfile.TemporaryDirectory(prefix='wrg-release-') as directory:
         root = Path(directory)
@@ -105,6 +126,7 @@ def verify(archive: Path):
         actual = {str(p.relative_to(source)) for p in source.rglob('*') if p.is_file()}
         if actual != set(manifest['files']) | {'SOURCE.json'}:
             raise ValueError('Archive inventory differs from manifest')
+        verify_documentation(source)
         subprocess.run([sys.executable, str(source / 'bin/wrg'), '--help'], cwd=source,
                        check=True, stdout=subprocess.DEVNULL)
         print('Verified archive:', revision['version'], revision['commit'])

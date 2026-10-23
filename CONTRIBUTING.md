@@ -77,3 +77,4 @@ python3 scripts/release.py verify dist/wsl-resource-guard-0.2.3.tar.gz
 
 빌드는 Git의 커밋된 파일을 사용하므로 미커밋 변경은 배포 파일에 포함되지 않습니다.
 `SOURCE.json`은 버전·커밋·내용 해시이며 서명이 아닙니다. 같은 입력의 압축본 재현성과 게시 후 다운로드 체크섬을 확인합니다.
+압축본 검증은 동봉 Markdown의 상대 링크도 확인합니다. 새 안내나 작업 기록을 링크하면 `scripts/release.py`의 허용 목록에도 포함하세요.
