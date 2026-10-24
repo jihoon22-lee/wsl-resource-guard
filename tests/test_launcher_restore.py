@@ -144,9 +144,10 @@ class LauncherTests(unittest.TestCase):
 
     def test_drop_in_matches_the_conditions_checked(self):
         lines = self.controller.launch_dropin('compose-demo').splitlines()
-        self.assertEqual(lines[0], '[Unit]')
+        self.assertTrue(all(line.startswith('# ') for line in lines[:3]))
+        self.assertEqual(lines[3], '[Unit]')
         parsed = []
-        for line in lines[1:]:
+        for line in lines[4:]:
             value = line.split('=', 1)[1]
             parsed.append(['ConditionPathExists', value.startswith('|'), value.startswith('!'), value.lstrip('|!')])
         self.assertEqual(parsed, self.conditions)

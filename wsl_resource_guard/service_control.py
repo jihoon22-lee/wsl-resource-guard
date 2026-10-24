@@ -507,8 +507,13 @@ class Controller:
                 self.launch_runtime / (identifier + '.stop'))
 
     def launch_dropin(self, identifier: str) -> str:
+        # Keep this text byte-stable: an app's own unit tooling may admit the
+        # drop-in only when it matches exactly, comments included.
         autostart, start, stop = self._launch_paths(identifier)
-        return (f'[Unit]\nConditionPathExists=|{autostart}\nConditionPathExists=|{start}\n'
+        return ('# WSL Resource Guard decides whether this startup may run: autostart on, or an\n'
+                '# explicit start in this boot, and not stopped in this boot. Keeps the user\n'
+                '# manager and timers that Require= this unit from bypassing autostart-off.\n'
+                f'[Unit]\nConditionPathExists=|{autostart}\nConditionPathExists=|{start}\n'
                 f'ConditionPathExists=!{stop}\n')
 
     @staticmethod

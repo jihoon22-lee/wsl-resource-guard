@@ -71,7 +71,7 @@ Windows 진입점은 별도 비공개 복구 키트(`E:\recovery`)이며 그 저
 
 - 트리거는 Windows **로그온 시**다. 재부팅 후 로그인하지 않으면 WSL과 서비스가 올라오지 않으며 로그인 전 무인 기동은 구성하지 않았다.
 - PC/WSL 전체 재부팅 실증은 하지 않았다. 실행 시 WSL 안의 모든 작업·SSH·Paseo·원격 연결이 끊기고 Windows 재로그인이 필요하다. 다른 세션 작업이 없을 때 사용자와 시점을 정해 1회 확인한다.
-- SallimBook `4d93c0c` 이후 운영 checkout으로 일정을 다시 설치·활성화하면 `wrg-launch.conf`를 지우지 않고 보존한다. 지금 운영 checkout(`code-v004`)에는 이 변경이 없으므로, 그 checkout으로 재설치하려면 예전처럼 drop-in을 지웠다가 활성화 뒤 다시 넣어야 한다. SallimBook은 현재 파일과 바이트 단위로 같은 내용만 허용한다. drop-in을 다시 만들 때는 이 파일이나 SallimBook `ops/schedule.py`의 `WRG_LAUNCH_CONTENT`를 쓴다. `docs/usage.md` 예시(주석 없음)로 만들면 SallimBook 설치가 거부된다. drop-in이 빠지면 목록과 부팅 복구가 SallimBook을 오류로 보고하고, SallimBook은 자체 enabled unit으로 계속 기동한다.
+- SallimBook `4d93c0c` 이후 운영 checkout으로 일정을 다시 설치·활성화하면 `wrg-launch.conf`를 지우지 않고 보존한다. 지금 운영 checkout(`code-v004`)에는 이 변경이 없으므로, 그 checkout으로 재설치하려면 예전처럼 drop-in을 지웠다가 활성화 뒤 다시 넣어야 한다. SallimBook은 현재 파일과 바이트 단위로 같은 내용만 허용한다. 17:12 등록 안내 문구(`launch_dropin`)와 `docs/usage.md` 예시에 같은 주석 3줄을 넣어, WRG가 안내하는 내용이 지금 파일·SallimBook 허용 내용과 바이트 단위로 같아졌다. drop-in이 빠지면 목록과 부팅 복구가 SallimBook을 오류로 보고하고, SallimBook은 자체 enabled unit으로 계속 기동한다.
 - SallimBook은 별도 Tailscale 노드라 컨트롤러가 HTTP를 검사하지 않는다(같은 호스트만 검사하는 기존 보안 경계). 상태는 컨테이너·healthcheck와 SallimBook 자체 health timer로 확인한다.
 - 자동 실행을 끈 채 SallimBook을 꺼 두면 SallimBook의 health·CVD timer는 실행되지만 서비스를 시작하지 않고 실패로 기록된다.
 - 수동 재적용(`systemctl start wrg-services-restore.service` 또는 Windows 진입점)은 이번 부팅에 직접 켠 자동 실행 꺼짐 앱도 중지한다.
