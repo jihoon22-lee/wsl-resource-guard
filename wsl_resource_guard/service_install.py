@@ -67,11 +67,6 @@ def prepare_shared_dir(path: Path, owner_gid: int) -> None:
     path.chmod(0o750)
 
 
-def disable_legacy_unit(run_func=run) -> None:
-    if (UNIT_DIR / 'devbox-wsl-service-recovery.service').exists():
-        run_func('systemctl', 'disable', 'devbox-wsl-service-recovery.service')
-
-
 def preflight_identity(owner: str, origin: str, login: str,
                        registry: Path = REGISTRY, web_config: Path = WEB_CONFIG) -> None:
     if registry.exists():

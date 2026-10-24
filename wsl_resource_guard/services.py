@@ -56,6 +56,8 @@ def print_status(data: dict) -> None:
     for row in data['services']:
         auto = '켜짐' if row['autostart'] else '꺼짐'
         print(f"{row['id']:<25} {auto:<9} {row.get('state', '?'):<12} {row['name']}")
+        if row.get('launcher'):
+            print(f"  시작 절차: {row['launcher']} ({row.get('launcher_state', '?')})")
         if row.get('error'):
             print('  ! ' + row['error'])
     print(f"\n웹 화면: {data['origin']}")

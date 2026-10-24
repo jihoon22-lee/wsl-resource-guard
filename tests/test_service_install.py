@@ -3,27 +3,13 @@ import pwd
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from wsl_resource_guard.build_info import compare_stamps, read_stamp, source_revision, write_stamp
-from wsl_resource_guard.service_install import disable_legacy_unit, sync_user_library
+from wsl_resource_guard.service_install import sync_user_library
 
 
 class ServiceInstallTests(unittest.TestCase):
-    def test_missing_legacy_unit_is_not_disabled(self) -> None:
-        run = Mock()
-        with patch.object(Path, "exists", return_value=False):
-            disable_legacy_unit(run)
-        run.assert_not_called()
-
-    def test_existing_legacy_unit_is_disabled(self) -> None:
-        run = Mock()
-        with patch.object(Path, "exists", return_value=True):
-            disable_legacy_unit(run)
-        run.assert_called_once_with(
-            "systemctl", "disable", "devbox-wsl-service-recovery.service"
-        )
-
     def test_user_library_receives_every_module_and_a_stamp(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "src"

@@ -64,8 +64,8 @@ jobs:
           node --check wsl_resource_guard/web/theme.js
           node --check wsl_resource_guard/web/sw.js
           node tests/worker_notifications.js
-          shellcheck install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
-          bash -n install-user.sh install-root.sh install-services.sh packaging/devbox-wsl-service-recovery
+          shellcheck install-user.sh install-root.sh install-services.sh
+          bash -n install-user.sh install-root.sh install-services.sh
           python tests/browser_offline.py
           python tests/browser_review_scenarios.py --browser chromium
           python tests/browser_review_scenarios.py --browser webkit

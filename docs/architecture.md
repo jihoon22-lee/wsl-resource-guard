@@ -33,6 +33,8 @@ CLI/guard는 사용자 `.local/lib/wsl-resource-guard`, 웹/컨트롤러는 `/op
 guard가 사용자 state/history를 기록합니다. 중복 guard와 `once`는 동일 상태 디렉터리 잠금을 공유합니다.
 컨트롤러의 등록 정보·감사 이력과 설정 변경 요청은 root 소유 경로에 별도로 저장합니다.
 자동 실행 설정과 현재 active 상태는 독립이며, 등록 삭제가 앱 프로그램·DB 삭제를 의미하지 않습니다.
+시작 절차가 연결된 Compose 프로젝트의 실행 허용 여부는 root 소유 플래그(`/var/lib/wrg-shared/launch`)와 이번 부팅의 표식(`/run/wrg-services/launch`)으로 전달합니다.
+컨트롤러는 소유자 사용자 manager를 D-Bus로 호출할 뿐 소유자 HOME에 쓰지 않으며, unit 이름은 발견된 Compose 프로젝트 이름에서만 만듭니다.
 
 PSI에는 숫자 또는 null과 수집 상태가 있습니다. 집계 시 부분 관측을 표시하며,
 경보 판단의 연속 시간에 관측 실패 시간을 포함하지 않습니다. 과거 데이터는 형식을 유지해 읽습니다.
