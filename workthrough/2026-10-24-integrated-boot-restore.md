@@ -50,7 +50,7 @@ Windows 진입점은 별도 비공개 복구 키트(`E:\recovery`)이며 그 저
 
 ## 검증
 
-- 단위: 새 `tests/test_launcher_restore.py` 34개(연결·거부·자동 실행 전환·시작/중지/재시작·중지 표식·잠금·linger·Docker 시작/실패/비활성·부분 실패·컨테이너 없음·health 대기·중복 실행). 기존 Docker 상태 미지정 테스트 1개를 의도(잠금 대기 실패)에 맞게 수정. 전체 560개 OK(root 전용 2 skip). `check_public.py` 통과.
+- 단위: 새 `tests/test_launcher_restore.py` 37개(연결·거부·자동 실행 전환·시작/중지/재시작·중지 표식·잠금·linger·Docker 시작/실패/비활성·부분 실패·컨테이너 없음·health 대기·중복 실행). 기존 Docker 상태 미지정 테스트 1개를 의도(잠금 대기 실패)에 맞게 수정. 전체 560개 OK(root 전용 2 skip). `check_public.py` 통과.
 - 격리 실기(`tests/integration_launcher.py`): systemd 259 소유자 manager와 Docker에서 alpine 컨테이너 2개와 임시 사용자 unit, 같은 drop-in·`Requires=` 구조를 만들고, 부팅 unit과 같은 샌드박스(`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges`)의 root로 실행했다. 발견 연결, 냉부팅 복구, 다른 프로젝트 unhealthy 보고, 동시 복구 2개에서 시작 절차 1회, 자동 실행 끈 뒤 `Requires=` 끌어올림 건너뜀("no trigger condition checks were met"), 자동 실행 꺼짐에서 명시적 시작, 자동 실행 켜짐에서 중지 후 끌어올림 건너뜀("unmet condition check ConditionPathExists=!…stop"), 재적용 후 재시작과 컨테이너 ID 유지를 확인했다. 시험 전후 운영 컨테이너 상태는 같았고 픽스처는 제거했다.
 - 실제 Docker 준비 지연, 소유자 manager 미기동, 실제 부팅 순서는 재현하지 않았다.
 
@@ -64,6 +64,7 @@ Windows 진입점은 별도 비공개 복구 키트(`E:\recovery`)이며 그 저
 6. 배포 종료(15:21 idle) 확인 후 15:30 drop-in을 다시 적용했다. 새 v007 unit 9개는 설치 기록 해시와 일치하고 백업·복원 시험 timer는 비활성으로 유지됐다. 소유자 권한의 조건 평가가 통과했다.
 7. 등록 URL을 공개 Funnel 포트(`:443`)에서 비공개 앱 포트(`:8443`)로 바로잡았다(변경 전 등록 정보 사본 보관). 비공개 `/`·`/api/v1/health`·`/login`은 200이었다.
 8. 15:32 Windows 예약 작업 직접 실행 결과 `LastTaskResult=0`, 실행 중 컨테이너의 ID·시작 시각·정책은 그대로였다.
+9. 게이트가 있는 상태의 첫 SallimBook health timer(16:16:46~50)는 `Result=success`로 끝났고 기존 백업 유예 정책대로 `backup-deferred`(`BACKUP_MISSING`)를 기록했다. startup unit은 `active (exited)`를 유지해 다시 실행되지 않았다. SallimBook 실행 시점 코드에는 drop-in 검사가 없고 `schedule.py`의 설치·활성화에만 있다. CVD 갱신 timer(다음 05:01)는 아직 게이트 상태로 실행되지 않았다.
 
 ## 남은 제약
 
