@@ -63,12 +63,16 @@ unit은 `RemainAfterExit=yes`인 oneshot이어야 하고 아래 실행 조건 dr
 
 ```ini
 # ~/.config/systemd/user/<프로젝트>-startup.service.d/wrg-launch.conf
+# WSL Resource Guard decides whether this startup may run: autostart on, or an
+# explicit start in this boot, and not stopped in this boot. Keeps the user
+# manager and timers that Require= this unit from bypassing autostart-off.
 [Unit]
 ConditionPathExists=|/var/lib/wrg-shared/launch/compose-<프로젝트>
 ConditionPathExists=|/run/wrg-services/launch/compose-<프로젝트>.start
 ConditionPathExists=!/run/wrg-services/launch/compose-<프로젝트>.stop
 ```
 
+첫 줄(경로 안내)을 뺀 주석까지 등록 실패 안내에 나오는 내용 그대로 넣으세요. 앱 자체 도구가 정확히 같은 내용만 허용할 수 있습니다.
 첫 번째 경로는 자동 실행이 켜져 있을 때 존재하고, 두 번째는 이번 부팅에서 명시적으로 시작했을 때, 세 번째는 이번 부팅에서 중지했을 때 생깁니다.
 따라서 자동 실행을 끄면 다음 부팅의 사용자 manager 시작과 timer 의존성 모두 시작 절차를 건너뛰고, 중지는 같은 부팅 동안 유지됩니다.
 이 unit을 `Requires=`하는 점검 timer는 건너뛴 시작 절차 뒤에도 실행되므로 앱이 꺼져 있으면 실패로 기록될 수 있습니다.
