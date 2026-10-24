@@ -53,6 +53,28 @@ Gmail과 푸시의 전송 서버 접수는 실제 수신 증거가 아닙니다.
 등록 오류는 대화상자 안에 표시하며 이름·URL을 수정해 다시 시도할 수 있습니다. 변경 요청의 응답이 끊기거나 시간을 초과하면 이미 적용됐을 수 있으므로 현재 상태를 먼저 확인하세요. 화면은 이를 자동 재전송하지 않습니다.
 OpenCode 보조 로그를 읽지 못하면 해당 오류와 정상 journal을 함께 표시합니다. 요청 줄 수 외에 응답 크기 상한도 적용되므로 큰 로그는 일부만 표시될 수 있습니다.
 oneshot 서비스의 `active (exited)`는 실행 프로세스가 계속 존재한다는 뜻이 아닙니다.
+
+### 시작 절차가 있는 Compose 프로젝트
+
+소유자 계정에 `<Compose 프로젝트>-startup.service` 사용자 unit이 있으면 등록 시 그 unit을 프로젝트의 시작 절차로 연결합니다.
+연결된 프로젝트의 시작·재시작·부팅 복구는 컨테이너를 직접 시작하지 않고 이 unit을 실행합니다. 중지는 컨테이너를 중지합니다.
+unit은 `RemainAfterExit=yes`인 oneshot이어야 하고 아래 실행 조건 drop-in이 있어야 등록됩니다.
+조건이 없으면 사용자 manager의 부팅 시작이나 timer의 `Requires=` 의존성이 Resource Guard의 자동 실행 끄기를 우회할 수 있기 때문입니다.
+
+```ini
+# ~/.config/systemd/user/<프로젝트>-startup.service.d/wrg-launch.conf
+[Unit]
+ConditionPathExists=|/var/lib/wrg-shared/launch/compose-<프로젝트>
+ConditionPathExists=|/run/wrg-services/launch/compose-<프로젝트>.start
+ConditionPathExists=!/run/wrg-services/launch/compose-<프로젝트>.stop
+```
+
+첫 번째 경로는 자동 실행이 켜져 있을 때 존재하고, 두 번째는 이번 부팅에서 명시적으로 시작했을 때, 세 번째는 이번 부팅에서 중지했을 때 생깁니다.
+따라서 자동 실행을 끄면 다음 부팅의 사용자 manager 시작과 timer 의존성 모두 시작 절차를 건너뛰고, 중지는 같은 부팅 동안 유지됩니다.
+이 unit을 `Requires=`하는 점검 timer는 건너뛴 시작 절차 뒤에도 실행되므로 앱이 꺼져 있으면 실패로 기록될 수 있습니다.
+연결 상태는 목록에 `시작 절차 <상태>`로 표시하며, 조건이 빠지거나 자동 실행 플래그가 설정과 다르면 오류로 표시합니다.
+등록을 삭제해도 drop-in은 사용자 설정이므로 남습니다. 직접 운영하려면 drop-in을 지우고 `systemctl --user daemon-reload`를 실행하세요.
+소유자 linger가 꺼져 있으면 부팅 복구에 사용자 unit을 쓸 수 없어 실패로 보고합니다.
 추가 앱 유닛은 packaging/examples의 템플릿을 참고하되 설치 경로와 앱 자체 보안 정책을 직접 확인합니다.
 
 ## 세션 종료

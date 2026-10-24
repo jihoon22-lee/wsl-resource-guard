@@ -549,6 +549,7 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('적용', result['message'])
 
     def test_restore_gives_up_after_the_wait(self):
+        self.controller.unit_state = Mock(return_value={'ActiveState': 'active'})
         with self.controller.mutation():
             with patch.object(service_control, 'RESTORE_LOCK_WAIT_SECONDS', 0.3):
                 with self.assertRaisesRegex(ControlError, '다른 작업'):

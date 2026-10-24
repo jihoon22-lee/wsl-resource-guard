@@ -1,16 +1,18 @@
 [Unit]
 Description=Restore registered WSL apps that have autostart enabled
-After=docker.service
+# The single boot recovery path; the Windows logon task only starts this unit.
+After=docker.service wrg-service-control.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/wsl-resource-guard
 ExecStart=/usr/bin/python3 -m wsl_resource_guard.service_control restore
-TimeoutStartSec=300
+# Docker start, owner startup units (up to 660s) and the health wait.
+TimeoutStartSec=1200
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/wrg-services
+ReadWritePaths=/var/lib/wrg-services -/var/lib/wrg-shared -/run/wrg-services
 
 [Install]
 WantedBy=multi-user.target

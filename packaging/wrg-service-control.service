@@ -10,6 +10,8 @@ Restart=on-failure
 RestartSec=3
 RuntimeDirectory=wrg-services
 RuntimeDirectoryMode=0755
+# Startup-unit permits and stop markers in launch/ survive a controller restart.
+RuntimeDirectoryPreserve=restart
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

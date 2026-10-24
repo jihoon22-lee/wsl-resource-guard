@@ -80,4 +80,5 @@ GitHub Releases와 PyPI에 직접 HTTPS 접근할 수 있어야 하며 Ubuntu의
 6. 참조하는 프로세스·유닛이 없음을 확인한 뒤 프로그램 사본만 제거합니다.
 
 등록된 외부 앱·Docker 컨테이너/볼륨, 사용자 config/secrets/state/history, registry, 복구 백업은 기본 보존합니다.
-기존 호환 복구 유닛이 있다면 그 소유와 사용처를 별도로 확인합니다. 관련 없는 앱을 중지하지 않습니다.
+시작 절차 unit에 넣은 `wrg-launch.conf` drop-in은 그대로 두면 해당 unit이 시작되지 않으므로, 제거 후 앱을 직접 운영할 때 함께 지웁니다.
+외부 부팅 진입점이 `wrg-services-restore.service`를 호출한다면 그 진입점도 정리합니다. 관련 없는 앱을 중지하지 않습니다.

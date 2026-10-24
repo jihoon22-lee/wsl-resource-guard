@@ -26,6 +26,28 @@ tailscale serve status
 null을 0으로 치환하지 않습니다. 새 기록이 보관 위치에 남아 있음을 확인합니다. 사건/전달 상태인 `incidents.json`, `delivery.json`, `scheduled-delivery.json`도 설치 복구 스냅샷에 포함됩니다. root 조치 기록 `actions.json`은 이미 수행한 종료의 증거이므로 임의로 지워 재시도하지 않습니다.
 실행 중 서비스를 둔 채 코드 디렉터리를 수동 덮어쓰거나 관련 없는 앱을 재시작하지 마세요.
 
+## 부팅 복구
+
+WSL 부팅 시 `wrg-services-restore.service` 하나가 등록된 Compose 프로젝트의 자동 실행 설정을 적용합니다.
+systemd 서비스의 자동 실행은 각 unit의 enable 상태가 기준이며 별도 복구 목록이 없습니다.
+Windows 로그온 작업 등 외부 진입점은 앱 목록 없이 이 unit을 시작합니다. 이미 실행 중이면 같은 작업에 합류하고, 끝난 뒤면 같은 설정을 다시 적용합니다.
+
+- 자동 실행이 켜진 프로젝트: 재시작 정책을 `unless-stopped`로 맞추고 기존 컨테이너를 시작합니다. 시작 절차가 연결된 프로젝트는 그 unit을 한 번 실행합니다.
+- 자동 실행이 꺼진 프로젝트: 재시작 정책을 `no`로 맞추고 실행 중인 컨테이너를 중지합니다.
+- 이미지 빌드·pull·컨테이너 재생성·배포 스크립트·DB 작업은 하지 않습니다. 컨테이너가 없는 자동 실행 프로젝트는 실패로 보고합니다.
+- Docker 자동 실행이 켜져 있는데 준비되지 않았으면 Docker 시작을 최대 90초 기다리고, 꺼져 있으면 Compose 복구를 건너뛰었다고 보고합니다.
+- 모든 자동 실행 프로젝트의 컨테이너가 실행되고 자체 healthcheck가 healthy가 될 때까지 최대 120초 기다립니다.
+- 한 프로젝트의 실패가 다른 프로젝트의 복구를 막지 않으며, 실패가 하나라도 있으면 unit이 실패로 끝납니다.
+
+```bash
+sudo systemctl start wrg-services-restore.service   # 수동 재적용, 자동 실행이 꺼진 앱은 중지됨
+journalctl -u wrg-services-restore.service -b --no-pager
+wrg services restore --dry-run                     # 변경 없이 계획만 표시
+```
+
+수동 재적용은 이번 부팅에서 직접 시작한 자동 실행 꺼짐 앱도 중지합니다.
+`wrg services restore --confirm`은 시작 절차와 healthcheck 완료를 기다리지 않고 요청만 접수합니다.
+
 ## 수집·이력·알림 진단
 
 Windows 드라이브(9p)와 VHDX 파일 조회는 5초 제한이 있습니다. 응답하지 않는 드라이브는 `드라이브가 5초 안에 응답하지 않았습니다`로 표시하고 마지막 정상 값을 오래된 값으로 유지하며, 다른 드라이브와 자원 감시는 계속합니다. 같은 드라이브의 이전 조회가 끝나지 않았으면 새 조회를 겹쳐 실행하지 않습니다. 이 상태가 계속되면 Windows 쪽 드라이브 연결을 확인하세요.

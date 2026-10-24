@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-아직 없습니다.
+- 부팅 복구를 `wrg-services-restore.service` 하나로 통합했습니다. Docker 준비 지연을 기다리고, 컨테이너가 없는 자동 실행 프로젝트와 healthcheck 미통과를 실패로 보고하며, 일부 실패가 다른 프로젝트의 복구를 막지 않습니다.
+- 소유자 `<프로젝트>-startup.service`가 있는 Compose 프로젝트는 그 unit을 시작 절차로 사용합니다. 실행 조건 drop-in으로 자동 실행 끄기와 중지가 사용자 manager 시작·timer 의존성에 우회되지 않게 합니다.
+- 실제로 설치·호출되지 않던 `devbox-wsl-service-recovery` 호환 진입점과 비활성화 함수를 제거했습니다.
 
 ## 0.2.4 — 2026-10-23
 

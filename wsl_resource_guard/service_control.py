@@ -52,6 +52,16 @@ APP_PORTS = {'opencode-web': 4096}
 ACTIVATION_SOCKETS = {'ssh.service': 'ssh.socket', 'docker.service': 'docker.socket'}
 # Boot recovery can start from two units at once; the later one waits instead of failing.
 RESTORE_LOCK_WAIT_SECONDS = 120
+DOCKER_START_TIMEOUT = 90
+RESTORE_HEALTH_WAIT_SECONDS = 120
+# An owner's '<project>-startup.service' oneshot is that Compose project's own
+# verified start procedure. Its WRG drop-in admits a start only while autostart
+# is on or after an explicit start in this boot, so timers that Require= the
+# unit cannot bypass autostart-off or stop.
+LAUNCHER_SUFFIX = '-startup.service'
+LAUNCHER_TIMEOUT = 660
+LAUNCH_RUNTIME = Path('/run/wrg-services/launch')
+LINGER_DIR = Path('/var/lib/systemd/linger')
 EXCLUDED = ('wrg-', 'devbox-wsl-service-recovery', 'systemd-', 'user@', 'getty@', 'serial-getty@', 'dbus', 'init', 'shutdown', 'reboot', 'halt', 'poweroff')
 
 
@@ -240,6 +250,9 @@ class Controller:
         self._summary_rows_at = 0.0
         self._docker_df_cache: dict | None = None
         self._docker_df_at = 0.0
+        self.launch_runtime = LAUNCH_RUNTIME
+        self.linger_dir = LINGER_DIR
+        self._launcher_checks: dict[str, tuple[float, str]] = {}
 
     def write_shared(self, name: str, value: object) -> None:
         """0640 root:<owner group> file the guard daemon can read."""
@@ -458,9 +471,9 @@ class Controller:
             raise ControlError('서비스 관리가 설치되지 않았습니다. install-services.sh를 실행하세요.') from None
 
     @contextmanager
-    def mutation(self, wait: float = 0.0):
+    def _file_lock(self, name: str, wait: float, busy: str):
         self.registry.parent.mkdir(parents=True, exist_ok=True)
-        with (self.registry.parent / 'operation.lock').open('a') as handle:
+        with (self.registry.parent / name).open('a') as handle:
             deadline = time.monotonic() + wait
             while True:
                 try:
@@ -468,13 +481,145 @@ class Controller:
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise ControlError('다른 작업이 진행 중입니다. 완료 후 다시 시도하세요.') from None
+                        raise ControlError(busy) from None
                     time.sleep(0.2)
             try:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
-                self._invalidate_snapshot()
+
+    @contextmanager
+    def mutation(self, wait: float = 0.0):
+        try:
+            with self._file_lock('operation.lock', wait, '다른 작업이 진행 중입니다. 완료 후 다시 시도하세요.'):
+                yield
+        finally:
+            self._invalidate_snapshot()
+
+    def _launcher_lock(self, entry: dict, wait: float):
+        # Held around a startup unit invocation, outside the registry lock, so a
+        # long start neither blocks other services nor runs twice concurrently.
+        return self._file_lock(f"launcher-{entry['id']}.lock", wait, '시작 절차가 이미 진행 중입니다.')
+
+    def _launch_paths(self, identifier: str) -> tuple[Path, Path, Path]:
+        """Autostart flag (persistent), start permit and stop marker (this boot)."""
+        return (self.shared / 'launch' / identifier, self.launch_runtime / (identifier + '.start'),
+                self.launch_runtime / (identifier + '.stop'))
+
+    def launch_dropin(self, identifier: str) -> str:
+        autostart, start, stop = self._launch_paths(identifier)
+        return (f'[Unit]\nConditionPathExists=|{autostart}\nConditionPathExists=|{start}\n'
+                f'ConditionPathExists=!{stop}\n')
+
+    @staticmethod
+    def _touch(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o755)  # The owner's service manager must be able to stat it.
+        path.touch(exist_ok=True)
+
+    def _sync_launch_autostart(self, entry: dict) -> None:
+        flag = self._launch_paths(entry['id'])[0]
+        if entry['autostart']:
+            self._touch(flag)
+        else:
+            flag.unlink(missing_ok=True)
+
+    def _permit_launch(self, entry: dict, allowed: bool) -> None:
+        _, start, stop = self._launch_paths(entry['id'])
+        (stop if allowed else start).unlink(missing_ok=True)
+        self._touch(start if allowed else stop)
+
+    def _user_systemctl(self, owner: str, *args: str, timeout: int = 70) -> str:
+        # The owner's manager performs the operation, so this works from the
+        # controller's read-only-home sandbox and never opens owner paths.
+        return self.run('systemctl', '--user', f'--machine={owner}@', *args, timeout=timeout)
+
+    def launcher_state(self, owner: str, unit: str) -> dict:
+        output = self._user_systemctl(owner, 'show', unit, '--property=LoadState,ActiveState,SubState,'
+                                      'Result,Type,RemainAfterExit,ConditionResult')
+        return dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
+
+    def _unit_conditions(self, owner: str, unit: str) -> set:
+        bus = ('busctl', '--user', f'--machine={owner}@', '--json=short')
+        try:
+            path = json.loads(self.run(*bus, 'call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+                                       'org.freedesktop.systemd1.Manager', 'LoadUnit', 's', unit))['data'][0]
+            if not isinstance(path, str) or not path.startswith('/org/freedesktop/systemd1/unit/'):
+                raise ValueError(path)
+            rows = json.loads(self.run(*bus, 'get-property', 'org.freedesktop.systemd1', path,
+                                       'org.freedesktop.systemd1.Unit', 'Conditions'))['data']
+            return {(row[0], row[1], row[2], row[3]) for row in rows}
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise ControlError(f'{unit}의 실행 조건을 확인하지 못했습니다.') from None
+
+    def launcher_problem(self, owner: str, identifier: str, unit: str, state: dict | None = None) -> str:
+        """Why a bound startup unit cannot be trusted to honour WRG autostart ('' when it can)."""
+        state = state if state is not None else self.launcher_state(owner, unit)
+        if state.get('LoadState') != 'loaded':
+            return f'시작 unit {unit}을(를) 불러오지 못했습니다 ({state.get("LoadState") or "unknown"}).'
+        if state.get('Type') != 'oneshot' or state.get('RemainAfterExit') != 'yes':
+            return f'시작 unit {unit}은(는) RemainAfterExit=yes인 oneshot이어야 합니다.'
+        autostart, start, stop = (str(p) for p in self._launch_paths(identifier))
+        required = {('ConditionPathExists', True, False, autostart), ('ConditionPathExists', True, False, start),
+                    ('ConditionPathExists', False, True, stop)}
+        conditions = self._unit_conditions(owner, unit)
+        # Any other triggering condition could admit a start on its own.
+        if not required <= conditions or any(c[1] and c not in required for c in conditions):
+            return f'시작 unit {unit}에 WRG 실행 조건이 없거나 다른 시작 조건이 섞여 있어 자동 실행 끄기를 보장할 수 없습니다.'
+        return ''
+
+    def _registry_owner(self) -> str | None:
+        try:
+            return self.load()['owner']
+        except ControlError:
+            return None
+
+    def _bind_launcher(self, candidate: dict, owner: str) -> None:
+        unit = candidate['target'] + LAUNCHER_SUFFIX
+        try:
+            state = self.launcher_state(owner, unit)
+            if state.get('LoadState') == 'not-found':
+                return
+            candidate['launcher'] = unit
+            problem = self.launcher_problem(owner, candidate['id'], unit, state)
+        except (ControlError, subprocess.TimeoutExpired):
+            problem = '소유자 사용자 서비스 관리자를 확인하지 못했습니다. linger와 user@ 서비스를 확인하세요.'
+        if problem:
+            candidate['launcher_error'] = problem
+
+    def _ensure_user_manager(self, owner: str) -> None:
+        if not (self.linger_dir / owner).exists():
+            raise ControlError(f'{owner} 계정의 linger가 꺼져 있어 사용자 시작 unit을 부팅 복구에 사용할 수 없습니다 '
+                               '(loginctl enable-linger).')
+        self.run('systemctl', 'start', f'user@{pwd.getpwnam(owner).pw_uid}.service', timeout=90)
+
+    def _start_launcher(self, owner: str, entry: dict, *, wait: bool, rerun: bool = False) -> str:
+        unit = entry['launcher']
+        self._ensure_user_manager(owner)
+        state = self.launcher_state(owner, unit)
+        problem = self.launcher_problem(owner, entry['id'], unit, state)
+        if problem:
+            raise ControlError(problem)
+        group = self.containers(entry['target'])
+        if state.get('ActiveState') in ('activating', 'reloading'):
+            if not wait:
+                return '시작 절차가 이미 진행 중입니다.'
+            verb = 'start'  # Join the running start job instead of cancelling it.
+        elif not rerun and state.get('ActiveState') == 'active' and group and all(
+                c['state']['Status'] == 'running' for c in group):
+            return '이미 실행 중입니다. 시작 절차를 다시 실행하지 않았습니다.'
+        else:
+            verb = 'restart'  # A RemainAfterExit oneshot would ignore a plain start.
+        if not wait:
+            self._user_systemctl(owner, verb, '--no-block', unit)
+            return f'{unit} 시작 절차를 요청했습니다. 완료까지 수 분 걸릴 수 있으니 상태를 다시 확인하세요.'
+        self._user_systemctl(owner, verb, unit, timeout=LAUNCHER_TIMEOUT)
+        after = self.launcher_state(owner, unit)
+        if after.get('ActiveState') != 'active':
+            reason = ('실행 조건 미충족' if after.get('ConditionResult') == 'no'
+                      else after.get('Result') or after.get('ActiveState') or 'unknown')
+            raise ControlError(f'{unit} 시작 절차 실패: {reason}')
+        return f'{unit} 시작 절차 완료'
 
     def unit_state(self, target: str) -> dict:
         fields = ('Id,LoadState,ActiveState,SubState,Type,RemainAfterExit,UnitFileState,MemoryCurrent,'
@@ -536,12 +681,16 @@ class Controller:
             project = container['labels'].get('com.docker.compose.project', '')
             if re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,99}', project):
                 projects.setdefault(project, []).append(container)
+        owner = self._registry_owner() if projects else None
         for project, group in sorted(projects.items()):
-            candidates.append({'key': 'compose:' + project, 'id': 'compose-' + project,
-                               'kind': 'compose', 'target': project, 'name': project,
-                               'category': 'app', 'notice': '', 'owned': False,
-                               'autostart': any(c['policy'] != 'no' for c in group),
-                               'directory': group[0]['labels'].get('com.docker.compose.project.working_dir', '')})
+            candidate = {'key': 'compose:' + project, 'id': 'compose-' + project,
+                         'kind': 'compose', 'target': project, 'name': project,
+                         'category': 'app', 'notice': '', 'owned': False,
+                         'autostart': any(c['policy'] != 'no' for c in group),
+                         'directory': group[0]['labels'].get('com.docker.compose.project.working_dir', '')}
+            if owner:
+                self._bind_launcher(candidate, owner)
+            candidates.append(candidate)
         return candidates
 
     def init(self, owner: str, origin: str) -> None:
@@ -633,6 +782,8 @@ class Controller:
                                 pass
                     row['memory_bytes'] = memory if found else None
                     row['autostart_label'] = 'enabled' if entry['autostart'] else 'disabled'
+                    if entry.get('launcher'):
+                        self._launcher_row(row, data['owner'], entry)
             except (ControlError, subprocess.TimeoutExpired):
                 row.update(state='unknown', error='서비스 상태를 조회하지 못했습니다. 서비스 제어 로그를 확인하세요.',
                            detail='상태 조회 실패')
@@ -647,6 +798,26 @@ class Controller:
                                      if self._paseo_health and same_run else paseo.pending_health())
             rows.append(row)
         return {'services': rows, 'origin': data['origin'], 'updated_at': time.time()}
+
+    def _launcher_row(self, row: dict, owner: str, entry: dict) -> None:
+        unit = entry['launcher']
+        try:
+            state = self.launcher_state(owner, unit)
+            checked = self._launcher_checks.get(entry['id'])
+            if checked is None or time.monotonic() - checked[0] >= 60:
+                checked = (time.monotonic(), self.launcher_problem(owner, entry['id'], unit, state))
+                self._launcher_checks[entry['id']] = checked
+        except (ControlError, subprocess.TimeoutExpired):
+            row['launcher_state'] = 'unknown'
+            row['error'] = row['error'] or '시작 절차 상태를 확인하지 못했습니다.'
+            return
+        row['launcher_state'] = state.get('ActiveState', 'unknown')
+        row['detail'] += f" · 시작 절차 {row['launcher_state']}"
+        if checked[1]:
+            row['error'] = checked[1]
+        elif self._launch_paths(entry['id'])[0].exists() != bool(entry['autostart']):
+            row['drift'] = True
+            row['error'] = row['error'] or '시작 절차의 자동 실행 플래그가 설정과 다릅니다. 자동 실행 설정을 다시 적용하세요.'
 
     def register(self, key: str, name: str | None = None, url: str | None = None) -> dict:
         if name is not None and (not isinstance(name, str) or not 1 <= len(name.strip()) <= 80
@@ -675,6 +846,12 @@ class Controller:
                 raise ControlError('현재 발견된 서비스만 등록할 수 있습니다. 목록을 새로고침하세요.')
             if any(s['id'] == entry['id'] for s in data['services']):
                 raise ControlError('같은 ID의 다른 서비스가 이미 등록되어 있습니다.')
+            if entry.get('launcher_error'):
+                hint = ''
+                if entry.get('launcher') and '실행 조건' in entry['launcher_error']:
+                    hint = (f"\n~/.config/systemd/user/{entry['launcher']}.d/wrg-launch.conf에 아래 내용을 넣고 "
+                            'systemctl --user daemon-reload 후 다시 등록하세요.\n' + self.launch_dropin(entry['id']))
+                raise ControlError(entry['launcher_error'] + hint)
             if entry['owned']:
                 target = Path('/etc/systemd/system/opencode-web.service')
                 if target.is_symlink():
@@ -691,6 +868,9 @@ class Controller:
                 entry['url'] = url
             data['services'].append(entry)
             atomic_json(self.registry, data)
+            if entry.get('launcher'):
+                self._sync_launch_autostart(entry)
+                return {'message': f"현재 실행·자동 실행 상태를 유지해 등록했습니다. 시작은 {entry['launcher']} 절차를 사용합니다."}
             return {'message': '현재 실행·자동 실행 상태를 유지해 등록했습니다.'}
 
     def _set_autostart(self, data: dict, entry: dict, enabled: bool, containers: list[dict]) -> None:
@@ -705,6 +885,8 @@ class Controller:
             # visible as drift and recovery cannot restart a newly disabled project.
             entry['autostart'] = enabled
             atomic_json(self.registry, data)
+            if entry.get('launcher'):
+                self._sync_launch_autostart(entry)
             if containers:
                 self.run('docker', 'update', '--restart=' + ('unless-stopped' if enabled else 'no'),
                          *(c['id'] for c in containers))
@@ -738,11 +920,13 @@ class Controller:
                 if entry['kind'] != 'compose' or action not in ('autostart-on', 'autostart-off'):
                     raise
                 containers = []
-            if entry['kind'] == 'compose' and not containers and action in ('start', 'restart', 'enable'):
+            if (entry['kind'] == 'compose' and not entry.get('launcher') and not containers
+                    and action in ('start', 'restart', 'enable')):
                 raise ControlError('기존 컨테이너가 없습니다. 프로젝트에서 Docker Compose로 먼저 생성하세요.')
             if action in ('enable', 'autostart-on', 'disable', 'autostart-off', 'remove'):
                 self._set_autostart(data, entry, action in ('enable', 'autostart-on'), containers)
             operation = {'enable': 'start', 'disable': 'stop', 'remove': 'stop'}.get(action, action)
+            message = '설정을 적용했습니다.'
             if operation in ('start', 'stop', 'restart'):
                 self._health.pop(identifier, None)
                 if entry['kind'] == 'systemd':
@@ -751,6 +935,8 @@ class Controller:
                         if self.unit_state(activation_socket).get('LoadState') == 'loaded':
                             self.run('systemctl', 'stop', activation_socket)
                     self.run('systemctl', operation, entry['target'])
+                elif entry.get('launcher'):
+                    message = self._act_launcher(data['owner'], entry, operation, containers)
                 elif containers:
                     # Starting existing containers avoids rebuilding code, rereading .env,
                     # losing deployment overrides, or recreating database volumes.
@@ -763,7 +949,32 @@ class Controller:
                     self.run('systemctl', 'daemon-reload')
                 data['services'] = [s for s in data['services'] if s['id'] != identifier]
                 atomic_json(self.registry, data)
-            return {'message': '등록을 삭제했습니다. 프로그램·DB·볼륨·로그는 보존됩니다.' if action == 'remove' else '설정을 적용했습니다.'}
+                message = '등록을 삭제했습니다. 프로그램·DB·볼륨·로그는 보존됩니다.'
+                if entry.get('launcher'):
+                    message += (f" {entry['launcher']}의 WRG 실행 조건 drop-in을 지우기 전에는 "
+                                '해당 unit이 시작되지 않습니다.')
+            return {'message': message}
+
+    def _act_launcher(self, owner: str, entry: dict, operation: str, containers: list[dict]) -> str:
+        unit = entry['launcher']
+        if operation == 'stop':
+            # The stop marker keeps a Requires= pull-in (e.g. a health timer)
+            # from starting the project again during this boot.
+            self._permit_launch(entry, False)
+            if self.launcher_state(owner, unit).get('ActiveState') in ('activating', 'reloading'):
+                self._user_systemctl(owner, 'stop', unit)
+                containers = self.containers(entry['target'])
+            if containers:
+                self.run('docker', 'stop', *(c['id'] for c in containers))
+            return '설정을 적용했습니다.'
+        with self._launcher_lock(entry, wait=0):
+            if self.launcher_state(owner, unit).get('ActiveState') in ('activating', 'reloading'):
+                return '시작 절차가 이미 진행 중입니다.'
+            self._permit_launch(entry, True)
+            running = [c['id'] for c in containers if c['state']['Status'] == 'running']
+            if operation == 'restart' and running:
+                self.run('docker', 'stop', *running)
+            return self._start_launcher(owner, entry, wait=False, rerun=operation == 'restart')
 
     def logs(self, identifier: str, lines: int = 80) -> dict:
         # Keep direct callers and socket requests on the same bounded contract.
@@ -803,44 +1014,131 @@ class Controller:
             output = '\n'.join(chunks)
         return {'text': output.encode('utf-8')[-100000:].decode('utf-8', errors='ignore')}
 
-    def restore(self, dry_run: bool = False) -> dict:
-        """Boot recovery affects only explicitly registered Compose projects."""
+    def restore(self, dry_run: bool = False, wait: bool = False) -> dict:
+        """Boot recovery applies each registered Compose project's autostart setting.
+
+        Only existing containers are started or stopped; nothing is built, pulled
+        or recreated. A project bound to an owner startup unit starts only through
+        that unit. ``wait`` (the boot unit) blocks for startup units and health;
+        socket callers return after queueing. Every project is attempted and all
+        failures are reported together.
+        """
+        entries = [s for s in self.load()['services'] if s['kind'] == 'compose']
+        if not entries:
+            return {'message': '복구할 Compose 프로젝트가 없습니다.', 'actions': []}
+        report: list[str] = []
+        failures: list[str] = []
+        docker = self.unit_state('docker.service')
+        if docker.get('ActiveState') != 'active':
+            wanted = [e['name'] for e in entries if e['autostart']]
+            if not wanted:
+                return {'message': 'Docker가 중지되어 있고 자동 실행 프로젝트가 없어 변경하지 않았습니다.', 'actions': []}
+            if not docker.get('UnitFileState', '').startswith('enabled'):
+                return {'message': 'Docker 자동 실행이 꺼져 있어 Compose 복구를 건너뛰었습니다. '
+                                   '시작하지 않은 자동 실행 프로젝트: ' + ', '.join(wanted), 'actions': []}
+            if dry_run:
+                return {'message': '변경 없이 계획만 표시합니다.\nDocker를 시작한 뒤 프로젝트별 설정을 적용합니다.',
+                        'actions': ['Docker 시작']}
+            # Docker's autostart is on, so it is meant to run; this joins a slow
+            # start job or retries one that failed earlier in this boot.
+            try:
+                self.run('systemctl', 'start', 'docker.service', timeout=DOCKER_START_TIMEOUT)
+            except (ControlError, subprocess.TimeoutExpired) as exc:
+                raise ControlError('Docker를 시작하지 못해 자동 실행 프로젝트를 복구하지 못했습니다 '
+                                   f"({', '.join(wanted)}): {exc}") from None
+            report.append('Docker: 시작함')
+        planned: list[str] = []
+        launchers: list[dict] = []
+        failed: set[str] = set()
         with self.mutation(wait=RESTORE_LOCK_WAIT_SECONDS):
             data = self.load()
             entries = [s for s in data['services'] if s['kind'] == 'compose']
-            if not entries or self.unit_state('docker.service').get('ActiveState') != 'active':
-                return {'message': 'Docker가 중지되어 있거나 복구할 프로젝트가 없습니다.'}
-            failures = []
-            planned = []
             for entry in entries:
+                name, launcher = entry['name'], entry.get('launcher')
                 try:
                     group = self.containers(entry['target'])
-                    if not group:
-                        continue
                     policy = 'unless-stopped' if entry['autostart'] else 'no'
                     stopped = [c['id'] for c in group if c['state']['Status'] != 'running']
                     running = [c['id'] for c in group if c['state']['Status'] == 'running']
+                    if launcher and not dry_run:
+                        self._sync_launch_autostart(entry)
+                        _, start, stop = self._launch_paths(entry['id'])
+                        # Re-applying autostart supersedes this boot's manual choice.
+                        (stop if entry['autostart'] else start).unlink(missing_ok=True)
+                    if not group and not (launcher and entry['autostart']):
+                        if entry['autostart']:
+                            failures.append(f'{name}: 기존 컨테이너가 없습니다. 프로젝트의 배포 절차로 먼저 생성하세요.')
+                            failed.add(entry['id'])
+                        continue
                     if dry_run:
-                        steps = [f"restart={policy} ({len(group)}개 컨테이너)"]
-                        if entry['autostart'] and stopped:
+                        steps = [f"restart={policy} ({len(group)}개 컨테이너)"] if group else []
+                        if entry['autostart'] and launcher:
+                            steps.append(f'{launcher} 시작 절차 확인')
+                        elif entry['autostart'] and stopped:
                             steps.append(f"start {len(stopped)}개")
                         if not entry['autostart'] and running:
                             steps.append(f"stop {len(running)}개")
-                        planned.append(f"{entry['name']}: {', '.join(steps)}")
+                        planned.append(f"{name}: {', '.join(steps)}")
                         continue
-                    self.run('docker', 'update', '--restart=' + policy, *(c['id'] for c in group))
-                    if entry['autostart'] and stopped:
+                    if group:
+                        self.run('docker', 'update', '--restart=' + policy, *(c['id'] for c in group))
+                    if entry['autostart'] and launcher:
+                        launchers.append(entry)
+                    elif entry['autostart'] and stopped:
                         self.run('docker', 'start', *stopped)
-                    elif not entry['autostart'] and running:
+                        report.append(f'{name}: 기존 컨테이너 {len(stopped)}개 시작')
+                    elif entry['autostart']:
+                        report.append(f'{name}: 실행 중 유지')
+                    elif running:
                         self.run('docker', 'stop', *running)
-                except (ControlError, subprocess.TimeoutExpired) as exc:
-                    failures.append(f"{entry['name']}: {exc}")
-            if failures:
-                raise ControlError('\n'.join(failures))
-            if dry_run:
+                        report.append(f'{name}: 자동 실행 꺼짐, 컨테이너 {len(running)}개 중지')
+                    else:
+                        report.append(f'{name}: 자동 실행 꺼짐, 중지 상태 유지')
+                except (ControlError, subprocess.TimeoutExpired, OSError) as exc:
+                    failures.append(f'{name}: {exc}')
+                    failed.add(entry['id'])
+            if dry_run and not failures:
                 detail = '\n'.join(planned) if planned else '적용할 변경이 없습니다.'
                 return {'message': f'변경 없이 계획만 표시합니다.\n{detail}', 'actions': planned}
-            return {'message': '등록된 프로젝트의 자동 실행 설정을 적용했습니다.'}
+        for entry in launchers:
+            # Outside the registry lock: a startup procedure may take minutes.
+            try:
+                with self._launcher_lock(entry, wait=LAUNCHER_TIMEOUT if wait else 0):
+                    report.append(f"{entry['name']}: " + self._start_launcher(data['owner'], entry, wait=wait))
+            except (ControlError, subprocess.TimeoutExpired, OSError) as exc:
+                failures.append(f"{entry['name']}: {exc}")
+                failed.add(entry['id'])
+        if wait and not dry_run:
+            pending = [e for e in entries if e['autostart'] and e['id'] not in failed]
+            failures.extend(self._wait_ready(pending))
+        if failures:
+            raise ControlError('\n'.join(['일부 프로젝트를 복구하지 못했습니다.', *report, '실패:', *failures]))
+        return {'message': '\n'.join(['등록된 프로젝트의 자동 실행 설정을 적용했습니다.', *report]), 'actions': report}
+
+    def _wait_ready(self, entries: list[dict]) -> list[str]:
+        """Bounded wait until every container runs and passes its own healthcheck."""
+        deadline = time.monotonic() + RESTORE_HEALTH_WAIT_SECONDS
+        pending = {e['id']: e for e in entries}
+        details: dict[str, str] = {}
+        while pending:
+            for identifier, entry in list(pending.items()):
+                try:
+                    group = self.containers(entry['target'])
+                except (ControlError, subprocess.TimeoutExpired) as exc:
+                    details[identifier] = str(exc)
+                    continue
+                running = sum(c['state']['Status'] == 'running' for c in group)
+                unready = [c['name'] for c in group if c['state']['Status'] != 'running'
+                           or c['state'].get('Health', {}).get('Status', 'healthy') != 'healthy']
+                if group and not unready:
+                    del pending[identifier]
+                    continue
+                details[identifier] = f"{running}/{len(group)} 실행, 미준비: {', '.join(unready) or '컨테이너 없음'}"
+            if not pending or time.monotonic() >= deadline:
+                break
+            time.sleep(2)
+        return [f"{e['name']}: {RESTORE_HEALTH_WAIT_SECONDS}초 안에 정상 상태가 되지 않았습니다 ({details.get(i, '')})"
+                for i, e in pending.items()]
 
     def kill_tree(self, pid: int, *, expected_start_ticks: int | None = None, stale_only: bool = False) -> dict:
         """SIGTERM an LLM session or MCP tree root, re-validated at execution time."""
@@ -1547,7 +1845,7 @@ def main() -> int:
         controller.init(args.owner, args.origin)
     elif args.mode == 'restore':
         try:
-            print(controller.restore()['message'])
+            print(controller.restore(wait=True)['message'])
         except ControlError as exc:
             print(f'복구 실패: {exc}', file=sys.stderr)
             return 1
