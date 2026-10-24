@@ -66,6 +66,7 @@ Windows 진입점은 별도 비공개 복구 키트(`E:\recovery`)이며 그 저
 8. 15:32 Windows 예약 작업 직접 실행 결과 `LastTaskResult=0`, 실행 중 컨테이너의 ID·시작 시각·정책은 그대로였다.
 9. 게이트가 있는 상태의 첫 SallimBook health timer(16:16:46~50)는 `Result=success`로 끝났고 기존 백업 유예 정책대로 `backup-deferred`(`BACKUP_MISSING`)를 기록했다. startup unit은 `active (exited)`를 유지해 다시 실행되지 않았다. SallimBook 실행 시점 코드에는 drop-in 검사가 없고 `schedule.py`의 설치·활성화에만 있다. CVD 갱신 timer(다음 05:01)는 아직 게이트 상태로 실행되지 않았다.
 10. 사용자 승인으로 이 drop-in 안내를 SallimBook 세션에 전달했다. SallimBook은 16:37 `ops/schedule.py`가 이 drop-in과 공존하도록 바꿔 로컬 main에 병합했다(`a064013`, 병합 `4d93c0c`, push 안 함). `sallimbook-prod-startup.service.d`에 지금 파일과 내용(주석 3줄 포함)·권한(디렉터리 0755, 파일 0600)·소유자가 정확히 같은 `wrg-launch.conf` 하나만 있을 때만 허용해 그대로 보존하고, 다른 drop-in은 계속 거부한다. 17:01 확인 결과 drop-in의 inode·시각·권한은 15:30 그대로이고 SallimBook이 허용하는 내용과 바이트 단위로 같았으며, `DropInPaths`는 이 파일 하나, startup은 `active (exited)`, WRG 목록은 오류가 없었다. 운영 일정 재설치·활성화와 재배포는 하지 않았다.
+11. 등록 안내 문구를 실제 drop-in과 같게 맞춘 `08472fa`를 `install-services.sh`로 설치했다(설치 복구 자료 `/var/backups/wrg-services/94f7ff443157448aa7c560895509e282`). 설치본 `service_control.py`가 원본과 같고, 새 안내 문구는 SallimBook drop-in과 바이트 단위로 같다. 컨트롤러·웹·guard는 active, 실행 중 컨테이너 13개의 ID는 그대로, SallimBook drop-in의 inode·시각과 startup `active`도 그대로였다.
 
 ## 남은 제약
 
