@@ -65,12 +65,13 @@ Windows 진입점은 별도 비공개 복구 키트(`E:\recovery`)이며 그 저
 7. 등록 URL을 공개 Funnel 포트(`:443`)에서 비공개 앱 포트(`:8443`)로 바로잡았다(변경 전 등록 정보 사본 보관). 비공개 `/`·`/api/v1/health`·`/login`은 200이었다.
 8. 15:32 Windows 예약 작업 직접 실행 결과 `LastTaskResult=0`, 실행 중 컨테이너의 ID·시작 시각·정책은 그대로였다.
 9. 게이트가 있는 상태의 첫 SallimBook health timer(16:16:46~50)는 `Result=success`로 끝났고 기존 백업 유예 정책대로 `backup-deferred`(`BACKUP_MISSING`)를 기록했다. startup unit은 `active (exited)`를 유지해 다시 실행되지 않았다. SallimBook 실행 시점 코드에는 drop-in 검사가 없고 `schedule.py`의 설치·활성화에만 있다. CVD 갱신 timer(다음 05:01)는 아직 게이트 상태로 실행되지 않았다.
+10. 사용자 승인으로 이 drop-in 안내를 SallimBook 세션에 전달했다. SallimBook은 16:37 `ops/schedule.py`가 이 drop-in과 공존하도록 바꿔 로컬 main에 병합했다(`a064013`, 병합 `4d93c0c`, push 안 함). `sallimbook-prod-startup.service.d`에 지금 파일과 내용(주석 3줄 포함)·권한(디렉터리 0755, 파일 0600)·소유자가 정확히 같은 `wrg-launch.conf` 하나만 있을 때만 허용해 그대로 보존하고, 다른 drop-in은 계속 거부한다. 17:01 확인 결과 drop-in의 inode·시각·권한은 15:30 그대로이고 SallimBook이 허용하는 내용과 바이트 단위로 같았으며, `DropInPaths`는 이 파일 하나, startup은 `active (exited)`, WRG 목록은 오류가 없었다. 운영 일정 재설치·활성화와 재배포는 하지 않았다.
 
 ## 남은 제약
 
 - 트리거는 Windows **로그온 시**다. 재부팅 후 로그인하지 않으면 WSL과 서비스가 올라오지 않으며 로그인 전 무인 기동은 구성하지 않았다.
 - PC/WSL 전체 재부팅 실증은 하지 않았다. 실행 시 WSL 안의 모든 작업·SSH·Paseo·원격 연결이 끊기고 Windows 재로그인이 필요하다. 다른 세션 작업이 없을 때 사용자와 시점을 정해 1회 확인한다.
-- SallimBook 일정을 다시 설치·활성화할 때는 `sallimbook-prod-startup.service.d/wrg-launch.conf`를 먼저 지우고, 활성화 뒤 다시 넣어야 한다(health 백업 유예 drop-in과 같은 처리). SallimBook 쪽 배포 절차 반영은 이 작업 범위 밖이며 다른 세션에 알리지 않았다. drop-in이 빠지면 목록과 부팅 복구가 SallimBook을 오류로 보고하고, SallimBook은 자체 enabled unit으로 계속 기동한다.
+- SallimBook `4d93c0c` 이후 운영 checkout으로 일정을 다시 설치·활성화하면 `wrg-launch.conf`를 지우지 않고 보존한다. 지금 운영 checkout(`code-v004`)에는 이 변경이 없으므로, 그 checkout으로 재설치하려면 예전처럼 drop-in을 지웠다가 활성화 뒤 다시 넣어야 한다. SallimBook은 현재 파일과 바이트 단위로 같은 내용만 허용한다. drop-in을 다시 만들 때는 이 파일이나 SallimBook `ops/schedule.py`의 `WRG_LAUNCH_CONTENT`를 쓴다. `docs/usage.md` 예시(주석 없음)로 만들면 SallimBook 설치가 거부된다. drop-in이 빠지면 목록과 부팅 복구가 SallimBook을 오류로 보고하고, SallimBook은 자체 enabled unit으로 계속 기동한다.
 - SallimBook은 별도 Tailscale 노드라 컨트롤러가 HTTP를 검사하지 않는다(같은 호스트만 검사하는 기존 보안 경계). 상태는 컨테이너·healthcheck와 SallimBook 자체 health timer로 확인한다.
 - 자동 실행을 끈 채 SallimBook을 꺼 두면 SallimBook의 health·CVD timer는 실행되지만 서비스를 시작하지 않고 실패로 기록된다.
 - 수동 재적용(`systemctl start wrg-services-restore.service` 또는 Windows 진입점)은 이번 부팅에 직접 켠 자동 실행 꺼짐 앱도 중지한다.
