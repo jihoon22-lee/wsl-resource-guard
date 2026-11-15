@@ -384,8 +384,12 @@ def host_fixture(status: str = 'ok') -> dict:
                        'commit_limit_bytes': 100 * 2**30, 'pagefile_allocated_bytes': 69 * 2**30,
                        'pagefile_used_bytes': 3 * 2**30, 'pagefile_peak_bytes': None},
             'vmmem': {'working_set_bytes': 16 * 2**30, 'private_bytes': 19 * 2**30},
-            'volumes': [{'id': 'C:', 'total_bytes': 1000 * 2**30, 'free_bytes': 200 * 2**30, 'filesystem': 'NTFS'},
-                        {'id': 'G:', 'total_bytes': 500 * 2**30, 'free_bytes': 100 * 2**30, 'filesystem': 'FAT32'}],
+            'volumes': [{'id': 'C:', 'total_bytes': 1000 * 2**30, 'free_bytes': 200 * 2**30, 'filesystem': 'NTFS',
+                         'mounted': True},
+                        {'id': 'F:', 'total_bytes': 800 * 2**30, 'free_bytes': 300 * 2**30, 'filesystem': 'NTFS',
+                         'mounted': True},
+                        {'id': 'G:', 'total_bytes': 500 * 2**30, 'free_bytes': 100 * 2**30, 'filesystem': 'FAT32',
+                         'mounted': False}],
             'distros': [{'name': 'Ubuntu', 'state': 'Running', 'version': 2, 'default': True, 'vhd_dir': 'E:\\WSL\\Ubuntu'},
                         {'name': 'docker-desktop', 'state': 'Stopped', 'version': 2, 'default': False, 'vhd_dir': ''}],
             'distro': 'Ubuntu',
@@ -421,9 +425,8 @@ def check_windows_host_panels(page, overrides: dict) -> None:
 
         page.goto(ORIGIN + '/#disks')
         volumes = page.locator('#host-volumes')
-        expect(volumes).to_contain_text('G:')
-        expect(volumes).to_contain_text('WSL에 마운트되지 않음 · 경보 대상 아님')
-        expect(volumes).to_contain_text('경보 대상')
+        labels = volumes.locator('tbody tr td:last-child').all_inner_texts()
+        assert labels == ['경보 대상', 'WSL에 마운트됨 · 감시 안 함', 'WSL에 마운트되지 않음 · 감시 안 함'], labels
 
         monitor['metrics'] = dict(monitor['metrics'], host=host_fixture('timeout'))
         page.goto(ORIGIN + '/#overview')

@@ -599,8 +599,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
           str(settings.state_path))
 
     wslconfig = host.get("wslconfig") or {}
-    if host["status"] != "ok":
-        check(".wslconfig", "WARN", "Windows를 조회하지 못해 확인하지 못했습니다")
+    if host["status"] != "ok" or wslconfig.get("present") is None:
+        check(".wslconfig", "WARN", "Windows에서 파일을 확인하지 못했습니다")
     elif wslconfig.get("present"):
         found = [f"{label}={wslconfig[key]}" for label, key in (
             ("memory", "memory"), ("swap", "swap"), ("processors", "processors"),

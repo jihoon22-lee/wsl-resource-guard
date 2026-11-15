@@ -80,10 +80,10 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `gmail_enabled` | `true` | true / false | Gmail 알림 사용 |
 | `discord_enabled` | `true` | true / false | Discord 알림 사용 |
 | `webhook_enabled` | `false` | true / false | 범용 webhook 알림 사용 (URL은 secrets.json의 webhook_url) |
-| `host_memory_refresh_seconds` | `60` | 60–3600 | Windows 호스트 상태 수집 주기 (초). 주기마다 PowerShell을 한 번 실행합니다 |
+| `host_memory_refresh_seconds` | `60` | 60–3600 | Windows 호스트 상태 수집 주기 (초). 주기마다 PowerShell을 한 번 실행하며 실패가 이어지면 간격을 최대 15분까지 늘립니다 |
 | `push_enabled` | `true` | true / false | 등록한 기기로 브라우저 푸시 알림 |
 | `weekly_report_enabled` | `true` | true / false | 주간 리포트 발송 (Gmail·Discord·webhook) |
 | `weekly_report_weekday` | `0` | 0–6 | 주간 리포트 요일 (0=월 … 6=일) |
 | `weekly_report_hour` | `9` | 0–23 | 주간 리포트 발송 시각 (시) |
 
-`project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로를 비워 두면 Windows가 알려 준 현재 배포판의 VHDX 위치를 사용하고, 찾지 못하면 미설정(`not-configured`)으로 표시합니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.
+`project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로를 비워 두면 Windows가 알려 준 현재 배포판 위치에서 `ext4.vhdx`를 찾아 사용하고, 그 파일이 없으면 미설정(`not-configured`)으로 표시합니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.

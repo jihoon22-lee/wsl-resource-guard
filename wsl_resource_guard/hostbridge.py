@@ -1,6 +1,7 @@
-"""Every call into Windows goes through this module.
+"""Every Windows program is started from this module.
 
-Only fixed scripts run, each bounded in time and output, one at a time. The
+The host query is a fixed read-only script; the toast is the only other caller
+and supplies escaped text. Calls are bounded in time and run one at a time. The
 Windows mount is a 9p share: stat and exec on it can block before a subprocess
 timeout even starts, so callers use ``bounded_probe`` around the whole call.
 A failed or missing observation keeps the last values and says so in ``status``;
@@ -24,8 +25,10 @@ HOST_TIMEOUT_SECONDS = 20
 SCRIPT_TIMEOUT_SECONDS = 15
 MAX_OUTPUT_BYTES = 256 * 1024
 MAX_ROWS = 32
+INTEROP_RETRY_SECONDS = 0.5
+MAX_RETRY_SECONDS = 900
 _DRIVE_SOURCE = re.compile(r'^([A-Za-z]):\\?$')
-_DATA_KEYS = ('memory', 'vmmem', 'volumes', 'distros', 'wslconfig', 'processes', 'windows', 'distro')
+_DATA_KEYS = ('memory', 'vmmem', 'volumes', 'distros', 'wslconfig', 'processes', 'windows', 'distro', 'vhd_path')
 _STATUS_TEXT = {
     'unavailable': 'Windows interop 또는 PowerShell을 사용할 수 없습니다.',
     'timeout': f'Windows가 {HOST_TIMEOUT_SECONDS}초 안에 응답하지 않았습니다.',
@@ -46,29 +49,39 @@ class HostError(ValueError):
 HOST_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-function Safe([scriptblock]$b) { try { & $b } catch { $null } }
-$os = Safe { Get-CimInstance Win32_OperatingSystem }
-$perf = Safe { Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory }
-$pf = @(Safe { Get-CimInstance Win32_PageFileUsage })
-$procs = @(Safe { Get-Process })
-$env:WSL_UTF8 = '1'
-$wsl = Safe { (& wsl.exe -l -v 2>$null) -join "`n" }
-$lxss = @(Safe { Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; @{ name = [string]$p.DistributionName; base = [string]$p.BasePath } } })
-$cfgPath = Join-Path $env:USERPROFILE '.wslconfig'
-$cfg = Safe { if (Test-Path -LiteralPath $cfgPath) { (Get-Content -LiteralPath $cfgPath -TotalCount 200) -join "`n" } else { '' } }
-@{
-  schema = 1
-  os = if ($os) { @{ total_kb = [uint64]$os.TotalVisibleMemorySize; free_kb = [uint64]$os.FreePhysicalMemory; build = [string]$os.BuildNumber; boot = $os.LastBootUpTime.ToUniversalTime().ToString('o') } } else { $null }
-  memory = if ($perf) { @{ available = [uint64]$perf.AvailableBytes; committed = [uint64]$perf.CommittedBytes; commit_limit = [uint64]$perf.CommitLimit } } else { $null }
-  pagefile = @($pf | ForEach-Object { @{ allocated_mb = [uint64]$_.AllocatedBaseSize; used_mb = [uint64]$_.CurrentUsage; peak_mb = [uint64]$_.PeakUsage } })
-  vmmem = @($procs | Where-Object { $_.ProcessName -like 'vmmem*' } | ForEach-Object { @{ name = $_.ProcessName; ws = [uint64]$_.WorkingSet64; private = [uint64]$_.PrivateMemorySize64 } })
-  top = @($procs | Sort-Object WorkingSet64 -Descending | Select-Object -First 8 | ForEach-Object { @{ name = $_.ProcessName; ws = [uint64]$_.WorkingSet64 } })
-  volumes = @(Safe { [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } | ForEach-Object { @{ id = $_.Name.Substring(0, 2); total = [uint64]$_.TotalSize; free = [uint64]$_.AvailableFreeSpace; fs = [string]$_.DriveFormat } } })
-  wsl_list = $wsl
-  lxss = $lxss
-  wslconfig = $cfg
-} | ConvertTo-Json -Depth 4 -Compress
+# A failed part yields nothing at all; a caught error must never become 0.
+function Safe([scriptblock]$b) { try { & $b } catch { } }
+function Num($v) { if ($null -eq $v) { $null } else { [uint64]$v } }
+$encoding = [Console]::OutputEncoding
+try {
+  [Console]::OutputEncoding = [Text.Encoding]::UTF8
+  $os = Safe { Get-CimInstance Win32_OperatingSystem }
+  $perf = Safe { Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory }
+  $pf = @(Safe { Get-CimInstance Win32_PageFileUsage })
+  $procs = @(Safe { Get-Process })
+  $env:WSL_UTF8 = '1'
+  $wsl = Safe { $ErrorActionPreference = 'Continue'; (& wsl.exe -l -v 2>$null) -join "`n" }
+  $lxss = @(Safe { Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; @{ name = [string]$p.DistributionName; base = [string]$p.BasePath } } })
+  $cfgPath = Join-Path $env:USERPROFILE '.wslconfig'
+  $cfg = Safe { if (Test-Path -LiteralPath $cfgPath) { (Get-Content -LiteralPath $cfgPath -TotalCount 200) -join "`n" } else { '' } }
+  $json = @{
+    schema = 1
+    os = if ($os) { @{ total_kb = Num $os.TotalVisibleMemorySize; free_kb = Num $os.FreePhysicalMemory; build = [string]$os.BuildNumber; boot = $os.LastBootUpTime.ToUniversalTime().ToString('o') } } else { $null }
+    memory = if ($perf) { @{ available = Num $perf.AvailableBytes; committed = Num $perf.CommittedBytes; commit_limit = Num $perf.CommitLimit } } else { $null }
+    pagefile = @($pf | Where-Object { $_ } | ForEach-Object { @{ allocated_mb = Num $_.AllocatedBaseSize; used_mb = Num $_.CurrentUsage; peak_mb = Num $_.PeakUsage } })
+    vmmem = @($procs | Where-Object { $_.ProcessName -like 'vmmem*' } | ForEach-Object { @{ name = $_.ProcessName; ws = Num $_.WorkingSet64; private = Num $_.PrivateMemorySize64 } })
+    top = @($procs | Sort-Object WorkingSet64 -Descending | Select-Object -First 8 | ForEach-Object { @{ name = $_.ProcessName; ws = Num $_.WorkingSet64 } })
+    volumes = @(Safe { [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } | ForEach-Object { @{ id = $_.Name.Substring(0, 2); total = Num $_.TotalSize; free = Num $_.AvailableFreeSpace; fs = [string]$_.DriveFormat } } })
+    wsl_list = $wsl
+    lxss = $lxss
+    wslconfig = $cfg
+  } | ConvertTo-Json -Depth 4 -Compress
+  $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+  $stdout = [Console]::OpenStandardOutput()
+  $stdout.Write($bytes, 0, $bytes.Length)
+} finally {
+  [Console]::OutputEncoding = $encoding
+}
 '''
 
 
@@ -83,16 +96,17 @@ def windows_mounts() -> dict[str, str]:
 
 
 def powershell_path() -> Path | None:
-    """Unbounded filesystem access: call only from inside a bounded probe."""
+    """PowerShell on the mounted system drive. Unbounded: call inside a bounded probe.
+
+    Only C: is trusted to hold it; another mounted drive that happens to carry
+    the same path is never executed.
+    """
     try:
-        mounts = windows_mounts()
+        mount = windows_mounts().get('C')
     except (OSError, ValueError, IndexError):
         return None
-    for letter in sorted(mounts, key=lambda item: (item != 'C', item)):
-        candidate = Path(mounts[letter]) / POWERSHELL_RELATIVE
-        if candidate.exists():
-            return candidate
-    return None
+    candidate = Path(mount) / POWERSHELL_RELATIVE if mount else None
+    return candidate if candidate is not None and candidate.exists() else None
 
 
 def run_powershell(script: str, *, timeout: float = SCRIPT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
@@ -123,8 +137,11 @@ def _rows(value) -> list[dict]:
 
 
 def parse_wslconfig(text) -> dict:
-    """Known keys only; comments and anything else in the file are dropped."""
-    result = {'present': bool(isinstance(text, str) and text.strip()),
+    """Known keys only; comments and anything else in the file are dropped.
+
+    `present` is None when the file could not be read at all: unknown, not absent.
+    """
+    result = {'present': bool(text.strip()) if isinstance(text, str) else None,
               'memory': None, 'swap': None, 'processors': None,
               'auto_memory_reclaim': None, 'sparse_vhd': None}
     wanted = {('wsl2', 'memory'): 'memory', ('wsl2', 'swap'): 'swap', ('wsl2', 'processors'): 'processors',
@@ -154,7 +171,8 @@ def parse_distros(listing, lxss) -> list[dict]:
         if name:
             bases[name] = base[4:] if base.startswith('\\\\?\\') else base
     rows = []
-    for line in (listing if isinstance(listing, str) else '').splitlines()[1:]:
+    # An older wsl.exe ignores WSL_UTF8 and leaves NULs between characters.
+    for line in (listing if isinstance(listing, str) else '').replace('\x00', '').splitlines()[1:]:
         default = line.lstrip().startswith('*')
         parts = line.replace('*', ' ', 1).split()
         if len(parts) < 3 or not parts[-1].isdigit():
@@ -207,8 +225,19 @@ def normalize(raw: dict) -> dict:
     }
 
 
+def _interop_start_failed(completed: subprocess.CompletedProcess) -> bool:
+    # /init could not launch the Windows binary at all; seen intermittently.
+    return bool(completed.returncode and not completed.stdout
+                and completed.stderr.rstrip().endswith(b'Invalid argument'))
+
+
 def _collect() -> dict:
     completed = run_powershell(HOST_SCRIPT)
+    if _interop_start_failed(completed):
+        time.sleep(INTEROP_RETRY_SECONDS)
+        completed = run_powershell(HOST_SCRIPT)
+        if _interop_start_failed(completed):
+            raise HostError('interop could not start PowerShell')
     if completed.returncode:
         raise HostError(f'PowerShell exit {completed.returncode}')
     if len(completed.stdout) > MAX_OUTPUT_BYTES:
@@ -217,8 +246,37 @@ def _collect() -> dict:
         data = normalize(json.loads(completed.stdout.decode('utf-8-sig')))
     except (ValueError, TypeError, KeyError):
         raise HostError('unexpected output') from None
+    mounts = windows_mounts()
+    for volume in data['volumes']:
+        volume['mounted'] = volume['id'][0] in mounts
     data['distro'] = current_distro_name()
+    data['vhd_path'] = _existing_vhd_path(data, mounts)
     return data
+
+
+def _existing_vhd_path(data: dict, mounts: dict[str, str]) -> str:
+    """WSL path of this distro's ext4.vhdx if it is really there, else ''. Unbounded."""
+    row = next((d for d in data['distros'] if d['name'] == data['distro']), None) if data.get('distro') else None
+    match = re.match(r'^([A-Za-z]):\\(.*)$', (row or {}).get('vhd_dir') or '')
+    mount = mounts.get(match[1].upper()) if match else None
+    if not mount:
+        return ''
+    parts = [part for part in match[2].split('\\') if part]
+    if any(part in ('.', '..') or '\x00' in part for part in parts):
+        return ''
+    candidate = Path(mount, *parts, 'ext4.vhdx')
+    try:
+        return str(candidate) if candidate.is_file() else ''
+    except (OSError, ValueError):
+        return ''
+
+
+def retry_interval(previous: dict, interval: float) -> float:
+    """Back off after consecutive failures so a hung host is not probed every minute."""
+    failures = previous.get('failures')
+    if previous.get('status') == 'ok' or type(failures) is not int or failures <= 0:
+        return interval
+    return min(interval * 2 ** min(failures, 8), MAX_RETRY_SECONDS)
 
 
 def read_host_snapshot(previous: dict | None = None, interval: float = 60, force: bool = False,
@@ -232,26 +290,28 @@ def read_host_snapshot(previous: dict | None = None, interval: float = 60, force
     previous = previous if isinstance(previous, dict) and previous.get('schema') == HOST_SCHEMA else {}
     attempted = previous.get('attempted_at')
     if (not force and type(attempted) in (int, float) and 0 < attempted <= now
-            and now - attempted < interval):
+            and now - attempted < retry_interval(previous, interval)):
         return previous
-    snapshot = {'schema': HOST_SCHEMA, 'status': 'ok', 'error': '', 'attempted_at': now,
+    snapshot = {'schema': HOST_SCHEMA, 'status': 'ok', 'error': '', 'attempted_at': now, 'failures': 0,
                 'observed_at': previous.get('observed_at')}
     try:
         snapshot.update(bounded_probe('host-snapshot', _collect, timeout=HOST_TIMEOUT_SECONDS))
         snapshot['observed_at'] = now
         return snapshot
     except HostUnavailable:
-        status = 'unavailable'
+        status, cause = 'unavailable', ''
     except ProbeBusy:
-        status = 'busy'
+        status, cause = 'busy', ''
     except (ProbeTimeout, subprocess.TimeoutExpired):
-        status = 'timeout'
+        status, cause = 'timeout', ''
     except HostError as exc:
         status, cause = 'error', str(exc)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         status, cause = 'error', type(exc).__name__
+    failures = previous.get('failures')
     # The cause is a fixed text or an exception type name, never command output.
-    snapshot.update(status=status, error=_STATUS_TEXT[status] + (f' ({cause})' if status == 'error' else ''))
+    snapshot.update(status=status, error=_STATUS_TEXT[status] + (f' ({cause})' if cause else ''),
+                    failures=(failures if type(failures) is int and failures >= 0 else 0) + 1)
     # The last observation stays visible, marked as not current.
     for key in _DATA_KEYS:
         if key in previous:
@@ -270,18 +330,6 @@ def current_distro_name() -> str:
 
 
 def detected_vhd_path(host: dict | None) -> str:
-    """WSL path of this distro's ext4.vhdx when its drive is mounted, else ''."""
-    distro = host.get('distro') if isinstance(host, dict) else ''
-    if not distro:
-        return ''
-    row = next((d for d in host.get('distros') or [] if isinstance(d, dict) and d.get('name') == distro), None)
-    match = re.match(r'^([A-Za-z]):\\(.*)$', str((row or {}).get('vhd_dir') or ''))
-    if not match:
-        return ''
-    try:
-        mount = windows_mounts().get(match[1].upper())
-    except (OSError, ValueError, IndexError):
-        return ''
-    if not mount:
-        return ''
-    return str(Path(mount, *[part for part in match[2].split('\\') if part], 'ext4.vhdx'))
+    """The VHDX path found at collection time; '' when none was confirmed."""
+    path = host.get('vhd_path') if isinstance(host, dict) else ''
+    return path if isinstance(path, str) and path.startswith('/') and '\x00' not in path and len(path) < 1024 else ''

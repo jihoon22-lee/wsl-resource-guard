@@ -14,7 +14,7 @@ RAW = {
     'os': {'total_kb': 32 * 1024 * 1024, 'free_kb': 8 * 1024 * 1024, 'build': '26200',
            'boot': '2026-11-14T06:58:05.5000000Z'},
     'memory': {'available': 7 * 2 ** 30, 'committed': 40 * 2 ** 30, 'commit_limit': 100 * 2 ** 30},
-    'pagefile': {'allocated_mb': 70000, 'used_mb': 3000, 'peak_mb': 27000},  # single row arrives unwrapped
+    'pagefile': [{'allocated_mb': 70000, 'used_mb': 3000, 'peak_mb': 27000}],
     'vmmem': [{'name': 'vmmemWSL', 'ws': 12 * 2 ** 30, 'private': 14 * 2 ** 30}],
     'top': [{'name': 'vmmemWSL', 'ws': 12 * 2 ** 30}, {'name': 'app\x07', 'ws': 2 ** 30}],
     'volumes': [{'id': 'C:', 'total': 1000, 'free': 200, 'fs': 'NTFS'}, {'id': 'G:', 'total': 500, 'free': 100, 'fs': 'FAT32'},
@@ -58,7 +58,13 @@ class NormalizeTests(unittest.TestCase):
         self.assertTrue(all(value is None for value in data['memory'].values()))
         self.assertIsNone(data['vmmem'])
         self.assertEqual((data['volumes'], data['distros'], data['processes']), ([], [], []))
-        self.assertFalse(data['wslconfig']['present'])
+        self.assertIsNone(data['wslconfig']['present'])            # unreadable: unknown, not absent
+        self.assertIs(hostbridge.parse_wslconfig('')['present'], False)
+        self.assertIs(hostbridge.parse_wslconfig('[wsl2]\n')['present'], True)
+        # A part that failed on Windows arrives as null or missing, never as 0.
+        partial = hostbridge.normalize(dict(RAW, pagefile=[{'allocated_mb': None, 'used_mb': None, 'peak_mb': None}],
+                                            os={'total_kb': None, 'free_kb': None}, memory={'available': None}))
+        self.assertEqual({v for v in partial['memory'].values()}, {None})
         with self.assertRaises(ValueError):
             hostbridge.normalize({'schema': 2})
         with self.assertRaises(ValueError):
@@ -77,6 +83,10 @@ class SnapshotTests(unittest.TestCase):
         self.addCleanup(lambda: _PROBES.pop('host-snapshot', None))
 
     def patched(self, **kwargs):
+        # windows_mounts is stubbed too: collection must not stat the real Windows drives.
+        mounts = patch.object(hostbridge, 'windows_mounts', return_value={'C': '/mnt/c'})
+        mounts.start()
+        self.addCleanup(mounts.stop)
         return (patch.object(hostbridge, 'powershell_path', return_value=Path('/fixture/powershell.exe')),
                 patch.object(hostbridge.subprocess, 'run', **kwargs),
                 patch.object(hostbridge, 'current_distro_name', return_value='Ubuntu'))
@@ -88,6 +98,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((snapshot['schema'], snapshot['status'], snapshot['observed_at'], snapshot['attempted_at']),
                          (1, 'ok', 1000.0, 1000.0))
         self.assertEqual(snapshot['distro'], 'Ubuntu')
+        self.assertEqual([(v['id'], v['mounted']) for v in snapshot['volumes']], [('C:', True), ('G:', False)])
+        self.assertEqual((snapshot['vhd_path'], snapshot['failures']), ('', 0))  # E: is not mounted here
         command = run.call_args.args[0]
         self.assertEqual(command[1:4], ['-NoProfile', '-NonInteractive', '-EncodedCommand'])
         self.assertEqual(len(command), 5)  # the fixed script only, no caller-supplied argument
@@ -105,6 +117,36 @@ class SnapshotTests(unittest.TestCase):
         with patch.object(hostbridge, 'powershell_path', return_value=None):
             failed = hostbridge.read_host_snapshot(second, interval=60, now=1200.0)
             self.assertIs(hostbridge.read_host_snapshot(failed, interval=60, now=1230.0), failed)
+
+    def test_consecutive_failures_back_off_and_success_resets(self):
+        attempts, snapshot, now = [], {}, 1000.0
+        with patch.object(hostbridge, 'powershell_path', return_value=None):
+            for _ in range(200):                       # one sample every 15 s for 50 minutes
+                before = snapshot.get('attempted_at')
+                snapshot = hostbridge.read_host_snapshot(snapshot, interval=60, now=now)
+                if snapshot['attempted_at'] != before:
+                    attempts.append(now - 1000.0)
+                now += 15
+        gaps = [b - a for a, b in zip(attempts, attempts[1:])]
+        self.assertEqual(gaps[:4], [120.0, 240.0, 480.0, 900.0])   # doubling, capped at 15 minutes
+        self.assertTrue(all(gap == 900.0 for gap in gaps[4:]))
+        a, b, c = self.patched(return_value=completed())
+        with a, b, c:
+            good = hostbridge.read_host_snapshot(snapshot, interval=60, force=True, now=now)
+        self.assertEqual((good['status'], good['failures'], hostbridge.retry_interval(good, 60)), ('ok', 0, 60))
+
+    def test_interop_start_failure_is_retried_once_and_named(self):
+        broken = subprocess.CompletedProcess([], 1, stdout=b'', stderr=b'/mnt/c/x/powershell.exe: Invalid argument\n')
+        a, b, c = self.patched(side_effect=[broken, completed()])
+        with a, b as run, c, patch.object(hostbridge, 'INTEROP_RETRY_SECONDS', 0):
+            self.assertEqual(hostbridge.read_host_snapshot(now=1000.0)['status'], 'ok')
+            self.assertEqual(run.call_count, 2)
+        a, b, c = self.patched(return_value=broken)
+        with a, b as run, c, patch.object(hostbridge, 'INTEROP_RETRY_SECONDS', 0):
+            failed = hostbridge.read_host_snapshot(now=1000.0)
+            self.assertEqual((failed['status'], run.call_count), ('error', 2))
+            self.assertIn('interop could not start PowerShell', failed['error'])
+            self.assertNotIn('/mnt/c', failed['error'])   # stderr itself is never stored
 
     def test_failure_keeps_the_last_observation_and_says_so(self):
         a, b, c = self.patched(return_value=completed())
@@ -162,27 +204,45 @@ class PathTests(unittest.TestCase):
     MOUNTS = {'/mnt/c': ('9p', 'C:\\'), '/mnt/e': ('9p', 'E:\\'), '/': ('ext4', '/dev/sdd'),
               '/usr/lib/wsl/drivers': ('9p', 'drivers')}
 
-    def test_powershell_is_found_on_the_mounted_system_drive(self):
-        with patch.object(hostbridge, 'mount_table', return_value=dict(self.MOUNTS, **{'/win/c': ('9p', 'C:\\')})), \
-                patch.object(hostbridge.Path, 'exists', autospec=True,
-                             side_effect=lambda self: str(self).startswith('/mnt/c/')) as exists:
-            self.assertEqual(hostbridge.powershell_path(),
-                             Path('/mnt/c') / hostbridge.POWERSHELL_RELATIVE)
-            self.assertEqual(exists.call_count, 1)  # C: first
+    def test_powershell_is_found_only_on_the_mounted_system_drive(self):
+        with patch.object(hostbridge, 'mount_table', return_value={'/win/c': ('9p', 'C:\\'), '/mnt/e': ('9p', 'E:\\')}), \
+                patch.object(hostbridge.Path, 'exists', autospec=True, return_value=True):
+            self.assertEqual(hostbridge.powershell_path(), Path('/win/c') / hostbridge.POWERSHELL_RELATIVE)
+        # Another drive carrying the same path is never used.
+        with patch.object(hostbridge, 'mount_table', return_value={'/mnt/e': ('9p', 'E:\\')}), \
+                patch.object(hostbridge.Path, 'exists', autospec=True, return_value=True) as exists:
+            self.assertIsNone(hostbridge.powershell_path())
+            self.assertEqual(exists.call_count, 0)
+        with patch.object(hostbridge, 'mount_table', return_value=self.MOUNTS), \
+                patch.object(hostbridge.Path, 'exists', autospec=True, return_value=False):
+            self.assertIsNone(hostbridge.powershell_path())
         with patch.object(hostbridge, 'mount_table', return_value={'/': ('ext4', '/dev/sdd')}):
             self.assertIsNone(hostbridge.powershell_path())
         with patch.object(hostbridge, 'mount_table', side_effect=OSError):
             self.assertIsNone(hostbridge.powershell_path())
 
-    def test_vhd_path_is_derived_only_for_this_distro_on_a_mounted_drive(self):
-        host = {'distro': 'Ubuntu', 'distros': hostbridge.normalize(RAW)['distros']}
-        with patch.object(hostbridge, 'mount_table', return_value=self.MOUNTS):
-            self.assertEqual(hostbridge.detected_vhd_path(host), '/mnt/e/WSL/Ubuntu/ext4.vhdx')
-            self.assertEqual(hostbridge.detected_vhd_path(dict(host, distro='Debian')), '')
-            self.assertEqual(hostbridge.detected_vhd_path(dict(host, distro='')), '')
-            self.assertEqual(hostbridge.detected_vhd_path(None), '')
-        with patch.object(hostbridge, 'mount_table', return_value={'/mnt/c': ('9p', 'C:\\')}):
-            self.assertEqual(hostbridge.detected_vhd_path(host), '')  # E: is not mounted
+    def test_vhd_path_is_kept_only_when_the_file_is_really_there(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'WSL/Ubuntu').mkdir(parents=True)
+            data = {'distro': 'Ubuntu', 'distros': hostbridge.normalize(RAW)['distros']}
+            mounts = {'E': tmp}
+            self.assertEqual(hostbridge._existing_vhd_path(data, mounts), '')          # no ext4.vhdx there
+            (Path(tmp) / 'WSL/Ubuntu/ext4.vhdx').write_bytes(b'')
+            self.assertEqual(hostbridge._existing_vhd_path(data, mounts), str(Path(tmp) / 'WSL/Ubuntu/ext4.vhdx'))
+            self.assertEqual(hostbridge._existing_vhd_path(dict(data, distro='Debian'), mounts), '')
+            self.assertEqual(hostbridge._existing_vhd_path(dict(data, distro=''), mounts), '')
+            self.assertEqual(hostbridge._existing_vhd_path(data, {'C': tmp}), '')        # its drive is not mounted
+            for hostile in ('E:\\WSL\\..\\..\\etc', 'E:\\WSL\\Ubuntu\x00', '\\\\server\\share', 'WSL'):
+                odd = dict(data, distros=[dict(data['distros'][0], vhd_dir=hostile)])
+                self.assertEqual(hostbridge._existing_vhd_path(odd, mounts), '', hostile)
+
+    def test_detected_path_is_read_defensively_from_stored_state(self):
+        self.assertEqual(hostbridge.detected_vhd_path({'vhd_path': '/mnt/e/WSL/Ubuntu/ext4.vhdx'}),
+                         '/mnt/e/WSL/Ubuntu/ext4.vhdx')
+        for bad in (None, {}, {'vhd_path': None}, {'vhd_path': 5}, {'vhd_path': 'relative'},
+                    {'vhd_path': '/mnt/e/x\x00'}, {'vhd_path': '/' + 'a' * 2000}, {'distros': 7}, 'text'):
+            self.assertEqual(hostbridge.detected_vhd_path(bad), '', bad)
 
     def test_distro_name_comes_from_the_unc_root(self):
         for output, expected in (('\\\\wsl.localhost\\Ubuntu\\\n', 'Ubuntu'), ('\\\\wsl$\\Debian\n', 'Debian'),

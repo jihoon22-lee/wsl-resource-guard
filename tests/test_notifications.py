@@ -120,7 +120,7 @@ class NotificationTests(unittest.TestCase):
         failed.returncode = 1
         failed.stderr = "경로가 없습니다".encode("cp949")
         with patch("wsl_resource_guard.hostbridge.powershell_path", return_value=Path("/fixture/powershell.exe")):
-            with patch("wsl_resource_guard.notifications.subprocess.run",
+            with patch("wsl_resource_guard.hostbridge.subprocess.run",
                        return_value=failed) as run:
                 result = notifier._send_windows_toast("t", "m")
         self.assertFalse(result.sent)
@@ -136,7 +136,7 @@ class NotificationTests(unittest.TestCase):
         failed.stderr = ('#< CLIXML<Objs><S>앱 ID를 찾을 수 없습니다</S></Objs>'
                          ).encode("utf-8")
         with patch("wsl_resource_guard.hostbridge.powershell_path", return_value=Path("/fixture/powershell.exe")):
-            with patch("wsl_resource_guard.notifications.subprocess.run",
+            with patch("wsl_resource_guard.hostbridge.subprocess.run",
                        return_value=failed):
                 result = notifier._send_windows_toast("t", "m")
         self.assertIn("앱 ID를 찾을 수 없습니다", result.detail)
@@ -153,7 +153,7 @@ class NotificationTests(unittest.TestCase):
             '<S S="Error">At line:1 char:1_x000D__x000A_</S></Objs>'
         ).encode("utf-8")
         with patch("wsl_resource_guard.hostbridge.powershell_path", return_value=Path("/fixture/powershell.exe")):
-            with patch("wsl_resource_guard.notifications.subprocess.run",
+            with patch("wsl_resource_guard.hostbridge.subprocess.run",
                        return_value=failed):
                 result = notifier._send_windows_toast("t", "m")
         self.assertEqual(
@@ -192,7 +192,7 @@ class NotificationTests(unittest.TestCase):
         done = MagicMock(returncode=0, stderr=b"")
         self.assertGreater(notifications.TOAST_TIMEOUT_SECONDS, 15)
         with (patch("wsl_resource_guard.hostbridge.powershell_path") as path,
-              patch("wsl_resource_guard.notifications.subprocess.run", return_value=done),
+              patch("wsl_resource_guard.hostbridge.subprocess.run", return_value=done),
               patch.object(notifications, "TOAST_TIMEOUT_SECONDS", .05)):
             path.side_effect = stalled
             try:

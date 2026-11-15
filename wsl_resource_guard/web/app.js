@@ -686,7 +686,7 @@ function hostPanel(host, m) {
     ["커밋 사용량", mem.commit_used_bytes == null ? "미제공" : `${memory(mem.commit_used_bytes)} / ${memory(mem.commit_limit_bytes)}${share(mem.commit_used_bytes, mem.commit_limit_bytes)}`],
     ["페이지 파일", mem.pagefile_used_bytes == null ? "미제공" : `${memory(mem.pagefile_used_bytes)} 사용 / ${memory(mem.pagefile_allocated_bytes)} 할당 · 최고 ${memory(mem.pagefile_peak_bytes)}`],
     ["WSL VM (vmmem)", vm ? `${memory(vm.working_set_bytes)} 점유${wslUsed != null ? ` · WSL 내부 사용 ${memory(wslUsed)}` : ""}${vm.private_bytes != null ? ` · 전용 ${memory(vm.private_bytes)}` : ""}` : "미제공"],
-    [".wslconfig", cfg.present ? [["memory", cfg.memory], ["swap", cfg.swap], ["processors", cfg.processors], ["autoMemoryReclaim", cfg.auto_memory_reclaim], ["sparseVhd", cfg.sparse_vhd]].filter((x) => x[1]).map((x) => `${x[0]}=${x[1]}`).join(" · ") || "관련 설정 없음" : "파일 없음 (WSL 기본값)"],
+    [".wslconfig", cfg.present == null ? "확인하지 못했습니다" : cfg.present ? [["memory", cfg.memory], ["swap", cfg.swap], ["processors", cfg.processors], ["autoMemoryReclaim", cfg.auto_memory_reclaim], ["sparseVhd", cfg.sparse_vhd]].filter((x) => x[1]).map((x) => `${x[0]}=${x[1]}`).join(" · ") || "관련 설정 없음" : "파일 없음 (WSL 기본값)"],
     ["배포판", (host.distros || []).map((d) => `${d.name}${d.name === host.distro ? " (현재)" : ""} ${d.state}`).join(" · ") || "미제공"],
   ].map((r) => [`<strong>${esc(r[0])}</strong>`, esc(r[1])]);
   const processes = (host.processes || []).map((p) => [esc(p.name), memory(p.working_set_bytes)]);
@@ -695,14 +695,13 @@ function hostPanel(host, m) {
 function hostVolumesPanel() {
   const host = monitorData?.metrics?.host;
   if (!host || !host.schema || !host.observed_at || !(host.volumes || []).length) return "";
-  const mounted = new Set((diskData?.disks || []).filter((d) => d.kind === "windows" && d.status !== "unmounted").map((d) => d.id));
   const monitored = new Set((diskData?.disks || []).filter((d) => d.kind === "windows").map((d) => d.id));
   const rows = host.volumes.map((v) => [
     `<strong>${esc(v.id)}</strong>`,
     esc(v.filesystem || "—"),
     memory(v.total_bytes),
     v.free_bytes == null ? "미제공" : `${memory(v.free_bytes)} (${((v.free_bytes / v.total_bytes) * 100).toFixed(1)}%)`,
-    monitored.has(v.id) ? "경보 대상" : mounted.has(v.id) ? "WSL에 마운트됨" : "WSL에 마운트되지 않음 · 경보 대상 아님",
+    monitored.has(v.id) ? "경보 대상" : v.mounted ? "WSL에 마운트됨 · 감시 안 함" : "WSL에 마운트되지 않음 · 감시 안 함",
   ]);
   return `<div class="panel" id="host-volumes"><div class="panel-heading"><h2>Windows 고정 볼륨 전체</h2><span class="${host.status === "ok" ? "muted" : "pill warn"}">${hostNote(host)}</span></div><div class="table-wrap">${table(["볼륨", "파일시스템", { t: "전체", cls: "num" }, { t: "여유", cls: "num" }, "감시"], rows)}</div></div>`;
 }

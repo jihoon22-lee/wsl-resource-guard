@@ -320,7 +320,7 @@ class DataFormatTests(unittest.TestCase):
         from wsl_resource_guard import daemon
         state, incidents, ledger, _ = self.written()
         self.assertEqual((state['version'], incidents['version'], ledger['version']), (1, 1, 1))
-        newer = dict(state, metrics=dict(state['metrics'], host={'schema': 1, 'memory': {}}))
+        newer = dict(state, metrics=dict(state['metrics'], field_from_a_later_version={'schema': 1}))
         restored = daemon._metrics_from_state(newer)
         self.assertIsNotNone(restored)
         self.assertEqual(restored.mem_total_kib, state['metrics']['mem_total_kib'])
