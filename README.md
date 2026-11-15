@@ -36,6 +36,7 @@ wrg status
 - [웹과 CLI 사용법](docs/usage.md)
 - [설정](docs/configuration.md)
 - [구조와 권한 경계](docs/architecture.md)
+- [저장 형식과 컨트롤러 요청](docs/data-formats.md)
 - [운영·복구·문제 해결](docs/operations.md)
 - [Paseo 서비스 등록과 연결 검사](docs/paseo.md)
 - [예정 작업과 미해결 항목](docs/roadmap.md)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 import fcntl
 from datetime import datetime, timedelta
 import html
@@ -12,10 +12,11 @@ from pathlib import Path
 import re
 import signal
 import subprocess
-import tempfile
 import time
 
+from . import atomic
 from .safe_read import read_text
+from .sdnotify import notify as notify_systemd
 from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations,
                      coerce_config_value, write_config_value)
 from .disks import disk_severity, read_disks
@@ -24,6 +25,9 @@ from .notifications import SKIPPED_DETAILS, Notifier, NotificationResult
 from .processes import ProcessSnapshot, SessionUsage, apply_cpu_rates, build_snapshot, process_start_ticks
 from .reporting import build_html_report, build_text_report, collect_resource_rows
 
+
+# docs/data-formats.md describes state.json; additions keep this version.
+STATE_VERSION = 1
 
 # Written by the root service controller, readable by the owner's group.
 SHARED_DIR = Path("/var/lib/wrg-shared")
@@ -326,8 +330,11 @@ def _metrics_from_state(data: dict[str, object]) -> SystemMetrics | None:
     raw = data.get("metrics")
     if not isinstance(raw, dict):
         return None
+    # Fields added by a newer version are ignored, so a rollback keeps the
+    # previous sample instead of restarting every sustain and recovery clock.
+    known = {item.name for item in fields(SystemMetrics)}
     try:
-        metrics = SystemMetrics(**raw)
+        metrics = SystemMetrics(**{key: value for key, value in raw.items() if key in known})
     except (TypeError, ValueError):
         return None
     numeric = ("timestamp", "mem_total_kib", "mem_available_kib", "swap_total_kib",
@@ -355,19 +362,7 @@ def load_state(path: Path) -> dict[str, object]:
 
 
 def save_state(path: Path, state: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".state-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=False, separators=(",", ":"))
-            handle.write("\n")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+    atomic.write_json(path, state, compact=True, trailing_newline=True)
 
 
 def _event_reports(
@@ -861,6 +856,7 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         abnormal_since = min(evaluation.condition_since.values(), default=now)
 
     next_state: dict[str, object] = {
+        "version": STATE_VERSION,
         "updated_at": now,
         "writer_pid": os.getpid(),
         "writer_start_ticks": process_start_ticks(os.getpid()),
@@ -933,6 +929,8 @@ def record_history(
 
 
 CONFIG_REQUEST_MAX_AGE_SECONDS = 600
+# How often the idle wait between samples tells the service manager the loop is alive.
+WATCHDOG_FEED_SECONDS = 5
 
 
 def apply_config_request(settings: Settings, shared_dir: Path = SHARED_DIR,
@@ -977,7 +975,9 @@ def weekly_report_slot(now: float, last_slot: str, settings: Settings) -> str | 
     if not settings.weekly_report_enabled:
         return None
     local = datetime.fromtimestamp(now).astimezone()
-    if local.weekday() != settings.weekly_report_weekday or local.hour < settings.weekly_report_hour:
+    # Due from the configured weekday and hour until the ISO week ends, so a PC
+    # that was off at that time still sends this week's report once.
+    if (local.weekday(), local.hour) < (settings.weekly_report_weekday, settings.weekly_report_hour):
         return None
     year, week, _ = local.isocalendar()
     slot = f"{year}-W{week:02d}"
@@ -1067,6 +1067,8 @@ def _run_locked(settings: Settings) -> None:
     config_mtime = _config_mtime(settings.config_path)
     print(f"wsl-resource-guard started interval={settings.interval_seconds}s", flush=True)
     _log_config_warnings(settings)
+    notify_systemd('READY=1')
+    last_feed = time.monotonic()
     while not stopping:
         try:
             apply_config_request(settings)
@@ -1102,9 +1104,16 @@ def _run_locked(settings: Settings) -> None:
                 last_logged_severity = evaluation.severity
         except Exception as exc:  # The service must survive transient /proc races.
             print(f"sample error={type(exc).__name__}: {exc}", flush=True)
+        # Fed only from this loop: a sample that never returns stops the signal
+        # and the service manager restarts the guard after WatchdogSec.
+        notify_systemd('WATCHDOG=1')
+        last_feed = time.monotonic()
         remaining = max(0.0, settings.interval_seconds - (time.monotonic() - started))
         end = time.monotonic() + remaining
         while not stopping and time.monotonic() < end:
-            time.sleep(min(1.0, end - time.monotonic()))
+            time.sleep(max(0.0, min(1.0, end - time.monotonic())))
+            if time.monotonic() - last_feed >= WATCHDOG_FEED_SECONDS:
+                notify_systemd('WATCHDOG=1')
+                last_feed = time.monotonic()
     deliveries.stop()
     print("wsl-resource-guard stopped", flush=True)

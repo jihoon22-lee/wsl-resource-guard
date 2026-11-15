@@ -10,10 +10,9 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 
-from . import __version__
+from . import __version__, atomic
 from .build_info import WEB_PACKAGE, compare_stamps, read_stamp
 from .config import (CONFIG_RULES, Settings, _toml_literal, check_relations, load_daemon_settings,
                      parse_config_value, write_config_value)
@@ -467,19 +466,7 @@ def cmd_configure_alerts(args: argparse.Namespace) -> int:
         ),
     }
     path = settings.secrets_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".secrets-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(updated, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+    atomic.write_json(path, updated, mode=0o600, indent=2, trailing_newline=True)
     print(f"저장 완료: {path} (권한 {oct(path.stat().st_mode & 0o777)})")
     print("전송 검증: wrg test-alert")
     return 0

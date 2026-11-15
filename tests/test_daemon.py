@@ -707,7 +707,8 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertEqual(slot, "2026-W41")
         self.assertIsNone(weekly_report_slot(monday_9 + 3600, slot, settings))
         self.assertIsNone(weekly_report_slot(monday_8, "", settings))
-        self.assertIsNone(weekly_report_slot(tuesday, "", settings))
+        self.assertEqual(weekly_report_slot(tuesday, "", settings), slot)  # Caught up within the week.
+        self.assertIsNone(weekly_report_slot(tuesday, slot, settings))
         settings.weekly_report_enabled = False
         self.assertIsNone(weekly_report_slot(monday_9, "", settings))
 
