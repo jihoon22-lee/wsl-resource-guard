@@ -565,6 +565,28 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sent, [('active', 1)] * 2)
         self.assertEqual(len(store['incidents']), 1)
 
+    def test_stalled_toast_does_not_block_other_channels(self):
+        import threading
+        from wsl_resource_guard import notifications
+        from wsl_resource_guard.disks import _PROBES
+        from wsl_resource_guard.notifications import Notifier
+        self.engine.settings = replace(self.settings, gmail_enabled=False, windows_toast_enabled=True,
+                                       webhook_enabled=True)
+        release = threading.Event()
+        with (patch('wsl_resource_guard.notifications.Path') as path,
+              patch.object(notifications, 'TOAST_TIMEOUT_SECONDS', .05),
+              patch.object(Notifier, '_send_webhook',
+                           return_value=NotificationResult('webhook', True, 'HTTP 200')) as webhook):
+            path.return_value.exists.side_effect = lambda: release.wait(5) and False
+            try:
+                self.engine.tick()
+            finally:
+                release.set()
+                _PROBES['windows-toast'].join(3)
+        self.assertEqual(webhook.call_count, 1)
+        states = {d['channel']: d['status'] for d in self.ledger()['events'][self.row['id']]['destinations'].values()}
+        self.assertEqual(states, {'windows_toast': 'unknown', 'webhook': 'accepted'})
+
 
 class ProtocolTests(unittest.TestCase):
     def setUp(self):

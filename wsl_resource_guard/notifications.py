@@ -31,6 +31,9 @@ SKIPPED_DETAILS = frozenset({"credentials not configured", "webhook not configur
                              "no subscriptions", "cryptography unavailable"})
 
 
+# Longer than the PowerShell subprocess timeout so that one reports first.
+TOAST_TIMEOUT_SECONDS = 20
+
 _CLIXML_STRING = re.compile(r'<S(?:\s+S="([^"]*)")?[^>]*>(.*?)</S>', re.S)
 _CLIXML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
 
@@ -127,6 +130,18 @@ class Notifier:
         return NotificationResult("push", sent > 0, f"{sent}/{attempted} sent · {detail}"[:300])
 
     def _send_windows_toast(self, title: str, message: str) -> NotificationResult:
+        # stat/exec on the Windows mount can block before subprocess's own
+        # timeout starts. The delivery worker is a single thread, so a stuck
+        # toast must not hold back Gmail, push or any later incident.
+        from .disks import ProbeTimeout, bounded_probe
+        try:
+            return bounded_probe("windows-toast", lambda: self._deliver_windows_toast(title, message),
+                                 timeout=TOAST_TIMEOUT_SECONDS)
+        except ProbeTimeout:
+            # "Timeout" marks the outcome as unknown: the toast may still appear.
+            return NotificationResult("windows_toast", False, "Timeout: Windows interop did not answer")
+
+    def _deliver_windows_toast(self, title: str, message: str) -> NotificationResult:
         powershell = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
         if not powershell.exists():
             return NotificationResult("windows_toast", False, "powershell.exe is unavailable")
