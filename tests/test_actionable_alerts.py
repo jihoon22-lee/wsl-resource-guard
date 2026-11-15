@@ -328,6 +328,92 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual([(r['id'], r['key'], r['state'], r['revision']) for r in out['incidents']],
                          [('e' * 32, 'disk.E::host', 'active', 1)])
 
+    def test_disk_incident_names_the_wsl_virtual_disk_that_fills_the_drive(self):
+        gib = 2 ** 30
+        def disks(file_gib=839, wsl_used_gib=299, host='E:'):
+            return [{'id': 'E:', 'kind': 'windows', 'status': 'ok', 'total_bytes': 931 * gib, 'used_bytes': 844 * gib,
+                     'available_bytes': 87 * gib, 'available_percent': 9.3, 'error': ''},
+                    {'id': 'wsl', 'kind': 'wsl', 'status': 'ok', 'used_bytes': wsl_used_gib * gib,
+                     'vhd': {'file_bytes': file_gib * gib if file_gib else None, 'host_drive': host,
+                             'status': 'ok' if file_gib else 'not-configured'}}]
+        def row(**kwargs):
+            m = metrics(1000); m.disks = disks(**kwargs)
+            return reconcile({}, [DISK], self.snap, m, self.settings, boot='boot-a')['incidents'][0]
+        full = row()
+        self.assertEqual(full['evidence']['vhd'], {'file_gib': 839.0, 'share_percent': 99, 'reclaim_gib': 540.0})
+        self.assertIn('99%', full['guidance']); self.assertIn('839 GiB', full['guidance'])
+        self.assertIn('540 GiB', full['guidance']); self.assertIn('VHDX 정리', full['guidance'])
+        self.assertEqual(full['measurement'], {'value': 9.3, 'threshold': 20.0, 'unit': '%',
+                                               'label': '디스크 여유 · 기준 미만', 'change_since_open': 0.0})
+        # Little to give back: the share is still named, the clean-up hint is not.
+        tight = row(file_gib=310)
+        self.assertIsNone(tight['evidence']['vhd']['reclaim_gib'])
+        self.assertNotIn('정리하면', tight['guidance'])
+        # A small or impossible share is not presented as the cause.
+        for kwargs in (dict(file_gib=30, wsl_used_gib=20), dict(file_gib=2, wsl_used_gib=1),
+                       dict(file_gib=900)):          # larger than everything stored on the drive
+            unrelated = row(**kwargs)
+            self.assertNotIn('vhd', unrelated['evidence'], kwargs)
+            self.assertNotIn('가상 디스크', unrelated['guidance'])
+        # Numbers that are not current are not combined into a claim either.
+        m = metrics(1000); m.disks = disks(); m.disks[0]['status'] = 'error'
+        stale = reconcile({}, [DISK], self.snap, m, self.settings, boot='boot-a')['incidents'][0]
+        self.assertNotIn('vhd', stale['evidence'])
+        self.assertIn('마지막 확인값', stale['measurement']['label'])
+        # A floor that decides the alert is named with the percent limit.
+        floored = Settings(recovery_sustain_seconds=30, warning_disk_free_gib=100)
+        m = metrics(1000); m.disks = disks()
+        self.assertIn('100 GiB 미만일 때만',
+                      reconcile({}, [DISK], self.snap, m, floored, boot='boot-a')['incidents'][0]['measurement']['label'])
+        # An incident opened before measurements existed does not invent a starting value.
+        old = {'version': 1, 'updated_at': 990, 'incidents': [
+            {'id': 'a' * 32, 'key': 'disk.E::host', 'state': 'active', 'severity': 'warning', 'revision': 1,
+             'opened_at': 500, 'observed_at': 990, 'reason': 'E:', 'transitions': []}]}
+        m = metrics(1000); m.disks = disks()
+        kept = reconcile(old, [DISK], self.snap, m, self.settings, boot='boot-a')['incidents'][0]
+        self.assertNotIn('initial_value', kept)
+        self.assertNotIn('change_since_open', kept['measurement'])
+        # The VHDX lives elsewhere or its size is unknown: no claim about this drive.
+        for other in (row(host='C:'), row(file_gib=0)):
+            self.assertNotIn('vhd', other['evidence'])
+            self.assertIn('저장 공간 화면', other['guidance'])
+            self.assertNotIn('가상 디스크', other['guidance'])
+        title, plain, _ = incident_message(full, 'https://dashboard.example.com')
+        self.assertEqual(title, '디스크 여유 부족 · E:')
+        self.assertIn('839 GiB', plain)
+
+    def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        other = disk_metrics(1015)
+        other.disks = [dict(other.disks[0], id='C:'), {'id': 'wsl', 'kind': 'wsl', 'status': 'ok'}]
+        out = reconcile(out, [], self.snap, other, self.settings, boot='boot-a')
+        row = out['incidents'][0]
+        self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')), ('resolved', 1, True))
+        self.assertNotIn('recovery_pending', row)
+        self.assertTrue(row['transitions'][-1]['unmonitored'])
+        title, plain, _ = incident_message(row, '')
+        self.assertTrue(title.startswith('감시 종료'))
+        self.assertNotIn('해소됐습니다', plain)
+        # A recovery that was still being confirmed is withdrawn too, not paused forever.
+        pending = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        for now in range(1015, 1100, 15):
+            pending = reconcile(pending, [], self.snap, disk_metrics(now, 50.0), self.settings, boot='boot-a')
+        self.assertTrue(pending['incidents'][0]['recovery_pending'])
+        gone = disk_metrics(1115); gone.disks = [{'id': 'wsl', 'kind': 'wsl', 'status': 'ok'}]
+        closed = reconcile(pending, [], self.snap, gone, self.settings, boot='boot-a')['incidents'][0]
+        self.assertEqual((closed['state'], closed['revision'], closed.get('recovery_unconfirmed')), ('resolved', 1, True))
+        self.assertNotIn('recovery_pending', closed)
+        # Settings that were not read cleanly may list fallback drives: nothing closes.
+        broken = Settings(recovery_sustain_seconds=30)
+        broken.load_warnings.append('disk_drives: 값의 형식 또는 범위가 올바르지 않습니다.')
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), broken, boot='boot-a')
+        self.assertEqual(reconcile(out, [], self.snap, other, broken, boot='boot-a')['incidents'][0]['state'], 'unknown')
+        # An empty disk list is a failed collection, not a configuration change.
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        empty = disk_metrics(1015); empty.disks = []
+        self.assertEqual(reconcile(out, [], self.snap, empty, self.settings, boot='boot-a')['incidents'][0]['state'],
+                         'unknown')
+
     def test_unobserved_disk_after_reboot_is_unknown_not_recovered(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         for now in range(5000, 5000 + RECURRENCE_MERGE_SECONDS + 300, 15):

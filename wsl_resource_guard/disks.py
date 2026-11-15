@@ -68,16 +68,50 @@ def mount_table(path: Path = Path('/proc/self/mountinfo')) -> dict[str, tuple[st
     return mounts
 
 
-def disk_severity(disk: dict, warning: float = 20, critical: float = 10) -> str:
+def disk_limits(settings, drive: str) -> tuple[float, float, float, float]:
+    """(warning %, critical %, warning GiB floor, critical GiB floor) for one drive."""
+    row = (getattr(settings, 'disk_thresholds', None) or {}).get(str(drive).rstrip(':').upper(), {})
+    warning_gib = row.get('warning_free_gib', settings.warning_disk_free_gib)
+    critical_gib = row.get('critical_free_gib', settings.critical_disk_free_gib)
+    # Critical is never reported where Warning would not be: with only a
+    # warning floor set, the critical level is held back by the same floor.
+    return (row.get('warning_free_percent', settings.warning_disk_free_percent),
+            row.get('critical_free_percent', settings.critical_disk_free_percent),
+            warning_gib, critical_gib if critical_gib > 0 else warning_gib)
+
+
+def alert_floor_bytes(total: float, percent: float, gib: float = 0) -> float:
+    """Free space below which a level alerts: under the percent and, if set, under the GiB floor."""
+    floor = total * percent / 100
+    return min(floor, gib * 2**30) if gib > 0 else floor
+
+
+def disk_severity(disk: dict, warning: float = 20, critical: float = 10,
+                  warning_gib: float = 0, critical_gib: float = 0) -> str:
     total, available = disk.get('total_bytes'), disk.get('available_bytes')
     if not isinstance(total, (int, float)) or not isinstance(available, (int, float)) or total <= 0:
         return 'unknown'
     # Compare unrounded values. Exactly 20% is normal; exactly 10% is warning.
-    if available * 100 < total * critical:
+    # A GiB floor narrows the alert: the free space must be under both.
+    def below(percent: float, gib: float) -> bool:
+        return available * 100 < total * percent and (gib <= 0 or available < gib * 2**30)
+    if below(critical, critical_gib):
         return 'critical'
-    if available * 100 < total * warning:
+    if below(warning, warning_gib):
         return 'warning'
     return 'normal'
+
+
+def disk_limit_lines(settings) -> list[str]:
+    """One line per monitored drive describing when it alerts."""
+    lines = []
+    for letter in settings.disk_drives:
+        warning, critical, warning_gib, critical_gib = disk_limits(settings, letter)
+        def level(percent: float, gib: float) -> str:
+            return f'여유 {percent:g}% 미만' + (f'이면서 {gib:g} GiB 미만' if gib > 0 else '')
+        lines.append(f'{str(letter).upper()}: {level(warning, warning_gib)} Warning · '
+                     f'{level(critical, critical_gib)} Critical')
+    return lines
 
 
 def collect_disks(drives: list[str], vhd_path: str = '', previous: list[dict] | None = None) -> list[dict]:
@@ -261,7 +295,8 @@ def median_rate(points: list[tuple[float, float]], unit_seconds: float,
 
 def disk_insights(disks: list[dict], history: list[dict],
                   warning_pct: float, critical_pct: float,
-                  recent: list[dict] | None = None) -> dict[str, dict]:
+                  recent: list[dict] | None = None,
+                  limits: dict[str, tuple] | None = None) -> dict[str, dict]:
     """Per-drive trend and reclaim hints from one record per day.
 
     history records carry a 'date' (YYYY-MM-DD) and a 'disks' list, e.g. from
@@ -292,6 +327,8 @@ def disk_insights(disks: list[dict], history: list[dict],
     insights: dict[str, dict] = {}
     for disk in disks:
         info: dict[str, float] = {}
+        # Forecast to the point where this drive would actually alert.
+        warn_pct, crit_pct, warn_gib, crit_gib = (limits or {}).get(disk['id'], (warning_pct, critical_pct, 0, 0))
         series = sorted(daily.get(disk['id'], []))
         if len(series) >= 2:
             info['daily_delta_gib'] = (series[-1][1] - series[-2][1]) / 2**30
@@ -308,9 +345,9 @@ def disk_insights(disks: list[dict], history: list[dict],
                 if (disk.get('kind') == 'windows' and rate >= MIN_FORECAST_GIB_PER_DAY * 2**30
                         and isinstance(total, (int, float)) and total > 0):
                     available = series[-1][1]
-                    for label, pct in (('days_to_warning', warning_pct),
-                                       ('days_to_critical', critical_pct)):
-                        floor = total * pct / 100
+                    for label, pct, gib in (('days_to_warning', warn_pct, warn_gib),
+                                            ('days_to_critical', crit_pct, crit_gib)):
+                        floor = alert_floor_bytes(total, pct, gib)
                         days = (available - floor) / rate
                         if available > floor and days <= MAX_FORECAST_DAYS:
                             info[label] = days
@@ -323,9 +360,9 @@ def disk_insights(disks: list[dict], history: list[dict],
                 if rate >= 0.25 * 2**30 and isinstance(total, (int, float)) and total > 0:
                     info['recent_gib_per_hour'] = rate / 2**30
                     available = series_h[-1][1]
-                    for label, pct in (('hours_to_warning', warning_pct),
-                                       ('hours_to_critical', critical_pct)):
-                        floor = total * pct / 100
+                    for label, pct, gib in (('hours_to_warning', warn_pct, warn_gib),
+                                            ('hours_to_critical', crit_pct, crit_gib)):
+                        floor = alert_floor_bytes(total, pct, gib)
                         if available > floor:
                             info[label] = (available - floor) / rate
         vhd = disk.get('vhd') or {}

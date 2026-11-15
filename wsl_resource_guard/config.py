@@ -37,6 +37,8 @@ CONFIG_RULES: dict[str, tuple[str, float, float, str]] = {
     "warning_swap_out_max_available_gib": ("float", 0.1, 1024, "swap-out 경보의 가용 RAM 상한 (GiB)"),
     "warning_disk_free_percent": ("float", 1, 95, "Warning: 디스크 여유 (%)"),
     "critical_disk_free_percent": ("float", 0.5, 95, "Critical: 디스크 여유 (%)"),
+    "warning_disk_free_gib": ("float", 0, 100000, "Warning 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함)"),
+    "critical_disk_free_gib": ("float", 0, 100000, "Critical 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함)"),
     "session_observe_rss_gib": ("float", 0.5, 1024, "세션 관찰 시작 RSS (GiB)"),
     "session_warning_rss_gib": ("float", 0.5, 1024, "Warning: 세션 RSS (GiB)"),
     "mcp_observe_rss_gib": ("float", 0.5, 1024, "MCP 관찰 시작 RSS (GiB)"),
@@ -94,6 +96,8 @@ CONFIG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("디스크", (
         "warning_disk_free_percent",
         "critical_disk_free_percent",
+        "warning_disk_free_gib",
+        "critical_disk_free_gib",
     )),
     ("세션·MCP", (
         "session_observe_rss_gib",
@@ -137,8 +141,22 @@ CONFIG_RELATIONS = (
     ("mcp_warning_rss_gib", "mcp_observe_rss_gib"),
 )
 
+# Ordered only when both are set; 0 turns that floor off.
+CONFIG_OPTIONAL_RELATIONS = (
+    ("warning_disk_free_gib", "critical_disk_free_gib"),
+)
+
+# [disk_thresholds.<letter>] keys and their ranges; unset keys use the global value.
+DISK_LIMIT_KEYS = {
+    "warning_free_percent": (1, 95),
+    "critical_free_percent": (0.5, 95),
+    "warning_free_gib": (0, 100000),
+    "critical_free_gib": (0, 100000),
+}
+
 # Keys that `wrg config set` does not edit but a hand-written file may contain.
 STRUCTURED_KEYS = {
+    "disk_thresholds": "drive_table",
     "project_roots": "path_list",
     "disk_drives": "drive_list",
     "wsl_vhd_path": "text",
@@ -203,6 +221,23 @@ def coerce_config_value(key: str, value: Any):
         ):
             return [item.upper() for item in value]
         raise ValueError('드라이브 문자 목록이 필요합니다. 예: ["C", "D"]')
+    if kind == "drive_table":
+        if not isinstance(value, dict):
+            raise ValueError("드라이브별 표가 필요합니다. 예: [disk_thresholds.E]")
+        table = {}
+        for drive, limits in value.items():
+            if not re.fullmatch("[A-Za-z]", str(drive)) or not isinstance(limits, dict):
+                raise ValueError("드라이브 문자 하나와 그 기준 표가 필요합니다.")
+            row = {}
+            for name, number in limits.items():
+                if name not in DISK_LIMIT_KEYS or isinstance(number, bool) or not isinstance(number, (int, float)):
+                    raise ValueError("드라이브 기준의 이름 또는 값이 올바르지 않습니다.")
+                low, high = DISK_LIMIT_KEYS[name]
+                if not low <= number <= high:
+                    raise ValueError(f"{name}는 {low:g}~{high:g} 범위가 필요합니다.")
+                row[name] = number
+            table[drive.upper()] = row
+        return table
     if kind == "path":
         if isinstance(value, str) and value:
             return value
@@ -214,6 +249,46 @@ def coerce_config_value(key: str, value: Any):
     if isinstance(value, str):
         return value
     raise ValueError("문자열 값이 필요합니다.")
+
+
+def load_drive_table(value, drives: list[str]) -> tuple[dict, list[str]]:
+    """Per-drive limits from a hand-written file: one bad table costs only that drive."""
+    if not isinstance(value, dict):
+        return {}, ["disk_thresholds: 드라이브별 표가 필요합니다. 예: [disk_thresholds.E]"]
+    table: dict = {}
+    problems: list[str] = []
+    monitored = {str(drive).upper() for drive in drives}
+    for drive, limits in value.items():
+        try:
+            row = coerce_config_value("disk_thresholds", {drive: limits})
+        except ValueError as exc:
+            problems.append(f"disk_thresholds.{drive}: {exc} 이 드라이브는 공통 기준을 사용합니다.")
+            continue
+        letter = next(iter(row))
+        if letter in table:
+            problems.append(f"disk_thresholds.{drive}: 같은 드라이브의 표가 둘입니다. 나중 것을 사용합니다.")
+        if letter not in monitored:
+            problems.append(f"disk_thresholds.{drive}: disk_drives에 없는 드라이브라 사용되지 않습니다.")
+        table.update(row)
+    return table, problems
+
+
+def drive_limit_problem(settings: "Settings", drive: str, changes: dict | None = None) -> str:
+    """Why this drive's resolved limits are inconsistent, or ''."""
+    values = {name: getattr(settings, name) for name in (
+        "warning_disk_free_percent", "critical_disk_free_percent",
+        "warning_disk_free_gib", "critical_disk_free_gib")}
+    values.update(changes or {})
+    row = settings.disk_thresholds.get(drive, {})
+    warning = row.get("warning_free_percent", values["warning_disk_free_percent"])
+    critical = row.get("critical_free_percent", values["critical_disk_free_percent"])
+    warning_gib = row.get("warning_free_gib", values["warning_disk_free_gib"])
+    critical_gib = row.get("critical_free_gib", values["critical_disk_free_gib"])
+    if warning <= critical:
+        return f"{drive}: Warning 비율({warning:g}%)이 Critical({critical:g}%)보다 커야 합니다."
+    if warning_gib > 0 and critical_gib > 0 and warning_gib <= critical_gib:
+        return f"{drive}: Warning 용량 하한({warning_gib:g} GiB)이 Critical({critical_gib:g} GiB)보다 커야 합니다."
+    return ""
 
 
 def _toml_literal(value) -> str:
@@ -233,6 +308,20 @@ def check_relations(settings: "Settings", key: str, value) -> None:
         right = value if key == smaller else getattr(settings, smaller)
         if isinstance(left, (int, float)) and isinstance(right, (int, float)) and left <= right:
             raise ValueError(f"{bigger}({left:g})는 {smaller}({right:g})보다 커야 합니다.")
+    for bigger, smaller in CONFIG_OPTIONAL_RELATIONS:
+        if key not in (bigger, smaller):
+            continue
+        left = value if key == bigger else getattr(settings, bigger)
+        right = value if key == smaller else getattr(settings, smaller)
+        if left > 0 and right > 0 and left <= right:
+            raise ValueError(f"{bigger}({left:g})는 {smaller}({right:g})보다 커야 합니다. 0은 사용 안 함입니다.")
+    if key in ("warning_disk_free_percent", "critical_disk_free_percent",
+               "warning_disk_free_gib", "critical_disk_free_gib"):
+        # A common value must not silently cancel a drive's own table at the next load.
+        for drive in sorted(settings.disk_thresholds):
+            problem = drive_limit_problem(settings, drive, {key: value})
+            if problem:
+                raise ValueError(f"이 값은 드라이브별 기준과 맞지 않습니다. disk_thresholds.{problem}")
 
 
 def write_config_value(path: Path, key: str, value) -> None:
@@ -319,6 +408,12 @@ class Settings:
     host_memory_refresh_seconds: int = 60
     warning_disk_free_percent: float = 20.0
     critical_disk_free_percent: float = 10.0
+    # Percent alone alerts too early on large drives: with a floor set, the
+    # free space must also be under it. 0 keeps the percent-only rule.
+    warning_disk_free_gib: float = 0.0
+    critical_disk_free_gib: float = 0.0
+    # Per-drive replacements, e.g. {"E": {"warning_free_percent": 5}}.
+    disk_thresholds: dict = field(default_factory=dict)
     wsl_vhd_path: str = ""
 
     windows_toast_enabled: bool = True
@@ -349,6 +444,8 @@ class Settings:
             if key not in CONFIG_RULES and key not in STRUCTURED_KEYS:
                 settings.load_warnings.append(f"{key}: 알 수 없는 설정이라 무시합니다.")
                 continue
+            if key == "disk_thresholds":
+                continue  # Checked per drive below, once disk_drives is known.
             try:
                 setattr(settings, key, coerce_config_value(key, value))
             except ValueError:
@@ -358,6 +455,19 @@ class Settings:
                 for key in (bigger, smaller):
                     setattr(settings, key, getattr(defaults, key))
                 settings.load_warnings.append(f"{bigger}는 {smaller}보다 커야 합니다. 두 값 모두 기본값을 사용합니다.")
+        for bigger, smaller in CONFIG_OPTIONAL_RELATIONS:
+            if 0 < getattr(settings, bigger) <= getattr(settings, smaller):
+                for key in (bigger, smaller):
+                    setattr(settings, key, getattr(defaults, key))
+                settings.load_warnings.append(f"{bigger}는 {smaller}보다 커야 합니다. 두 값 모두 사용하지 않습니다.")
+        if "disk_thresholds" in raw:
+            settings.disk_thresholds, problems = load_drive_table(raw["disk_thresholds"], settings.disk_drives)
+            settings.load_warnings.extend(problems)
+        for drive in sorted(settings.disk_thresholds):
+            problem = drive_limit_problem(settings, drive)
+            if problem:
+                del settings.disk_thresholds[drive]
+                settings.load_warnings.append(f"disk_thresholds.{problem} 이 드라이브는 공통 기준을 사용합니다.")
         return settings
 
     @property

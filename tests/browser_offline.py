@@ -99,7 +99,9 @@ def fixtures() -> dict:
              'available_percent': 6.0, 'used_percent': 94.0,
              'insight': {'hours_to_critical': 9, 'recent_gib_per_hour': 2.8}}],
             'history': [], 'updated_at': time.time(), 'sample_interval_seconds': 60,
-            'thresholds': {'warning_free_percent': 20, 'critical_free_percent': 10}},
+            'thresholds': {'warning_free_percent': 20, 'critical_free_percent': 10},
+            'threshold_lines': ['C: 여유 20% 미만 Warning · 여유 10% 미만 Critical',
+                                'E: 여유 5% 미만이면서 50 GiB 미만 Warning · 여유 3% 미만 Critical <b>']},
         '/api/docker-df': {'available': True, 'checked_at': time.time(), 'rows': [
             {'Type': 'Images', 'TotalCount': '12', 'Active': '4', 'Size': '18.2GB',
              'Reclaimable': '9.1GB (50%)'},
@@ -399,6 +401,24 @@ def host_fixture(status: str = 'ok') -> dict:
             'windows': {'build': '26200', 'boot_at': time.time() - 86400}}
 
 
+def check_unconfirmed_close_is_not_shown_as_recovered(page, overrides: dict) -> None:
+    now = time.time()
+    base = {'severity': 'warning', 'revision': 1, 'priority': 'review', 'opened_at': now - 7200, 'observed_at': now - 60,
+            'resolved_at': now - 60, 'state': 'resolved', 'targets': [], 'decision': {}, 'guidance': '', 'evidence': {}}
+    closed = dict(base, id='c' * 32, key='disk.F::host', reason='F: 디스크 여유 4.0%', recovery_unconfirmed=True)
+    recovered = dict(base, id='d' * 32, key='disk.C::host', reason='C: 디스크 여유 15.0%', recovery_confirmed_at=now - 30)
+    overrides['/api/incidents'] = {'version': 1, 'updated_at': now, 'incidents': [closed, recovered], 'stale': False}
+    try:
+        page.goto(ORIGIN + '/#alerts')
+        page.reload()
+        expect(page.locator('#refresh')).to_be_enabled()
+        row = page.locator('#view-alerts', has_text='F: 디스크 여유 4.0%').locator('.pill', has_text='감시 종료 · 회복 미확인')
+        expect(row).to_have_count(1)
+        expect(page.locator('#view-alerts .pill.good', has_text='해소 확인')).to_have_count(1)   # only the observed one
+    finally:
+        overrides.pop('/api/incidents', None)
+
+
 def check_windows_host_panels(page, overrides: dict) -> None:
     """Host values are shown as observed, escaped, and marked when not current."""
     monitor = fixtures()['/api/monitor']
@@ -568,6 +588,13 @@ def check_disk_docker_and_vhd_guide(page, overrides: dict) -> None:
     try:
         page.goto(ORIGIN + '/#disks')
         page.reload()
+        footnote = page.locator('#view-disks .disk-footnote')
+        expect(footnote).to_contain_text('E: 여유 5% 미만이면서 50 GiB 미만 Warning')
+        expect(footnote).to_contain_text('<b>')  # server text is escaped
+        expect(footnote.locator('b')).to_have_count(0)
+        # WSL shows 650 GiB free inside, but its VHDX sits on a drive with 30 GiB left.
+        expect(page.locator('#view-disks .wsl-storage')).to_contain_text(
+            'VHDX 파일이 더 커져야 하는 쓰기는 저장 드라이브 C:의 여유 30.00 GiB까지만 가능합니다.')
         panel = page.locator('#docker-df')
         expect(panel).to_contain_text('빌드 캐시')
         expect(panel).to_contain_text('9.1GB (50%)')
@@ -1658,6 +1685,7 @@ def main() -> None:
         check_overview_stale_and_channel_chips(page, overrides)
         check_overview_alert_banner(page)
         check_windows_host_panels(page, overrides)
+        check_unconfirmed_close_is_not_shown_as_recovered(page, overrides)
         check_legend_toggles_series(page)
         check_quick_service_action(page, posts)
         check_oneshot_status(page)

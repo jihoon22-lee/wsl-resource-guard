@@ -71,7 +71,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 | `state` | `active`·`resolving`·`resolved`·`unknown`. 관측을 잃으면 `unknown`이며 해소로 바꾸지 않습니다 |
 | `severity`, `revision`, `priority` | 위험도, 알림 단위(새 사건·위험도 상승·회복 확정 때 증가), `pressure`·`review` |
 | `opened_at`, `observed_at`, `normal_since`, `resolved_at` | 시작, 마지막 관측, 정상 구간 시작, 해소 시각 |
-| `recovery_pending`, `recovery_since`, `recovery_checked_at`, `recovery_paused`, `recovery_confirmed_at`, `recovery_unconfirmed` | 해소 뒤 회복 확정까지의 관찰 상태. `recovery_unconfirmed`는 관측으로 확정하지 못해 회복을 알리지 않기로 한 행입니다 |
+| `recovery_pending`, `recovery_since`, `recovery_checked_at`, `recovery_paused`, `recovery_confirmed_at`, `recovery_unconfirmed` | 해소 뒤 회복 확정까지의 관찰 상태. `recovery_unconfirmed`는 관측으로 확정하지 못해 회복을 알리지 않기로 한 행이며 화면에 "감시 종료 · 회복 미확인"으로 표시합니다 |
 | `reason`, `initial_reason`, `guidance`, `evidence`, `measurement`, `initial_value` | 표시 문구와 관측 근거 |
 | `targets` | 관련 세션·도구의 요약(신원, 종류, 프로젝트, RSS, 종료 가능 여부) |
 | `transitions`, `recurrences` | 최근 상태 전이 16개, 재발 횟수 |

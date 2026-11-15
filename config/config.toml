@@ -39,6 +39,9 @@ disk_drives = ["C", "D", "E"]
 disk_refresh_seconds = 60
 warning_disk_free_percent = 20.0
 critical_disk_free_percent = 10.0
+# Optional: a level alerts only while the free space is also under this many GiB (0 = percent only).
+# warning_disk_free_gib = 50.0
+# critical_disk_free_gib = 20.0
 # Optional WSL path to the distro's VHDX file (display only).
 wsl_vhd_path = ""
 
@@ -48,3 +51,9 @@ discord_enabled = true
 toast_app_id = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"
 
 state_dir = "~/.local/state/wsl-resource-guard"
+
+# Optional per-drive disk limits. Keep tables below every other setting: in TOML,
+# any key written after a [table] line belongs to that table.
+# [disk_thresholds.E]
+# warning_free_percent = 5
+# critical_free_percent = 3

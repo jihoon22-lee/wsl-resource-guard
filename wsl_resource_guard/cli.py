@@ -41,6 +41,8 @@ from .services import ACTIONS, cmd_services, cmd_web
 from .disks import (
     daily_disk_records,
     disk_insights,
+    disk_limit_lines,
+    disk_limits,
     read_disks,
     disk_severity,
     disk_summary_lines,
@@ -254,6 +256,7 @@ def cmd_disks(args: argparse.Namespace) -> int:
     insights = disk_insights(
         disks, history, settings.warning_disk_free_percent, settings.critical_disk_free_percent,
         recent=recent,
+        limits={disk["id"]: disk_limits(settings, disk["id"]) for disk in disks if disk["kind"] == "windows"},
     )
     for disk in disks:
         if disk["id"] in insights:
@@ -262,7 +265,7 @@ def cmd_disks(args: argparse.Namespace) -> int:
         print(json.dumps(disks, ensure_ascii=False, indent=2))
         return 0
     for disk, line in zip(disks, disk_summary_lines(disks)):
-        level = disk_severity(disk, settings.warning_disk_free_percent, settings.critical_disk_free_percent)
+        level = disk_severity(disk, *disk_limits(settings, disk["id"]))
         label = level.upper() if disk["kind"] == "windows" else "표시 전용"
         print(f"{label:<10} {line}")
         if disk.get("vhd", {}).get("file_bytes") is not None:
@@ -271,8 +274,8 @@ def cmd_disks(args: argparse.Namespace) -> int:
         info = insights.get(disk["id"])
         if info:
             print(f"  추세: {_insight_text(info, disk['kind'] == 'windows')}")
-    print(f"C/D/E 경보: 여유 {settings.warning_disk_free_percent:g}% 미만 Warning / "
-          f"{settings.critical_disk_free_percent:g}% 미만 Critical")
+    for line in disk_limit_lines(settings):
+        print(f"경보 기준 {line}")
     return 0
 
 

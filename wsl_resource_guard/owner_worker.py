@@ -155,8 +155,8 @@ class OwnerData:
 
     def disks(self, force: bool = False) -> dict:
         from .daemon import load_state
-        from .disks import (daily_disk_records, disk_insights, read_disks,
-                            disk_severity, recent_disk_records)
+        from .disks import (daily_disk_records, disk_insights, disk_limit_lines, disk_limits,
+                            read_disks, disk_severity, recent_disk_records)
         settings = self._owner_settings()
         state_path = settings.state_path
         state = load_state(state_path / 'state.json')
@@ -166,7 +166,7 @@ class OwnerData:
         rows = read_disks(settings.disk_drives, vhd_path, previous,
                           interval=settings.disk_refresh_seconds, force=force)
         for row in rows:
-            row['severity'] = (disk_severity(row, settings.warning_disk_free_percent, settings.critical_disk_free_percent)
+            row['severity'] = (disk_severity(row, *disk_limits(settings, row['id']))
                                if row['kind'] == 'windows' else 'not-monitored')
         with self._disk_lock:
             now = time.monotonic()
@@ -178,14 +178,17 @@ class OwnerData:
             insights = disk_insights(rows, self._disk_history_cache,
                                      settings.warning_disk_free_percent,
                                      settings.critical_disk_free_percent,
-                                     recent=recent)
+                                     recent=recent,
+                                     limits={row['id']: disk_limits(settings, row['id']) for row in rows
+                                             if row['kind'] == 'windows'})
             for row in rows:
                 if row['id'] in insights:
                     row['insight'] = insights[row['id']]
             return {'disks': rows, 'history': self._disk_history_cache, 'updated_at': time.time(),
                     'sample_interval_seconds': settings.disk_refresh_seconds,
                     'thresholds': {'warning_free_percent': settings.warning_disk_free_percent,
-                                   'critical_free_percent': settings.critical_disk_free_percent}}
+                                   'critical_free_percent': settings.critical_disk_free_percent},
+                    'threshold_lines': disk_limit_lines(settings)}
 
     def settings_info(self) -> dict:
         """Read-only configuration and diagnostics for the dashboard (N4).
