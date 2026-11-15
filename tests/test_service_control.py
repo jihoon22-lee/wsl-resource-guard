@@ -953,6 +953,15 @@ class ControllerTests(unittest.TestCase):
         kill.assert_not_called()
         kill2.assert_not_called()
 
+    def test_web_change_cannot_switch_a_host_alert_off(self):
+        self.controller.shared = Path(self.temp.name) / 'shared'
+        change = self.controller._request_config_change_locked
+        with self.assertRaisesRegex(ControlError, '터미널'):
+            change('warning_host_available_gib', 0, 'owner')
+        self.assertIn('id', change('warning_host_available_gib', 3, 'owner'))
+        # 0 on a disk floor only removes a restriction, so it stays allowed.
+        self.assertIn('id', change('warning_disk_free_gib', 0, 'owner'))
+
     def test_kill_dispatch_requires_confirmation(self):
         with self.assertRaisesRegex(ControlError, '확인'):
             self.controller.dispatch({'op': 'kill', 'pid': 100}, uid=1, web_uid=999)

@@ -450,6 +450,160 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual(title, '디스크 여유 부족 · E:')
         self.assertIn('839 GiB', plain)
 
+    def host_metrics(self, now, status='ok', available_gib=1.5, observed=None, memory=None):
+        m = metrics(now)
+        m.host = {'schema': 1, 'status': status, 'observed_at': now if observed is None else observed,
+                  'attempted_at': now,
+                  'memory': memory if memory is not None else {
+                      'total_bytes': 32 * 2**30, 'available_bytes': int(available_gib * 2**30),
+                      'commit_used_bytes': 40 * 2**30, 'commit_limit_bytes': 100 * 2**30},
+                  'vmmem': {'working_set_bytes': 16 * 2**30, 'private_bytes': None}}
+        return m
+
+    LOW = {'key': 'warning.host_ram', 'severity': 'warning', 'reason': 'Windows 가용 RAM 1.5 GiB'}
+
+    def test_host_incident_survives_reboot_and_is_unknown_while_windows_is_silent(self):
+        one = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
+        row = one['incidents'][0]
+        self.assertEqual((row['key'], row['priority'], row['stale']), ('host_ram:host', 'pressure', False))
+        self.assertEqual(row['measurement']['value'], 1.5)
+        self.assertEqual(row['measurement']['threshold'], self.settings.warning_host_available_gib)
+        self.assertIn('WSL VM', row['guidance']); self.assertIn('16', row['guidance'])
+        # Windows is short of memory: no WSL session is offered as the thing to end.
+        self.assertEqual(row['targets'], [])
+        self.assertEqual(row['evidence']['host'], {'available_gib': 1.5, 'commit_percent': 40.0, 'vmmem_gib': 16.0,
+                                                   'observed_at': 1000, 'current': True})
+        self.assertEqual(incident_message(row, '')[0], 'Windows 메모리 부족 · 호스트')
+        two = reconcile(one, [self.LOW], self.snap, self.host_metrics(5000), self.settings, boot='boot-b')
+        self.assertEqual([(r['id'], r['state'], r['revision']) for r in two['incidents']], [(row['id'], 'active', 1)])
+        # The condition is gone but Windows cannot be observed: not a recovery.
+        out = two
+        for now in range(5015, 5015 + RECURRENCE_MERGE_SECONDS + 300, 15):
+            out = reconcile(out, [], self.snap, self.host_metrics(now, status='timeout', observed=5000), self.settings,
+                            boot='boot-b')
+        self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('unknown', 1)])
+        # Observed again and fine: resolves, then confirms after the quiet window.
+        for now in range(out['updated_at'] + 15, out['updated_at'] + RECURRENCE_MERGE_SECONDS + 300, 15):
+            out = reconcile(out, [], self.snap, self.host_metrics(now, available_gib=8), self.settings, boot='boot-b')
+        self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('resolved', 2)])
+
+    def test_host_incident_does_not_recover_when_the_query_succeeds_without_the_value(self):
+        both = [self.LOW, {'key': 'warning.host_commit', 'severity': 'warning', 'reason': 'Windows 커밋 93%'}]
+        out = reconcile({}, both, self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
+        gaps = ({'total_bytes': None, 'available_bytes': None, 'commit_used_bytes': None, 'commit_limit_bytes': None},
+                {'total_bytes': 32 * 2**30, 'available_bytes': 8 * 2**30, 'commit_used_bytes': None,
+                 'commit_limit_bytes': None})
+        for memory, expected in zip(gaps, ({'host_ram:host': 'unknown', 'host_commit:host': 'unknown'},
+                                           {'host_commit:host': 'unknown'})):
+            with self.subTest(memory=memory):
+                run = out
+                for now in range(1015, 1015 + RECURRENCE_MERGE_SECONDS + 600, 15):
+                    run = reconcile(run, [], self.snap, self.host_metrics(now, memory=memory), self.settings,
+                                    boot='boot-a')
+                states = {r['key']: (r['state'], r['revision']) for r in run['incidents']}
+                for key, state in expected.items():
+                    self.assertEqual(states[key], (state, 1))
+        # With RAM readable and fine but commit unreadable, only RAM recovers.
+        self.assertEqual(states['host_ram:host'], ('resolved', 2))
+
+    def delivery_fixture(self, directory):
+        from wsl_resource_guard.delivery import Delivery
+        root = Path(directory); shared = root / 'shared'; shared.mkdir()
+        settings = Settings(state_dir=str(root), secrets_path=root / 'secrets.json', windows_toast_enabled=False,
+                            discord_enabled=False, push_enabled=False, recovery_sustain_seconds=30)
+        settings.secrets_path.write_text(json.dumps(
+            {'gmail_to': 'one@example.com', 'gmail_user': 'fixture', 'gmail_app_password': 'fixture'}))
+        clock, sent = [1000], []
+        engine = Delivery(settings, shared, clock=lambda: clock[0])
+        def send(destination, row, notifier, origin):
+            sent.append((clock[0], row['state'], incident_message(row, '')[1]))
+            return NotificationResult('gmail', True, 'fixture')
+        def step(store, conditions, now, metric):
+            clock[0] = now
+            store = reconcile(store, conditions, self.snap, metric, settings, boot='b')
+            atomic_write(root / 'incidents.json', store)
+            engine.tick(send=send)
+            return store
+        return settings, sent, step
+
+    def test_unreadable_critical_value_is_reminded_at_the_slow_interval_with_its_age(self):
+        critical = dict(self.LOW, key='critical.host_ram', severity='critical')
+        with tempfile.TemporaryDirectory() as directory:
+            settings, sent, step = self.delivery_fixture(directory)
+            store = step({}, [critical], 1000, self.host_metrics(1000, available_gib=0.8))
+            now = 1000
+            for now in range(1015, 1000 + 8 * 3600, 15):      # Windows cannot be read for eight hours
+                stale = self.host_metrics(now, status='timeout', available_gib=0.8, observed=1000)
+                store = step(store, [critical], now, stale)
+            self.assertTrue(store['incidents'][0]['stale'])
+            # Not every 15 minutes (32 reminders), but still once per warning interval (6 h).
+            self.assertEqual([at for at, _, _ in sent], [1000, 1000 + settings.reminder_cooldown_seconds])
+            self.assertIn('Windows 값 확인 시각', sent[-1][2])
+            self.assertIn('조회하지 못했습니다', sent[-1][2])
+            # Readable again and still low: reminded at once, then at the critical interval.
+            before = len(sent)
+            for later in range(now + 15, now + 1900, 15):
+                store = step(store, [critical], later, self.host_metrics(later, available_gib=0.8))
+            times = [at for at, _, _ in sent[before:]]
+            self.assertEqual(times, [now + 15, now + 15 + settings.critical_reminder_seconds,
+                                     now + 15 + 2 * settings.critical_reminder_seconds])
+            self.assertNotIn('Windows 값 확인 시각', sent[-1][2])
+
+    def test_unplugged_critical_drive_is_reminded_at_the_slow_interval(self):
+        critical = dict(DISK, key='critical.disk.E:', severity='critical')
+        with tempfile.TemporaryDirectory() as directory:
+            settings, sent, step = self.delivery_fixture(directory)
+            store = step({}, [critical], 1000, disk_metrics(1000, 5.0))
+            self.assertFalse(store['incidents'][0]['stale'])
+            for now in range(1015, 1000 + 24 * 3600, 15):
+                store = step(store, [critical], now, disk_metrics(now, 5.0, status='unmounted'))
+            self.assertTrue(store['incidents'][0]['stale'])
+            self.assertEqual(len(sent), 4)                    # first alert, then every 6 h; was 96 at 15 min
+            self.assertEqual({state for _, state, _ in sent}, {'active'})
+
+    def test_host_quiet_periods_count_observations_not_re_reads(self):
+        slow = Settings(recovery_sustain_seconds=30, host_memory_refresh_seconds=3600)
+        out = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000), slow, boot='b')
+        seen = {}
+        # Sampled every 15 s without a gap; Windows itself is read once an hour (1060, 4660, 8260).
+        for now in range(1060, 8260 + 60, 15):
+            observed = 1060 + ((now - 1060) // 3600) * 3600
+            out = reconcile(out, [], self.snap, self.host_metrics(now, available_gib=8, observed=observed), slow, boot='b')
+            row = out['incidents'][0]
+            seen.setdefault((row['state'], bool(row.get('recovery_pending')), row['revision']), now)
+        # One good reading re-read for an hour stays "resolving"; the second reading resolves it;
+        # the recovery is confirmed only by the third, not by half an hour of re-reading.
+        self.assertEqual(seen, {('resolving', False, 1): 1060, ('resolved', True, 1): 4660, ('resolved', False, 2): 8260})
+
+    def test_message_survives_an_absurd_timestamp(self):
+        row = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000, status='timeout', observed=1000),
+                        self.settings, boot='b')['incidents'][0]
+        row['evidence']['host']['observed_at'] = 2 ** 62
+        row['observed_at'] = 2 ** 62
+        text = incident_message(row, '')[1]
+        self.assertIn('관측 시각: 확인 불가', text)
+        self.assertNotIn('Windows 값 확인 시각', text)
+
+    def test_host_limits_switched_off_close_the_incident_without_a_recovery_claim(self):
+        cases = (('both off', dict(warning_host_available_gib=0, critical_host_available_gib=0), self.LOW),
+                 # Only the warning level is off: a warning-level incident is no longer judged.
+                 ('warning off', dict(warning_host_available_gib=0), self.LOW))
+        for name, changes, condition in cases:
+            with self.subTest(case=name):
+                out = reconcile({}, [condition], self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
+                off = Settings(recovery_sustain_seconds=30, **changes)
+                for now in range(1015, 1015 + RECURRENCE_MERGE_SECONDS + 300, 15):
+                    out = reconcile(out, [], self.snap, self.host_metrics(now), off, boot='boot-a')
+                row = out['incidents'][0]
+                self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')),
+                                 ('resolved', 1, True))
+        # A critical incident continues as a warning when only the critical level is switched off.
+        critical = dict(self.LOW, key='critical.host_ram', severity='critical')
+        out = reconcile({}, [critical], self.snap, self.host_metrics(1000, available_gib=0.8), self.settings, boot='b')
+        only_warning = Settings(recovery_sustain_seconds=30, critical_host_available_gib=0)
+        out = reconcile(out, [self.LOW], self.snap, self.host_metrics(1015, available_gib=0.8), only_warning, boot='b')
+        self.assertEqual([(r['state'], r['severity'], r['revision']) for r in out['incidents']], [('active', 'warning', 1)])
+
     def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         other = disk_metrics(1015)

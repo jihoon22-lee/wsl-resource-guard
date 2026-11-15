@@ -543,6 +543,189 @@ class SampleStateTests(unittest.TestCase):
                 self.assertEqual(read.call_args.args[1], "")
                 self.assertIsNone(load_state(Path(directory) / "state.json")["metrics"]["vmmem_bytes"])
 
+    def host(self, available_gib=8.0, commit_percent=40.0, status="ok", observed=1000.0):
+        return {"schema": 1, "status": status, "error": "" if status == "ok" else "응답 없음",
+                "attempted_at": 1000.0, "observed_at": observed, "failures": 0,
+                "memory": {"total_bytes": 32 * 2**30, "available_bytes": int(available_gib * 2**30),
+                           "commit_used_bytes": int(commit_percent * 2**30), "commit_limit_bytes": 100 * 2**30}}
+
+    def host_evaluation(self, host, since=None, settings=None, timestamp=1000.0):
+        current = metrics(8.0, timestamp=timestamp)
+        current.host = host
+        return evaluate(current, snapshot(), settings or Settings(), None, since or {})
+
+    def series(self, readings, settings=None, refresh=60, start=1000.0):
+        """Feed (available_gib, commit_percent, status) readings, one per refresh, sampled every 15 s."""
+        since, out, last = {}, [], start
+        for index, (available, commit, status) in enumerate(readings):
+            if status == "ok":
+                last = start + index * refresh
+            host = self.host(available, commit, status, observed=last)
+            for step in range(0, refresh, 15):
+                result = self.host_evaluation(host, since, settings, timestamp=start + index * refresh + step)
+                since = result.condition_since
+                out.append((start + index * refresh + step, result))
+        return out
+
+    def test_host_alert_needs_sustained_observations_not_one_reading_re_read(self) -> None:
+        ok = lambda value, commit=40.0: (value, commit, "ok")
+        # One low reading re-read for a minute, then a normal one: nothing.
+        self.assertEqual({r.severity for _, r in self.series([ok(1.5), ok(8)])}, {"normal"})
+        # Three consecutive low readings (t, +60, +120): alerts at the third, not before.
+        run = self.series([ok(1.5), ok(1.5), ok(1.5)])
+        self.assertEqual([r.severity for at, r in run if at < 1120], ["normal"] * 8)
+        self.assertEqual({r.severity for at, r in run if at >= 1120}, {"warning"})
+        self.assertIn("Windows 가용 RAM 1.5 GiB", run[-1][1].reasons[0])
+        self.assertIn("다음 관측에서도 이어지면", run[0][1].pending_reasons[0])
+        # One low reading followed by failed refreshes is still one observation, however long it is re-read.
+        stuck = self.series([ok(1.5)] + [(1.5, 40.0, "timeout")] * 20)
+        self.assertEqual({r.severity for _, r in stuck}, {"normal"})
+        # A slower refresh still needs two observations.
+        slow = self.series([ok(1.5), ok(1.5)], refresh=300)
+        self.assertEqual({r.severity for at, r in slow if at < 1300}, {"normal"})
+        self.assertEqual({r.severity for at, r in slow if at >= 1300}, {"warning"})
+        # Commit works the same way, with its own keys.
+        commit = self.series([ok(8, 93.0)] * 3)[-1][1]
+        self.assertEqual(commit.severity, "warning")
+        self.assertIn("Windows 커밋 93%", commit.reasons[0])
+        self.assertEqual(self.series([ok(8, 98.0)] * 3)[-1][1].severity, "critical")
+        # Exactly at a limit: available alerts at or below, commit at or above.
+        self.assertEqual(self.series([ok(2.0)] * 3)[-1][1].severity, "warning")
+        self.assertEqual(self.series([ok(8, 90.0)] * 3)[-1][1].severity, "warning")
+        self.assertEqual(self.series([ok(2.01, 89.99)] * 3)[-1][1].severity, "normal")
+
+    def test_host_value_crossing_between_levels_keeps_alerting_and_escalates(self) -> None:
+        ok = lambda value: (value, 40.0, "ok")
+        # Hovering around the critical limit stays a warning: the warning clock never restarts.
+        hover = self.series([ok(0.9), ok(1.1)] * 10)
+        self.assertEqual({r.severity for at, r in hover if at >= 1120}, {"warning"})
+        self.assertEqual({len(r.conditions) for at, r in hover if at >= 1120}, {1})
+        self.assertIn("0.9 GiB", hover[-5][1].reasons[0])        # the reason follows the latest reading
+        # Sustained below critical escalates, and reports one condition for the incident, not two.
+        low = self.series([ok(1.5)] * 3 + [ok(0.8)] * 3)
+        self.assertEqual(low[-1][1].severity, "critical")
+        self.assertEqual([c["key"] for c in low[-1][1].conditions], ["critical.host_ram"])
+        self.assertEqual({r.severity for at, r in low if 1120 <= at < 1300}, {"warning"})
+
+    def test_host_alerts_can_be_switched_off_and_never_come_from_missing_values(self) -> None:
+        off = Settings(warning_host_available_gib=0, critical_host_available_gib=0,
+                       warning_host_commit_percent=0, critical_host_commit_percent=0)
+        self.assertEqual(self.host_evaluation(self.host(available_gib=0.1, commit_percent=99), settings=off)
+                         .condition_since, {})
+        for host in ({}, {"schema": 1, "status": "unavailable", "observed_at": None, "error": "interop 없음"},
+                     dict(self.host(), memory={"available_bytes": None, "commit_used_bytes": None,
+                                               "commit_limit_bytes": None}),
+                     dict(self.host(), memory={"available_bytes": 0.5 * 2**30, "commit_used_bytes": 99,
+                                               "commit_limit_bytes": 0}),
+                     dict(self.host(), memory="broken"), "text"):
+            with self.subTest(host=host):
+                result = self.host_evaluation(host)
+                self.assertFalse(any("commit" in key for key in result.condition_since))
+                if not isinstance(host, dict) or not isinstance(host.get("memory"), dict):
+                    self.assertEqual(result.condition_since, {})
+        never = self.host_evaluation({"schema": 1, "status": "unavailable", "observed_at": None, "error": "interop 없음"})
+        self.assertTrue(any("Windows 호스트 조회 불가" in line for line in never.observations))
+
+    def test_stale_host_value_keeps_an_open_alert_but_never_opens_one(self) -> None:
+        ok = lambda value: (value, 40.0, "ok")
+        failed = (1.5, 40.0, "timeout")
+        kept = self.series([ok(1.5)] * 3 + [failed] * 4)
+        self.assertEqual({r.severity for at, r in kept if at >= 1120}, {"warning"})
+        self.assertIn("마지막 확인값", kept[-1][1].reasons[0])
+        self.assertTrue(any("Windows 호스트 조회 불가" in line for line in kept[-1][1].observations))
+        # A value left over from before a long gap (clocks reset) cannot open an alert by itself.
+        old = self.host(1.5, status="timeout", observed=1000.0)
+        late = self.host_evaluation(old, {}, timestamp=1000.0 + 12 * 3600)
+        again = self.host_evaluation(old, late.condition_since, timestamp=1000.0 + 12 * 3600 + 600)
+        self.assertEqual((late.severity, again.severity), ("normal", "normal"))
+
+    def test_state_severity_is_held_while_windows_cannot_be_observed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            def run(now, host):
+                with (patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0, timestamp=now)),
+                      patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                      patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                      patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host)):
+                    return sample(settings)[2]
+            now = 1000.0
+            for index in range(9):                         # three low observations, sampled every 15 s
+                result = run(now + index * 15, self.host(1.5, observed=1000.0 + (index // 4) * 60))
+            self.assertEqual(result.severity, "warning")
+            good = self.host(8.0, observed=1135.0)
+            self.assertEqual(run(1135.0, good).severity, "warning")           # one good reading is not a recovery
+            unreadable = dict(good, status="timeout", error="응답 없음")
+            for index in range(1, 40):                     # ten minutes without an observation
+                held = run(1135.0 + index * 15, unreadable)
+            self.assertEqual(held.severity, "warning")
+            self.assertTrue(any("Windows 관측 재개 후" in line for line in held.pending_reasons))
+            # The query answers again but without the memory values: still not a recovery.
+            valueless = dict(good, memory={"total_bytes": None, "available_bytes": None,
+                                           "commit_used_bytes": None, "commit_limit_bytes": None})
+            for index in range(40, 80):
+                valueless["observed_at"] = 1135.0 + index * 15
+                held = run(1135.0 + index * 15, dict(valueless))
+            self.assertEqual(held.severity, "warning")
+            # Switching the limits off while nothing can be read releases the hold.
+            off = Settings(state_dir=directory, warning_host_available_gib=0, critical_host_available_gib=0)
+            with (patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0, timestamp=2400.0)),
+                  patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                  patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                  patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=unreadable)):
+                for stamp in range(2400, 2400 + 200, 15):
+                    with patch("wsl_resource_guard.daemon.read_system_metrics",
+                               return_value=metrics(8.0, timestamp=float(stamp))):
+                        released = sample(off, persist=False)[2]
+            self.assertFalse(any("Windows" in line for line in released.pending_reasons))
+            readable = dict(good)
+            for index in range(80, 92):
+                readable["observed_at"] = 1135.0 + index * 15
+                recovered = run(1135.0 + index * 15, dict(readable))
+            self.assertEqual(recovered.severity, "normal")
+
+    def test_unreadable_host_reading_does_not_block_other_recoveries_or_keep_a_higher_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            def run(now, host, available=8.0):
+                with (patch("wsl_resource_guard.daemon.read_system_metrics",
+                            return_value=metrics(available, timestamp=now)),
+                      patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                      patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                      patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host)):
+                    return sample(settings)[2]
+            # One low Windows reading, then Windows stops answering, while WSL RAM is low.
+            low_once = self.host(1.5, observed=1000.0)
+            stuck = dict(low_once, status="timeout", error="응답 없음")
+            run(1000.0, low_once, available=3.0)
+            for index in range(1, 6):
+                result = run(1000.0 + index * 15, stuck, available=3.0)
+            self.assertEqual(result.severity, "warning")
+            self.assertTrue(any("가용 RAM 3.0 GiB" in reason for reason in result.reasons))
+            # WSL RAM recovers: the stale, never-sustained host reading must not hold it.
+            for index in range(6, 20):
+                result = run(1000.0 + index * 15, stuck, available=8.0)
+            self.assertEqual((result.severity, result.reasons), ("normal", []))
+            self.assertFalse(any("host_" in key for key in result.condition_since))
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            def run(now, host, available=8.0):
+                with (patch("wsl_resource_guard.daemon.read_system_metrics",
+                            return_value=metrics(available, timestamp=now)),
+                      patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                      patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                      patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host)):
+                    return sample(settings)[2]
+            # A sustained host warning goes stale; a WSL critical comes and goes.
+            for index in range(9):
+                run(1000.0 + index * 15, self.host(1.5, observed=1000.0 + (index // 4) * 60))
+            stale = dict(self.host(1.5, observed=1120.0), status="timeout", error="응답 없음")
+            run(1135.0, stale, available=1.0)
+            self.assertEqual(run(1150.0, stale, available=1.0).severity, "critical")
+            for index in range(1, 30):
+                result = run(1150.0 + index * 15, stale, available=8.0)
+            self.assertEqual(result.severity, "warning")          # the host reason's own level, not critical
+
     def test_state_from_the_previous_version_is_still_a_valid_previous_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = Settings(state_dir=directory)

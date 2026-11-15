@@ -106,9 +106,9 @@ def _key(condition: dict, snapshot, boot: str) -> str:
     if key.startswith('session.'):
         root = snapshot.processes.get(int(key.split('.')[-1]))
         return 'session:' + (process_identity(root, boot) if root else 'unknown:' + key)
-    if key.startswith('disk.'):
-        # A Windows volume keeps its state while WSL restarts; a boot-scoped
-        # key would reopen the same condition and announce a false recovery.
+    if key.startswith(('disk.', 'host_')):
+        # Windows keeps its state while WSL restarts; a boot-scoped key would
+        # reopen the same condition and announce a false recovery.
         return key + ':' + HOST_SCOPE
     return key + ':' + boot
 
@@ -167,6 +167,8 @@ def _targets(condition: dict, snapshot) -> list[dict]:
         pids = [int(key.split('.')[-1])]
     elif key.endswith('mcp_total'):
         pids = [s.root_pid for s in sorted(snapshot.sessions, key=lambda s: s.mcp_rss_kib, reverse=True) if s.mcp_rss_kib][:8]
+    elif '.host_' in key:
+        pids = []  # Windows is short of memory; no WSL session is offered as the thing to end.
     elif any(word in key for word in ('available', 'ram', 'swap', 'psi', 'oom')):
         pids = [s.root_pid for s in snapshot.sessions[:5]]
     else:
@@ -189,6 +191,16 @@ def _unobserved(row: dict, metrics) -> bool:
     key = row['key']
     if 'psi' in key:
         return metrics.psi_some_avg60 is None or metrics.psi_full_avg60 is None
+    if key.startswith('host_'):
+        host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+        if host.get('status') != 'ok' or type(host.get('observed_at')) not in (int, float):
+            return True
+        # A successful query can still lack this value (one WMI class failed).
+        memory = _host_memory(metrics)
+        known = lambda name: _plain_number(memory.get(name))
+        if key.startswith('host_ram'):
+            return not known('available_bytes')
+        return not (known('commit_used_bytes') and known('commit_limit_bytes') and memory['commit_limit_bytes'] > 0)
     if key.startswith('disk.'):
         drive = key.split(':', 1)[0].split('.', 1)[1]
         # Windows drive IDs contain ':', so match the letter as well.
@@ -246,8 +258,88 @@ def _disk_guidance(vhd: dict | None) -> str:
     return text + ' WSL 안의 사용량을 줄이면 이 드라이브의 여유가 늘어납니다.'
 
 
+def _plain_number(value) -> bool:
+    return type(value) in (int, float) and value == value and 0 <= value < 2**63
+
+
+def _host_limits_off(key: str, settings, severity: str = '') -> bool:
+    """True when nothing judges this host incident any more.
+
+    A warning-level incident ends with its warning limit; a critical one only
+    when the warning limit, which would continue it, is off as well.
+    """
+    if key.startswith('host_ram'):
+        warning, critical = settings.warning_host_available_gib, settings.critical_host_available_gib
+    elif key.startswith('host_commit'):
+        warning, critical = settings.warning_host_commit_percent, settings.critical_host_commit_percent
+    else:
+        return False
+    return warning <= 0 and (critical <= 0 or severity != 'critical')
+
+
+def _observation_clock(row: dict, metrics, now: float) -> float:
+    """Time base for quiet periods: for host values, when Windows was last read.
+
+    Re-reading one good value for half an hour is one observation, not thirty
+    minutes of quiet.
+    """
+    if row['key'].startswith('host_'):
+        observed = (metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}).get('observed_at')
+        if _plain_number(observed) and observed <= now:
+            return float(observed)
+    return now
+
+
+def _host_memory(metrics) -> dict:
+    host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+    return host.get('memory') if isinstance(host.get('memory'), dict) else {}
+
+
+def _host_guidance(metrics) -> str:
+    host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+    vm = host.get('vmmem') if isinstance(host.get('vmmem'), dict) else {}
+    text = 'Windows 호스트의 메모리가 부족합니다. WSL 안의 가용 RAM에 여유가 있어도 호스트가 먼저 느려지거나 프로그램이 종료될 수 있습니다.'
+    if _plain_number(vm.get('working_set_bytes')):
+        used = max(0, metrics.mem_total_kib - metrics.mem_available_kib) / 1048576
+        text += (f" WSL VM이 Windows에서 {vm['working_set_bytes'] / 2**30:.0f} GiB를 차지하고 있고, "
+                 f'WSL 안에서 실제로 쓰는 양은 {used:.0f} GiB입니다.')
+    return text + ' 개요의 Windows 호스트 항목에서 메모리를 많이 쓰는 Windows 프로그램과 WSL VM 점유를 함께 확인하세요.'
+
+
+def _host_evidence(metrics) -> dict:
+    """Windows values behind a host incident; absent ones are left out, not zeroed."""
+    host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+    memory = _host_memory(metrics)
+    vm = host.get('vmmem') if isinstance(host.get('vmmem'), dict) else {}
+    out = {}
+    if _plain_number(memory.get('available_bytes')):
+        out['available_gib'] = round(memory['available_bytes'] / 2**30, 2)
+    if (_plain_number(memory.get('commit_used_bytes')) and _plain_number(memory.get('commit_limit_bytes'))
+            and memory['commit_limit_bytes'] > 0):
+        out['commit_percent'] = round(memory['commit_used_bytes'] / memory['commit_limit_bytes'] * 100, 1)
+    if _plain_number(vm.get('working_set_bytes')):
+        out['vmmem_gib'] = round(vm['working_set_bytes'] / 2**30, 2)
+    if _plain_number(host.get('observed_at')):
+        out['observed_at'] = host['observed_at']
+    out['current'] = host.get('status') == 'ok'
+    return out
+
+
 def _measurement(condition, snapshot, metrics, settings):
     key = condition['key']
+    critical = condition['severity'] == 'critical'
+    memory = _host_memory(metrics)
+    host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+    not_current = '' if host.get('status') == 'ok' else ' · 마지막 확인값'
+    if key.endswith('host_ram') and _plain_number(memory.get('available_bytes')):
+        return {'value': round(memory['available_bytes'] / 2**30, 2), 'unit': 'GiB',
+                'label': 'Windows 가용 RAM · 기준 이하' + not_current,
+                'threshold': settings.critical_host_available_gib if critical else settings.warning_host_available_gib}
+    if (key.endswith('host_commit') and _plain_number(memory.get('commit_used_bytes'))
+            and _plain_number(memory.get('commit_limit_bytes')) and memory['commit_limit_bytes'] > 0):
+        return {'value': round(memory['commit_used_bytes'] / memory['commit_limit_bytes'] * 100, 1), 'unit': '%',
+                'label': 'Windows 커밋 사용률 · 기준 이상' + not_current,
+                'threshold': settings.critical_host_commit_percent if critical else settings.warning_host_commit_percent}
     if '.disk.' in key:
         disk = _disk_row(condition, metrics)
         percent = (disk or {}).get('available_percent')
@@ -339,16 +431,19 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         benign_memory = (not pressure and metrics.psi_some_avg60 is not None
                          and (condition['key'].endswith('mcp_total') or '.session.' in condition['key']))
         on_disk = '.disk.' in condition['key']
+        on_host = '.host_' in condition['key']
         vhd = _vhd_share(_disk_row(condition, metrics), metrics) if on_disk else None
         row.update(state='active', severity=condition['severity'], reason=condition['reason'],
                    observed_at=now, normal_since=None, targets=targets,
                    measurement=measurement,
-                   priority='pressure' if pressure or condition['severity'] == 'critical' else 'review',
+                   priority='pressure' if pressure or on_host or condition['severity'] == 'critical' else 'review',
                    evidence={'available_gib': round(metrics.mem_available_gib, 2),
                              'psi_some_avg60': metrics.psi_some_avg60,
                              'swap_out_mib_per_minute': metrics.swap_out_mib_per_minute,
-                             **({'vhd': vhd} if vhd else {})},
-                   guidance=(_disk_guidance(vhd) if on_disk else '현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
+                             **({'vhd': vhd} if vhd else {}),
+                             **({'host': _host_evidence(metrics)} if on_host else {})},
+                   stale=_unobserved({'key': key}, metrics),
+                   guidance=(_disk_guidance(vhd) if on_disk else _host_guidance(metrics) if on_host else '현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
                              '자원 압박이 관측됐습니다. 저장할 작업과 주요 점유 대상을 확인하세요.' if pressure else
                              '자원 기준을 넘었습니다. 점유량만으로 작업 중단이나 누수를 단정하지 않습니다.'))
     for condition in pending or []:
@@ -357,14 +452,16 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         if key in seen or row is None or row['state'] not in ('active', 'resolving'):
             continue
         seen.add(key)
-        row.update(state='active', normal_since=None, observed_at=now)
+        row.update(state='active', normal_since=None, observed_at=now, stale=_unobserved(row, metrics))
     for row in rows:
+        unjudged = (_unmonitored_disk(row, metrics, settings)
+                    or _host_limits_off(row['key'], settings, row.get('severity', '')))
         if row['state'] == 'resolved' and row.get('recovery_pending'):
             checked = row.get('recovery_checked_at')
             continuous = (type(checked) in (int, float)
                           and 0 <= now - checked <= max(1, 2 * settings.interval_seconds))
             row['recovery_checked_at'] = now
-            if _unmonitored_disk(row, metrics, settings):
+            if unjudged:
                 _drop_recovery(row)  # Nothing will ever observe the quiet window.
                 row['transitions'] = (row.get('transitions', []) + [
                     {'at': now, 'state': 'resolved', 'unmonitored': True}])[-16:]
@@ -372,19 +469,21 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             if _unobserved(row, metrics) or row['key'] in pending_keys:
                 row.update(recovery_since=None, recovery_paused=True)
                 continue
+            clock = _observation_clock(row, metrics, now)
             since = row.get('recovery_since')
-            if not continuous or type(since) not in (int, float) or not 0 <= since <= now:
-                since = now  # Includes old pending records and clock rollback.
+            if not continuous or type(since) not in (int, float) or not 0 <= since <= clock:
+                since = clock  # Includes old pending records and clock rollback.
             row.update(recovery_since=since, recovery_paused=False)
-            if now - since >= RECURRENCE_MERGE_SECONDS:
+            if clock - since >= RECURRENCE_MERGE_SECONDS:
                 row.pop('recovery_pending', None)
                 row.update(revision=row['revision'] + 1, recovery_confirmed_at=now)
             continue
         if row['key'] in seen or row['state'] == 'resolved':
             continue
-        if _unmonitored_disk(row, metrics, settings):
-            # Removed from disk_drives: nothing observes it any more, so it can
-            # neither stay open forever nor be announced as recovered.
+        if unjudged:
+            # Removed from disk_drives, or its limit switched off: nothing
+            # judges it any more, so it can neither stay open forever nor be
+            # announced as recovered.
             row.update(state='resolved', resolved_at=now, recovery_unconfirmed=True, normal_since=None)
             row['transitions'] = (row.get('transitions', []) + [
                 {'at': now, 'state': 'resolved', 'unmonitored': True}])[-16:]
@@ -393,12 +492,13 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         if gap or _unobserved(row, metrics):
             row.update(state='unknown', normal_since=None, observed_at=now)
             continue
+        clock = _observation_clock(row, metrics, now)
         since = row.get('normal_since')
-        since = now if since is None or since > now else since
+        since = clock if type(since) not in (int, float) or since > clock else since
         row.update(state='resolving', normal_since=since, observed_at=now)
-        if now - since >= settings.recovery_sustain_seconds:
+        if clock - since >= settings.recovery_sustain_seconds:
             row.update(state='resolved', resolved_at=now, recovery_pending=True,
-                       recovery_since=now, recovery_checked_at=now, recovery_paused=False)
+                       recovery_since=clock, recovery_checked_at=now, recovery_paused=False)
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'resolved'}])[-16:]
     cutoff = now - settings.retention_days * 86400
     rows = [r for r in rows if r['state'] != 'resolved' or r.get('resolved_at', now) >= cutoff]
@@ -410,6 +510,16 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
     return {'version': 1, 'updated_at': now, 'incidents': rows,
             'truncated': len(rows) < total, 'retention_days': settings.retention_days,
             'clock_adjusted': now < previous.get('updated_at', 0)}
+
+
+def _time_text(stamp) -> str:
+    """Local ISO time, or '' for a value that is not a usable timestamp."""
+    if not _plain_number(stamp):
+        return ''
+    try:
+        return datetime.fromtimestamp(stamp).astimezone().isoformat(timespec='seconds')
+    except (OverflowError, OSError, ValueError):
+        return ''
 
 
 def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
@@ -425,6 +535,9 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
     closed = '감시 종료' if unconfirmed else '회복 확인' if row['state'] == 'resolved' else ''
     label = closed or ('자원 압박' if row.get('priority') == 'pressure' else '점유 상태 확인')
     names = list(dict.fromkeys(t.get('provider', '') for t in row.get('targets', [])))
+    if str(row.get('key', '')).startswith('host_'):
+        label = closed or 'Windows 메모리 부족'
+        names = ['호스트']
     if str(row.get('key', '')).startswith('disk.'):
         # A drive is not an agent session: say what it is and which one.
         label = closed or '디스크 여유 부족'
@@ -439,7 +552,12 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
     else:
         body += '\n' + row.get('guidance', '')
     observed = row.get('recovery_confirmed_at', row['observed_at']) if row['state'] == 'resolved' else row['observed_at']
-    body += '\n관측 시각: ' + datetime.fromtimestamp(observed).astimezone().isoformat(timespec='seconds')
+    body += '\n관측 시각: ' + (_time_text(observed) or '확인 불가')
+    host_evidence = (row.get('evidence') or {}).get('host') if isinstance(row.get('evidence'), dict) else None
+    if row['state'] != 'resolved' and isinstance(host_evidence, dict) and not host_evidence.get('current'):
+        read_at = _time_text(host_evidence.get('observed_at'))
+        if read_at:
+            body += '\nWindows 값 확인 시각: ' + read_at + ' (이후 Windows를 조회하지 못했습니다)'
     body += '\nTailscale 연결 후 원인과 영향을 확인하세요.'
     plain = body + ('\n' + url if url else '\n웹 주소 미설정: Resource Guard 웹의 경보 화면에서 확인하세요.')
     link = f'<p><a href="{html.escape(url, quote=True)}">원인과 영향 확인</a></p>' if url else ''

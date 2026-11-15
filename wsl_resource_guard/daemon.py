@@ -17,7 +17,7 @@ import time
 from . import atomic
 from .safe_read import read_text
 from .sdnotify import notify as notify_systemd
-from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations,
+from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, ZERO_DISABLES_ALERT, Settings, check_relations,
                      coerce_config_value, write_config_value)
 from .disks import disk_limits, disk_severity, read_disks
 from .gpu import read_gpu
@@ -65,6 +65,12 @@ class AlertCondition:
     severity: str
     reason: str
     sustain_seconds: int = 0
+    # When the value was observed, for sources sampled less often than the loop.
+    # Sustain is then measured between observations: one reading that is merely
+    # re-read on later samples never becomes "sustained".
+    observed_at: float | None = None
+    # False while the source cannot be read now and the value is the last one seen.
+    current: bool = True
 
 
 def oom_kill_victims(since: float) -> list[str]:
@@ -91,6 +97,48 @@ def oom_kill_victims(since: float) -> list[str]:
     return victims
 
 
+def _host_conditions(metrics: SystemMetrics, settings: Settings, observations: list[str]) -> list[AlertCondition]:
+    """Windows running short of memory or commit, from the last host observation.
+
+    Like the drives, a value that could not be refreshed keeps its alert and is
+    marked as not current; a value that was never observed alerts nothing.
+    """
+    host = metrics.host if isinstance(metrics.host, dict) else {}
+    if not host.get("schema"):
+        return []
+    current = host.get("status") == "ok"
+    if not current:
+        observations.append(f"Windows 호스트 조회 불가: {host.get('error') or '사유 미확인'}")
+    memory = host.get("memory")
+    number = lambda value: type(value) in (int, float) and value == value and 0 <= value < 2**63
+    observed = host.get("observed_at")
+    # A time from the future or an absurd one is not an observation.
+    if not number(observed) or observed > metrics.timestamp + 60 or not isinstance(memory, dict):
+        return []
+    stale = "" if current else " (마지막 확인값 · 현재 조회 불가)"
+    observed = float(observed)
+    sustain = settings.host_alert_sustain_seconds
+    conditions: list[AlertCondition] = []
+    available, total = memory.get("available_bytes"), memory.get("total_bytes")
+    if number(available):
+        gib = available / 2**30
+        whole = f" / {total / 2**30:.1f} GiB" if number(total) and total else ""
+        reason = f"Windows 가용 RAM {gib:.1f} GiB{whole}{stale}"
+        for level, limit in (("critical", settings.critical_host_available_gib),
+                             ("warning", settings.warning_host_available_gib)):
+            if limit > 0 and gib <= limit:
+                conditions.append(AlertCondition(f"{level}.host_ram", level, reason, sustain, observed, current))
+    used, limit_bytes = memory.get("commit_used_bytes"), memory.get("commit_limit_bytes")
+    if number(used) and number(limit_bytes) and limit_bytes > 0:
+        percent = used / limit_bytes * 100
+        reason = f"Windows 커밋 {percent:.0f}% ({used / 2**30:.1f} / {limit_bytes / 2**30:.1f} GiB){stale}"
+        for level, limit in (("critical", settings.critical_host_commit_percent),
+                             ("warning", settings.warning_host_commit_percent)):
+            if limit > 0 and percent >= limit:
+                conditions.append(AlertCondition(f"{level}.host_commit", level, reason, sustain, observed, current))
+    return conditions
+
+
 def evaluate(
     metrics: SystemMetrics,
     snapshot: ProcessSnapshot,
@@ -115,6 +163,8 @@ def evaluate(
                 f"{disk['id']} 디스크 여유 {disk['available_percent']:.1f}% "
                 f"({disk['available_bytes'] / 2**30:.1f} GiB / {disk['total_bytes'] / 2**30:.1f} GiB){stale}",
             ))
+
+    conditions.extend(_host_conditions(metrics, settings, observations))
 
     if metrics.mem_available_gib <= settings.critical_available_gib:
         conditions.append(
@@ -243,23 +293,38 @@ def evaluate(
     warning: list[str] = []
     pending: list[str] = []
     psi_alert: dict = {}
+    sustained: list[AlertCondition] = []
     for condition in conditions:
+        reference = now if condition.observed_at is None else min(condition.observed_at, now)
         try:
-            started_at = float(previous_since.get(condition.key, now))
+            started_at = float(previous_since.get(condition.key, reference))
         except (TypeError, ValueError):
-            started_at = now
-        if started_at > now or started_at < 0:
-            started_at = now
+            started_at = reference
+        if started_at > reference or started_at < 0:
+            started_at = reference
         current_since[condition.key] = started_at
-        elapsed = max(0.0, now - started_at)
+        elapsed = max(0.0, reference - started_at)
         if elapsed >= condition.sustain_seconds:
-            target = critical if condition.severity == "critical" else warning
-            target.append(condition.reason)
-            if ".psi_" in condition.key:
-                psi_alert = {"severity": condition.severity, "reasons": [condition.reason]}
+            sustained.append(condition)
+            continue
+        if not condition.current:
+            # An old reading that cannot be refreshed makes no progress towards
+            # an alert. Left "pending", it would hold every other recovery.
+            del current_since[condition.key]
             continue
         remaining = max(1, math.ceil(condition.sustain_seconds - elapsed))
-        pending.append(f"{condition.reason} ({condition.severity}까지 {remaining}초)")
+        wait = (f"{condition.severity}까지 {remaining}초" if condition.observed_at is None
+                else f"다음 관측에서도 이어지면 {condition.severity}")
+        pending.append(f"{condition.reason} ({wait})")
+    # A host metric reports both levels so each keeps its own clock across a
+    # crossing; only the higher sustained level is the alert.
+    shadowed = {c.key.replace("critical.", "warning.", 1) for c in sustained
+                if c.severity == "critical" and ".host_" in c.key}
+    sustained = [c for c in sustained if c.key not in shadowed]
+    for condition in sustained:
+        (critical if condition.severity == "critical" else warning).append(condition.reason)
+        if ".psi_" in condition.key:
+            psi_alert = {"severity": condition.severity, "reasons": [condition.reason]}
 
     if critical:
         severity = "critical"
@@ -278,8 +343,7 @@ def evaluate(
         pending_reasons=pending,
         condition_since=current_since,
         psi_alert=psi_alert,
-        conditions=[{'key': c.key, 'severity': c.severity, 'reason': c.reason}
-                    for c in conditions if c.reason in reasons],
+        conditions=[{'key': c.key, 'severity': c.severity, 'reason': c.reason} for c in sustained],
     )
 
 
@@ -767,6 +831,27 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         evaluation.reasons.extend(r for r in missing_disk_reasons if r not in evaluation.reasons)
         evaluation.pending_reasons.append('디스크 관측 재개 후 정상 확인 필요')
         normal_since = 0.0
+    # Same rule for Windows itself: an alert whose value can no longer be read is
+    # held, not cleared by the absence of a fresh condition. "Read" is judged per
+    # value, as in the incident store, and never for a level that is switched off.
+    from .incidents import _host_limits_off, _unobserved
+    reason_severity = state.get("reason_severity") if isinstance(state.get("reason_severity"), dict) else {}
+    missing_host_reasons = []
+    for reason in recovery_from_reasons:
+        key = ("host_ram:host" if reason.startswith("Windows 가용 RAM")
+               else "host_commit:host" if reason.startswith("Windows 커밋") else "")
+        level = reason_severity.get(reason, recovery_from_severity)
+        if key and not _host_limits_off(key, settings, level) and _unobserved({"key": key}, metrics):
+            missing_host_reasons.append(reason)
+    if missing_host_reasons and recovery_from_severity != 'normal':
+        # Held at the level these reasons had, not at whatever else was active then.
+        held = "critical" if any(reason_severity.get(r, recovery_from_severity) == "critical"
+                                 for r in missing_host_reasons) else "warning"
+        if held == 'critical' or evaluation.severity == 'normal':
+            evaluation.severity = held
+        evaluation.reasons.extend(r for r in missing_host_reasons if r not in evaluation.reasons)
+        evaluation.pending_reasons.append('Windows 관측 재개 후 정상 확인 필요')
+        normal_since = 0.0
     evaluation, normal_since, recovery_ready = stabilize_recovery(
         evaluation,
         recovery_from_severity,
@@ -901,6 +986,9 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         "notified_severity": old_notified_severity,
         "notified_reasons": notified_reasons,
         "reasons": evaluation.reasons,
+        # Level of each reason, so a held reason keeps its own severity later.
+        "reason_severity": {**{r: s for r, s in reason_severity.items() if r in evaluation.reasons},
+                            **{c["reason"]: c["severity"] for c in evaluation.conditions}},
         "observations": evaluation.observations,
         "pending_reasons": evaluation.pending_reasons,
         "condition_since": evaluation.condition_since,
@@ -1014,6 +1102,8 @@ def apply_config_request(settings: Settings, shared_dir: Path = SHARED_DIR,
         if current - float(request.get("requested_at") or 0) > CONFIG_REQUEST_MAX_AGE_SECONDS:
             raise ValueError("요청이 10분 넘게 처리되지 않아 만료됐습니다.")
         value = coerce_config_value(key, request.get("value"))
+        if key in ZERO_DISABLES_ALERT and value == 0:
+            raise ValueError("경보를 끄는 값은 PC 터미널의 wrg config set으로만 설정할 수 있습니다.")
         check_relations(Settings.load(settings.config_path), key, value)
         write_config_value(settings.config_path, key, value)
         result.update(ok=True, value=value, message=f"{key} = {value!r} 적용")

@@ -182,13 +182,22 @@ class Delivery:
             if row['state'] == 'resolved' and not entry:
                 continue  # Do not announce a historical recovery to a newly registered recipient.
             changed = not entry or entry.get('revision') != row['revision']
-            interval = self.settings.critical_reminder_seconds if row['severity'] == 'critical' else self.settings.reminder_cooldown_seconds
+            # A value that cannot be read now (unplugged drive, Windows not
+            # answering) repeats the same old number, so even a critical one is
+            # reminded only at the slower warning interval.
+            urgent = row['severity'] == 'critical' and not row.get('stale')
+            interval = self.settings.critical_reminder_seconds if urgent else self.settings.reminder_cooldown_seconds
             quiet = row['severity'] == 'warning' and in_quiet_hours(now, self.settings.alert_quiet_hours)
-            repeat = bool(entry and now >= entry.get('next_reminder_at', 0) and row['state'] == 'active'
+            due = entry.get('next_reminder_at', 0) if entry else 0
+            if entry and type(entry.get('alerted_at')) in (int, float) and 0 < entry['alerted_at'] <= now:
+                # The interval changes while an alert is open (its value becomes
+                # unreadable, or readable again): count it from the last alert.
+                due = entry['alerted_at'] + interval
+            repeat = bool(entry and now >= due and row['state'] == 'active'
                           and not deferred and not quiet and legacy_snooze <= now)
             if changed or repeat:
                 recovery_keys = list(entry.get('destinations', {})) if entry and row['state'] == 'resolved' else []
-                entry = {'revision': row['revision'], 'next_reminder_at': now + interval,
+                entry = {'revision': row['revision'], 'next_reminder_at': now + interval, 'alerted_at': now,
                          'state': row['state'], 'destinations': {}, 'recovery_keys': recovery_keys}
                 records[row['id']] = entry
             for key, destination in destinations.items():
