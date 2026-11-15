@@ -53,6 +53,11 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `critical_psi_full_low_ram_available_gib` | `4.0` | 0.1–1024 | PSI 복합 판정의 낮은 RAM 기준 (GiB) |
 | `warning_swap_out_mib_per_minute` | `256.0` | 1–102400 | Warning: swap-out 속도 (MiB/분) |
 | `warning_swap_out_max_available_gib` | `6.0` | 0.1–1024 | swap-out 경보의 가용 RAM 상한 (GiB) |
+| `warning_host_available_gib` | `2.0` | 0–1024 | Warning: Windows 가용 RAM (GiB, 0=사용 안 함) |
+| `critical_host_available_gib` | `1.0` | 0–1024 | Critical: Windows 가용 RAM (GiB, 0=사용 안 함) |
+| `warning_host_commit_percent` | `90.0` | 0–100 | Warning: Windows 커밋 사용률 (%, 0=사용 안 함) |
+| `critical_host_commit_percent` | `97.0` | 0–100 | Critical: Windows 커밋 사용률 (%, 0=사용 안 함) |
+| `host_alert_sustain_seconds` | `120` | 30–3600 | Windows 호스트 경보 지속 시간 (초) |
 | `warning_disk_free_percent` | `20.0` | 1–95 | Warning: 디스크 여유 (%) |
 | `critical_disk_free_percent` | `10.0` | 0.5–95 | Critical: 디스크 여유 (%) |
 | `warning_disk_free_gib` | `0.0` | 0–100000 | Warning 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함) |
@@ -87,6 +92,8 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `weekly_report_enabled` | `true` | true / false | 주간 리포트 발송 (Gmail·Discord·webhook) |
 | `weekly_report_weekday` | `0` | 0–6 | 주간 리포트 요일 (0=월 … 6=일) |
 | `weekly_report_hour` | `9` | 0–23 | 주간 리포트 발송 시각 (시) |
+
+Windows 호스트 경보는 Windows가 보고한 가용 RAM이 기준 이하이거나 커밋 사용률이 기준 이상인 상태가 `host_alert_sustain_seconds` 동안 이어질 때 발생합니다. WSL 안의 가용 RAM과는 별개의 값입니다. 호스트를 한 번도 관측하지 못했으면 경보하지 않고, 관측이 끊기면 마지막 확인값으로 경보를 유지하며 회복으로 처리하지 않습니다. 값을 0으로 두면 해당 단계를 끕니다.
 
 디스크 경보는 여유 비율이 기준 미만일 때 발생합니다. 용량이 큰 드라이브는 비율만으로는 너무 일찍 경보가 나므로, 절대 용량 하한(`*_disk_free_gib`)을 설정하면 여유가 그 용량 미만일 때만 경보합니다. 예를 들어 Warning 20%·50 GiB이면 여유가 20% 미만이면서 50 GiB 미만일 때 Warning입니다. Warning 하한만 설정하면 Critical에도 같은 하한이 적용되어, Warning이 나지 않는 상태에서 Critical이 나지 않습니다.
 드라이브마다 다른 기준이 필요하면 `config.toml` 맨 끝에 드라이브별 표를 둡니다. 적지 않은 값은 공통 기준을 따릅니다. 형식이 틀리거나 Warning이 Critical보다 크지 않은 표는 그 드라이브만 무시하고 사유를 `wrg config`에 표시합니다. 공통 기준을 바꿀 때 드라이브별 표와 맞지 않게 되는 값은 거부합니다. 드라이브별 표는 웹에서 바꿀 수 없습니다.

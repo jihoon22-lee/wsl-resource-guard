@@ -106,9 +106,9 @@ def _key(condition: dict, snapshot, boot: str) -> str:
     if key.startswith('session.'):
         root = snapshot.processes.get(int(key.split('.')[-1]))
         return 'session:' + (process_identity(root, boot) if root else 'unknown:' + key)
-    if key.startswith('disk.'):
-        # A Windows volume keeps its state while WSL restarts; a boot-scoped
-        # key would reopen the same condition and announce a false recovery.
+    if key.startswith(('disk.', 'host_')):
+        # Windows keeps its state while WSL restarts; a boot-scoped key would
+        # reopen the same condition and announce a false recovery.
         return key + ':' + HOST_SCOPE
     return key + ':' + boot
 
@@ -167,7 +167,7 @@ def _targets(condition: dict, snapshot) -> list[dict]:
         pids = [int(key.split('.')[-1])]
     elif key.endswith('mcp_total'):
         pids = [s.root_pid for s in sorted(snapshot.sessions, key=lambda s: s.mcp_rss_kib, reverse=True) if s.mcp_rss_kib][:8]
-    elif any(word in key for word in ('available', 'ram', 'swap', 'psi', 'oom')):
+    elif any(word in key for word in ('available', 'ram', 'swap', 'psi', 'oom', 'host_')):
         pids = [s.root_pid for s in snapshot.sessions[:5]]
     else:
         pids = []
@@ -189,6 +189,9 @@ def _unobserved(row: dict, metrics) -> bool:
     key = row['key']
     if 'psi' in key:
         return metrics.psi_some_avg60 is None or metrics.psi_full_avg60 is None
+    if key.startswith('host_'):
+        host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+        return host.get('status') != 'ok' or type(host.get('observed_at')) not in (int, float)
     if key.startswith('disk.'):
         drive = key.split(':', 1)[0].split('.', 1)[1]
         # Windows drive IDs contain ':', so match the letter as well.
@@ -246,8 +249,34 @@ def _disk_guidance(vhd: dict | None) -> str:
     return text + ' WSL 안의 사용량을 줄이면 이 드라이브의 여유가 늘어납니다.'
 
 
+def _host_memory(metrics) -> dict:
+    host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+    return host.get('memory') if isinstance(host.get('memory'), dict) else {}
+
+
+def _host_guidance(metrics) -> str:
+    host = metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}
+    vm = host.get('vmmem') if isinstance(host.get('vmmem'), dict) else {}
+    text = 'Windows 호스트의 메모리가 부족합니다. WSL 안의 가용 RAM에 여유가 있어도 호스트가 먼저 느려지거나 프로그램이 종료될 수 있습니다.'
+    if type(vm.get('working_set_bytes')) in (int, float):
+        used = max(0, metrics.mem_total_kib - metrics.mem_available_kib) / 1048576
+        text += (f" WSL VM이 Windows에서 {vm['working_set_bytes'] / 2**30:.0f} GiB를 차지하고 있고, "
+                 f'WSL 안에서 실제로 쓰는 양은 {used:.0f} GiB입니다.')
+    return text + ' WSL의 큰 세션과 Windows 프로그램 사용량을 함께 확인하세요.'
+
+
 def _measurement(condition, snapshot, metrics, settings):
     key = condition['key']
+    critical = condition['severity'] == 'critical'
+    memory = _host_memory(metrics)
+    if key.endswith('host_ram') and type(memory.get('available_bytes')) in (int, float):
+        return {'value': round(memory['available_bytes'] / 2**30, 2), 'unit': 'GiB', 'label': 'Windows 가용 RAM · 기준 이하',
+                'threshold': settings.critical_host_available_gib if critical else settings.warning_host_available_gib}
+    if (key.endswith('host_commit') and type(memory.get('commit_used_bytes')) in (int, float)
+            and type(memory.get('commit_limit_bytes')) in (int, float) and memory['commit_limit_bytes'] > 0):
+        return {'value': round(memory['commit_used_bytes'] / memory['commit_limit_bytes'] * 100, 1), 'unit': '%',
+                'label': 'Windows 커밋 사용률 · 기준 이상',
+                'threshold': settings.critical_host_commit_percent if critical else settings.warning_host_commit_percent}
     if '.disk.' in key:
         disk = _disk_row(condition, metrics)
         percent = (disk or {}).get('available_percent')
@@ -339,16 +368,17 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         benign_memory = (not pressure and metrics.psi_some_avg60 is not None
                          and (condition['key'].endswith('mcp_total') or '.session.' in condition['key']))
         on_disk = '.disk.' in condition['key']
+        on_host = '.host_' in condition['key']
         vhd = _vhd_share(_disk_row(condition, metrics), metrics) if on_disk else None
         row.update(state='active', severity=condition['severity'], reason=condition['reason'],
                    observed_at=now, normal_since=None, targets=targets,
                    measurement=measurement,
-                   priority='pressure' if pressure or condition['severity'] == 'critical' else 'review',
+                   priority='pressure' if pressure or on_host or condition['severity'] == 'critical' else 'review',
                    evidence={'available_gib': round(metrics.mem_available_gib, 2),
                              'psi_some_avg60': metrics.psi_some_avg60,
                              'swap_out_mib_per_minute': metrics.swap_out_mib_per_minute,
                              **({'vhd': vhd} if vhd else {})},
-                   guidance=(_disk_guidance(vhd) if on_disk else '현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
+                   guidance=(_disk_guidance(vhd) if on_disk else _host_guidance(metrics) if on_host else '현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
                              '자원 압박이 관측됐습니다. 저장할 작업과 주요 점유 대상을 확인하세요.' if pressure else
                              '자원 기준을 넘었습니다. 점유량만으로 작업 중단이나 누수를 단정하지 않습니다.'))
     for condition in pending or []:
@@ -425,6 +455,8 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
     closed = '감시 종료' if unconfirmed else '회복 확인' if row['state'] == 'resolved' else ''
     label = closed or ('자원 압박' if row.get('priority') == 'pressure' else '점유 상태 확인')
     names = list(dict.fromkeys(t.get('provider', '') for t in row.get('targets', [])))
+    if str(row.get('key', '')).startswith('host_'):
+        label = closed or 'Windows 메모리 부족'
     if str(row.get('key', '')).startswith('disk.'):
         # A drive is not an agent session: say what it is and which one.
         label = closed or '디스크 여유 부족'

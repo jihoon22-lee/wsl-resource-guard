@@ -39,6 +39,11 @@ CONFIG_RULES: dict[str, tuple[str, float, float, str]] = {
     "critical_disk_free_percent": ("float", 0.5, 95, "Critical: 디스크 여유 (%)"),
     "warning_disk_free_gib": ("float", 0, 100000, "Warning 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함)"),
     "critical_disk_free_gib": ("float", 0, 100000, "Critical 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함)"),
+    "warning_host_available_gib": ("float", 0, 1024, "Warning: Windows 가용 RAM (GiB, 0=사용 안 함)"),
+    "critical_host_available_gib": ("float", 0, 1024, "Critical: Windows 가용 RAM (GiB, 0=사용 안 함)"),
+    "warning_host_commit_percent": ("float", 0, 100, "Warning: Windows 커밋 사용률 (%, 0=사용 안 함)"),
+    "critical_host_commit_percent": ("float", 0, 100, "Critical: Windows 커밋 사용률 (%, 0=사용 안 함)"),
+    "host_alert_sustain_seconds": ("int", 30, 3600, "Windows 호스트 경보 지속 시간 (초)"),
     "session_observe_rss_gib": ("float", 0.5, 1024, "세션 관찰 시작 RSS (GiB)"),
     "session_warning_rss_gib": ("float", 0.5, 1024, "Warning: 세션 RSS (GiB)"),
     "mcp_observe_rss_gib": ("float", 0.5, 1024, "MCP 관찰 시작 RSS (GiB)"),
@@ -99,6 +104,13 @@ CONFIG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "warning_disk_free_gib",
         "critical_disk_free_gib",
     )),
+    ("Windows 호스트", (
+        "warning_host_available_gib",
+        "critical_host_available_gib",
+        "warning_host_commit_percent",
+        "critical_host_commit_percent",
+        "host_alert_sustain_seconds",
+    )),
     ("세션·MCP", (
         "session_observe_rss_gib",
         "session_warning_rss_gib",
@@ -144,6 +156,9 @@ CONFIG_RELATIONS = (
 # Ordered only when both are set; 0 turns that floor off.
 CONFIG_OPTIONAL_RELATIONS = (
     ("warning_disk_free_gib", "critical_disk_free_gib"),
+    ("warning_host_available_gib", "critical_host_available_gib"),
+    # Commit usage rises towards the limit, so critical is the larger value.
+    ("critical_host_commit_percent", "warning_host_commit_percent"),
 )
 
 # [disk_thresholds.<letter>] keys and their ranges; unset keys use the global value.
@@ -412,6 +427,13 @@ class Settings:
     # free space must also be under it. 0 keeps the percent-only rule.
     warning_disk_free_gib: float = 0.0
     critical_disk_free_gib: float = 0.0
+    # Windows itself can run short while WSL still reports free memory. These
+    # use the host snapshot; 0 switches a level off.
+    warning_host_available_gib: float = 2.0
+    critical_host_available_gib: float = 1.0
+    warning_host_commit_percent: float = 90.0
+    critical_host_commit_percent: float = 97.0
+    host_alert_sustain_seconds: int = 120
     # Per-drive replacements, e.g. {"E": {"warning_free_percent": 5}}.
     disk_thresholds: dict = field(default_factory=dict)
     wsl_vhd_path: str = ""

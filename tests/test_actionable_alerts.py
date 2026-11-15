@@ -450,6 +450,34 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual(title, '디스크 여유 부족 · E:')
         self.assertIn('839 GiB', plain)
 
+    def test_host_incident_survives_reboot_and_is_unknown_while_windows_is_silent(self):
+        def host_metrics(now, status='ok', available_gib=1.5):
+            m = metrics(now)
+            m.host = {'schema': 1, 'status': status, 'observed_at': 1000.0, 'attempted_at': now,
+                      'memory': {'total_bytes': 32 * 2**30, 'available_bytes': int(available_gib * 2**30),
+                                 'commit_used_bytes': 40 * 2**30, 'commit_limit_bytes': 100 * 2**30},
+                      'vmmem': {'working_set_bytes': 16 * 2**30, 'private_bytes': None}}
+            return m
+        low = {'key': 'warning.host_ram', 'severity': 'warning', 'reason': 'Windows 가용 RAM 1.5 GiB'}
+        one = reconcile({}, [low], self.snap, host_metrics(1000), self.settings, boot='boot-a')
+        row = one['incidents'][0]
+        self.assertEqual((row['key'], row['priority']), ('host_ram:host', 'pressure'))
+        self.assertEqual(row['measurement']['value'], 1.5)
+        self.assertEqual(row['measurement']['threshold'], self.settings.warning_host_available_gib)
+        self.assertIn('WSL VM', row['guidance']); self.assertIn('16', row['guidance'])
+        self.assertEqual(incident_message(row, '')[0].split(' · ')[0], 'Windows 메모리 부족')
+        two = reconcile(one, [low], self.snap, host_metrics(5000), self.settings, boot='boot-b')
+        self.assertEqual([(r['id'], r['state'], r['revision']) for r in two['incidents']], [(row['id'], 'active', 1)])
+        # The condition is gone but Windows cannot be observed: not a recovery.
+        out = two
+        for now in range(5015, 5015 + RECURRENCE_MERGE_SECONDS + 300, 15):
+            out = reconcile(out, [], self.snap, host_metrics(now, status='timeout'), self.settings, boot='boot-b')
+        self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('unknown', 1)])
+        # Observed again and fine: resolves, then confirms after the quiet window.
+        for now in range(out['updated_at'] + 15, out['updated_at'] + RECURRENCE_MERGE_SECONDS + 300, 15):
+            out = reconcile(out, [], self.snap, host_metrics(now, available_gib=8), self.settings, boot='boot-b')
+        self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('resolved', 2)])
+
     def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         other = disk_metrics(1015)

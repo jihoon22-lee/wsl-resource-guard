@@ -34,6 +34,13 @@ mcp_observe_rss_gib = 3.0
 mcp_warning_rss_gib = 5.0
 stale_session_hours = 48.0
 
+# Windows host alerts, from what Windows itself reports (0 switches a level off).
+warning_host_available_gib = 2.0
+critical_host_available_gib = 1.0
+warning_host_commit_percent = 90.0
+critical_host_commit_percent = 97.0
+host_alert_sustain_seconds = 120
+
 # Windows volume alerts use available / total, strictly below these percentages.
 disk_drives = ["C", "D", "E"]
 disk_refresh_seconds = 60

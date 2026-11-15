@@ -543,6 +543,62 @@ class SampleStateTests(unittest.TestCase):
                 self.assertEqual(read.call_args.args[1], "")
                 self.assertIsNone(load_state(Path(directory) / "state.json")["metrics"]["vmmem_bytes"])
 
+    def host(self, available_gib=8.0, commit_percent=40.0, status="ok", observed=1000.0):
+        return {"schema": 1, "status": status, "error": "" if status == "ok" else "응답 없음",
+                "attempted_at": 1000.0, "observed_at": observed, "failures": 0,
+                "memory": {"total_bytes": 32 * 2**30, "available_bytes": int(available_gib * 2**30),
+                           "commit_used_bytes": int(commit_percent * 2**30), "commit_limit_bytes": 100 * 2**30}}
+
+    def host_evaluation(self, host, since=None, settings=None, timestamp=1000.0):
+        current = metrics(8.0, timestamp=timestamp)
+        current.host = host
+        return evaluate(current, snapshot(), settings or Settings(), None, since or {})
+
+    def test_host_memory_and_commit_alert_after_sustained_observations(self) -> None:
+        self.assertEqual(self.host_evaluation(self.host()).severity, "normal")
+        first = self.host_evaluation(self.host(available_gib=1.5))
+        self.assertEqual((first.severity, list(first.condition_since)), ("normal", ["warning.host_ram"]))
+        self.assertTrue(first.pending_reasons)
+        held = self.host_evaluation(self.host(available_gib=1.5), first.condition_since, timestamp=1120.0)
+        self.assertEqual(held.severity, "warning")
+        self.assertIn("Windows 가용 RAM 1.5 GiB", held.reasons[0])
+        critical = self.host_evaluation(self.host(available_gib=0.8), {"critical.host_ram": 900.0}, timestamp=1120.0)
+        self.assertEqual(critical.severity, "critical")
+        commit = self.host_evaluation(self.host(commit_percent=93.0), {"warning.host_commit": 800.0})
+        self.assertEqual(commit.severity, "warning")
+        self.assertIn("Windows 커밋 93%", commit.reasons[0])
+        full = self.host_evaluation(self.host(commit_percent=98.0), {"critical.host_commit": 800.0})
+        self.assertEqual(full.severity, "critical")
+        # Exactly at a limit: available alerts at or below, commit at or above.
+        self.assertEqual(list(self.host_evaluation(self.host(available_gib=2.0)).condition_since), ["warning.host_ram"])
+        self.assertEqual(list(self.host_evaluation(self.host(commit_percent=90.0)).condition_since),
+                         ["warning.host_commit"])
+
+    def test_host_alerts_can_be_switched_off_and_never_come_from_missing_values(self) -> None:
+        off = Settings(warning_host_available_gib=0, critical_host_available_gib=0,
+                       warning_host_commit_percent=0, critical_host_commit_percent=0)
+        self.assertEqual(self.host_evaluation(self.host(available_gib=0.1, commit_percent=99), settings=off)
+                         .condition_since, {})
+        for host in ({}, {"schema": 1, "status": "unavailable", "observed_at": None, "error": "interop 없음"},
+                     dict(self.host(), memory={"available_bytes": None, "commit_used_bytes": None,
+                                               "commit_limit_bytes": None}),
+                     dict(self.host(), memory={"available_bytes": 0.5 * 2**30, "commit_used_bytes": 99,
+                                               "commit_limit_bytes": 0}),
+                     dict(self.host(), memory="broken"), "text"):
+            with self.subTest(host=host):
+                result = self.host_evaluation(host)
+                self.assertFalse(any("commit" in key for key in result.condition_since))
+                if not isinstance(host, dict) or not isinstance(host.get("memory"), dict):
+                    self.assertEqual(result.condition_since, {})
+        never = self.host_evaluation({"schema": 1, "status": "unavailable", "observed_at": None, "error": "interop 없음"})
+        self.assertTrue(any("Windows 호스트 조회 불가" in line for line in never.observations))
+
+    def test_stale_host_value_keeps_the_alert_and_says_it_is_not_current(self) -> None:
+        stale = self.host_evaluation(self.host(available_gib=1.5, status="timeout"), {"warning.host_ram": 800.0})
+        self.assertEqual(stale.severity, "warning")
+        self.assertIn("마지막 확인값", stale.reasons[0])
+        self.assertTrue(any("Windows 호스트 조회 불가" in line for line in stale.observations))
+
     def test_state_from_the_previous_version_is_still_a_valid_previous_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = Settings(state_dir=directory)

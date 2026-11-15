@@ -69,7 +69,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 | 필드 | 내용 |
 |---|---|
 | `id` | 32자리 16진수. 알림 링크와 전달 기록의 키 |
-| `key` | `<원인>:<범위>`. 디스크는 `disk.E::host`처럼 호스트 범위라 WSL 재시작을 넘어 이어집니다. RAM·PSI·swap·OOM·MCP는 boot ID, 세션은 프로세스 신원이 범위입니다 |
+| `key` | `<원인>:<범위>`. 디스크(`disk.E::host`)와 Windows 호스트(`host_ram:host`, `host_commit:host`)는 호스트 범위라 WSL 재시작을 넘어 이어집니다. RAM·PSI·swap·OOM·MCP는 boot ID, 세션은 프로세스 신원이 범위입니다 |
 | `state` | `active`·`resolving`·`resolved`·`unknown`. 관측을 잃으면 `unknown`이며 해소로 바꾸지 않습니다 |
 | `severity`, `revision`, `priority` | 위험도, 알림 단위(새 사건·위험도 상승·회복 확정 때 증가), `pressure`·`review` |
 | `opened_at`, `observed_at`, `normal_since`, `resolved_at` | 시작, 마지막 관측, 정상 구간 시작, 해소 시각 |

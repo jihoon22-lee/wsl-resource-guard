@@ -117,6 +117,17 @@ class SettingsTests(unittest.TestCase):
             check_relations(Settings(critical_disk_free_gib=50), 'warning_disk_free_gib', 20)
         check_relations(Settings(critical_disk_free_gib=50), 'warning_disk_free_gib', 0)   # 0 turns the floor off
 
+    def test_host_limits_are_optional_and_ordered_when_both_set(self) -> None:
+        defaults = Settings()
+        self.assertGreater(defaults.warning_host_available_gib, defaults.critical_host_available_gib)
+        self.assertLess(defaults.warning_host_commit_percent, defaults.critical_host_commit_percent)
+        self.assertEqual(self.load_text('warning_host_available_gib = 0\n').load_warnings, [])
+        self.assertEqual(self.load_text('critical_host_commit_percent = 0\n').load_warnings, [])
+        for text in ('warning_host_available_gib = 1\ncritical_host_available_gib = 2\n',
+                     'warning_host_commit_percent = 97\ncritical_host_commit_percent = 95\n'):
+            with self.subTest(text=text):
+                self.assertEqual(len(self.load_text(text).load_warnings), 1)
+
     def test_shipped_template_loads_without_warnings(self) -> None:
         self.assertEqual(Settings.load(TEMPLATE).load_warnings, [])
 

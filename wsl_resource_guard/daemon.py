@@ -91,6 +91,48 @@ def oom_kill_victims(since: float) -> list[str]:
     return victims
 
 
+def _host_conditions(metrics: SystemMetrics, settings: Settings, observations: list[str]) -> list[AlertCondition]:
+    """Windows running short of memory or commit, from the last host observation.
+
+    Like the drives, a value that could not be refreshed keeps its alert and is
+    marked as not current; a value that was never observed alerts nothing.
+    """
+    host = metrics.host if isinstance(metrics.host, dict) else {}
+    if not host.get("schema"):
+        return []
+    current = host.get("status") == "ok"
+    if not current:
+        observations.append(f"Windows 호스트 조회 불가: {host.get('error') or '사유 미확인'}")
+    memory = host.get("memory")
+    if type(host.get("observed_at")) not in (int, float) or not isinstance(memory, dict):
+        return []
+    stale = "" if current else " (마지막 확인값 · 현재 조회 불가)"
+    number = lambda value: type(value) in (int, float) and value == value and value >= 0
+    conditions: list[AlertCondition] = []
+    available, total = memory.get("available_bytes"), memory.get("total_bytes")
+    if number(available):
+        gib = available / 2**30
+        whole = f" / {total / 2**30:.1f} GiB" if number(total) and total else ""
+        for level, limit in (("critical", settings.critical_host_available_gib),
+                             ("warning", settings.warning_host_available_gib)):
+            if limit > 0 and gib <= limit:
+                conditions.append(AlertCondition(f"{level}.host_ram", level, f"Windows 가용 RAM {gib:.1f} GiB{whole}{stale}",
+                                                 settings.host_alert_sustain_seconds))
+                break
+    used, limit_bytes = memory.get("commit_used_bytes"), memory.get("commit_limit_bytes")
+    if number(used) and number(limit_bytes) and limit_bytes > 0:
+        percent = used / limit_bytes * 100
+        for level, limit in (("critical", settings.critical_host_commit_percent),
+                             ("warning", settings.warning_host_commit_percent)):
+            if limit > 0 and percent >= limit:
+                conditions.append(AlertCondition(
+                    f"{level}.host_commit", level,
+                    f"Windows 커밋 {percent:.0f}% ({used / 2**30:.1f} / {limit_bytes / 2**30:.1f} GiB){stale}",
+                    settings.host_alert_sustain_seconds))
+                break
+    return conditions
+
+
 def evaluate(
     metrics: SystemMetrics,
     snapshot: ProcessSnapshot,
@@ -115,6 +157,8 @@ def evaluate(
                 f"{disk['id']} 디스크 여유 {disk['available_percent']:.1f}% "
                 f"({disk['available_bytes'] / 2**30:.1f} GiB / {disk['total_bytes'] / 2**30:.1f} GiB){stale}",
             ))
+
+    conditions.extend(_host_conditions(metrics, settings, observations))
 
     if metrics.mem_available_gib <= settings.critical_available_gib:
         conditions.append(
