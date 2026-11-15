@@ -2,13 +2,12 @@
 from __future__ import annotations
 import copy
 import json
-import os
 from pathlib import Path
 import re
 import secrets
-import tempfile
 from datetime import datetime
 
+from . import atomic
 from .identity import boot_id, describe_target, process_identity
 from .safe_read import read_text
 
@@ -23,17 +22,7 @@ _LEGACY_DISK_KEY = re.compile(r'^(disk\.[A-Za-z]:):(.*)$')
 
 
 def atomic_write(path: Path, data: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
-    try:
-        with os.fdopen(fd, 'w') as stream:
-            json.dump(data, stream, ensure_ascii=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+    atomic.write_json(path, data)
 
 
 def read_store(path: Path) -> dict:

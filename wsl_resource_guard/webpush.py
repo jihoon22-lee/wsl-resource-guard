@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import atomic
 from .safe_read import read_text
 from urllib.parse import urlsplit
 
@@ -215,8 +216,7 @@ def send_all(shared_dir: Path, state_dir: Path | None, subject: str | None, mess
             expired.add(sub['endpoint'])
     if expired_path and expired != before:
         try:
-            expired_path.parent.mkdir(parents=True, exist_ok=True)
-            expired_path.write_text(json.dumps(sorted(expired)), encoding='utf-8')
+            atomic.write_json(expired_path, sorted(expired))
         except OSError:
             pass
     gone = sorted(expired - before)

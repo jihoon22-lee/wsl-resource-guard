@@ -75,7 +75,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
         return path
 
     def test_allowlist_includes_linked_documents_and_no_dated_records(self):
-        for name in ('docs/paseo.md', 'docs/roadmap.md'):
+        for name in ('docs/paseo.md', 'docs/roadmap.md', 'docs/data-formats.md'):
             with self.subTest(name=name):
                 self.assertIn(name, release.ROOT_FILES | release.DOCS)
         self.assertFalse([name for name in release.ROOT_FILES | release.DOCS if name.startswith('workthrough/')])

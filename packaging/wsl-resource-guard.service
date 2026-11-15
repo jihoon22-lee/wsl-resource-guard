@@ -4,7 +4,10 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+# The guard signals after every sample and while it waits; a stuck sample loop is restarted.
+WatchdogSec=180
 User=@OWNER@
 Group=@GROUP@
 Environment="HOME=@HOME@"

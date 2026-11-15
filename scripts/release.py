@@ -27,7 +27,7 @@ ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGEL
 PREFIXES = ('bin/', 'wsl_resource_guard/', 'config/', 'packaging/', 'tests/', 'scripts/')
 DOCS = {'docs/installation.md', 'docs/usage.md', 'docs/configuration.md',
         'docs/architecture.md', 'docs/operations.md', 'docs/paseo.md',
-        'docs/roadmap.md'}
+        'docs/roadmap.md', 'docs/data-formats.md'}
 
 
 def git(*args):

@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import tomllib
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import atomic
 from .safe_read import read_text
 
 
@@ -273,18 +273,7 @@ def write_config_value(path: Path, key: str, value) -> None:
         raise ValueError(f"설정 파일이 손상되어 있습니다: {exc}") from None
     if parsed.get(key) != value:
         raise ValueError(f"{key} 치환 결과를 확인할 수 없습니다. {path}를 직접 수정하세요.")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".config-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(new_text)
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+    atomic.write_text(path, new_text, mode=0o644)
 
 
 @dataclass(slots=True)

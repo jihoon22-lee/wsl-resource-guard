@@ -146,6 +146,9 @@ class Delivery:
         ledger = read_json(self.path, {'version': 1, 'events': {}})
         if not isinstance(ledger, dict) or not isinstance(ledger.get('events'), dict):
             raise ValueError('Invalid delivery state')
+        if ledger.get('version', 1) != 1:
+            # A later version's ledger must not be rewritten in this format.
+            raise ValueError('Unsupported delivery state version')
         records = ledger['events']
         saved_at = ledger.get('updated_at', 0)
         saved_content = self._content(ledger)

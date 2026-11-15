@@ -22,7 +22,6 @@ import socketserver
 import struct
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
@@ -30,7 +29,7 @@ import urllib.error
 import urllib.request
 
 from .owner_worker import LOG_TAILS, MAX_LOG_LINES
-from . import paseo
+from . import atomic, paseo
 
 REGISTRY = Path('/var/lib/wrg-services/registry.json')
 # Root-written, owner-group-readable hand-off to the guard daemon (which runs
@@ -171,19 +170,7 @@ def command(*args: str, timeout: int = 70, check: bool = True) -> str:
 
 
 def atomic_json(path: Path, value: object, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
-    try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, 'w') as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write('\n')
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    atomic.write_json(path, value, mode=mode, indent=2, trailing_newline=True)
 
 
 def rotate_lines(path: Path, max_bytes: int, keep_lines: int) -> None:
@@ -192,15 +179,7 @@ def rotate_lines(path: Path, max_bytes: int, keep_lines: int) -> None:
             return
     except OSError:
         return
-    fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, 'w') as handle:
-            handle.write('\n'.join(tail_lines(path, keep_lines)) + '\n')
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    atomic.write_text(path, '\n'.join(tail_lines(path, keep_lines)) + '\n')
 
 
 def tail_lines(path: Path, count: int, max_bytes: int = 4 * 1024 * 1024) -> list[str]:
@@ -256,19 +235,9 @@ class Controller:
 
     def write_shared(self, name: str, value: object) -> None:
         """0640 root:<owner group> file the guard daemon can read."""
-        self.shared.mkdir(parents=True, exist_ok=True)
         owner = pwd.getpwnam(self.load()['owner'])
-        fd, temporary = tempfile.mkstemp(prefix='.shared-', dir=self.shared)
-        try:
-            with os.fdopen(fd, 'w') as handle:
-                json.dump(value, handle, ensure_ascii=False)
-            os.chmod(temporary, 0o640)
-            if os.geteuid() == 0:
-                os.chown(temporary, 0, owner.pw_gid)
-            os.replace(temporary, self.shared / name)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        atomic.write_json(self.shared / name, value, mode=0o640,
+                          owner=(0, owner.pw_gid) if os.geteuid() == 0 else None)
 
     def read_shared(self, name: str) -> dict:
         try:
