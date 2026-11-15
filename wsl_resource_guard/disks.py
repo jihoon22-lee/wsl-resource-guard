@@ -25,6 +25,10 @@ class ProbeTimeout(TimeoutError):
     """A filesystem call on a host-backed mount did not answer in time."""
 
 
+class ProbeBusy(ProbeTimeout):
+    """An earlier call on the same path is still stuck; this one was not started."""
+
+
 def bounded_probe(path: str, call, timeout: float | None = None):
     timeout = PROBE_TIMEOUT_SECONDS if timeout is None else timeout
     result: dict = {}
@@ -38,7 +42,7 @@ def bounded_probe(path: str, call, timeout: float | None = None):
     with _PROBES_LOCK:
         running = _PROBES.get(path)
         if running is not None and running.is_alive():
-            raise ProbeTimeout(path)
+            raise ProbeBusy(path)
         thread = threading.Thread(target=run, name='wrg-disk-probe', daemon=True)
         _PROBES[path] = thread
         thread.start()

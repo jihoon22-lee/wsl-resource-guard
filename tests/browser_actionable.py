@@ -30,7 +30,7 @@ def data():
          'reason':'MCP 도구 메모리가 기준을 넘었습니다','guidance':'현재 점유 상태와 작업 필요성을 확인하세요.',
          'opened_at':time.time()-7200,'observed_at':time.time(),'evidence':{'available_gib':8,'psi_some_avg60':0,'swap_out_mib_per_minute':0},
          'targets':[shared],'decision':{},'delivery':{'destinations':{
-            'one':{'label':'Samsung Internet','status':'retry','attempts':1,'detail':'전송 실패','attempted_at':time.time()},
+            'one':{'label':'Samsung Internet','status':'retry','attempts':1,'detail':'전송 실패','reason':'HTTP 410','attempted_at':time.time()},
             'two':{'label':'Gmail','status':'accepted','attempts':1,'detail':'접수됨','attempted_at':time.time()}}}}
     store['/api/incidents']={'version':1,'updated_at':time.time(),'incidents':[row],'stale':False}
     store['/api/targets/'+TARGET]=shared;store['/api/targets/'+TOOL]=tool
@@ -72,6 +72,8 @@ def run_case(browser,width,mode):
             expect(page.locator('#incident-detail')).to_contain_text('Samsung Internet')
             expect(page.locator('#incident-detail')).to_contain_text('Gmail')
             expect(page.locator('#incident-detail')).to_contain_text('실패 · 재시도')
+            expect(page.locator('#incident-detail')).to_contain_text('전송 실패 (HTTP 410) · 시도 1회')
+            expect(page.locator('#incident-detail')).to_contain_text('접수됨 · 시도 1회')
             if mode=='stale':
                 expect(page.locator('#incident-detail')).to_contain_text('최근 상태 미확인')
                 expect(page.locator('[data-incident-choice]')).to_have_count(0)

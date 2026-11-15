@@ -18,6 +18,8 @@ MAX_INCIDENTS = 256
 # time without observations cannot confirm recovery.
 RECURRENCE_MERGE_SECONDS = 1800
 IDENTIFIER = re.compile(r'^[0-9a-f]{32}$')
+HOST_SCOPE = 'host'
+_LEGACY_DISK_KEY = re.compile(r'^(disk\.[A-Za-z]:):(.*)$')
 
 
 def atomic_write(path: Path, data: dict):
@@ -53,7 +55,59 @@ def _key(condition: dict, snapshot, boot: str) -> str:
     if key.startswith('session.'):
         root = snapshot.processes.get(int(key.split('.')[-1]))
         return 'session:' + (process_identity(root, boot) if root else 'unknown:' + key)
+    if key.startswith('disk.'):
+        # A Windows volume keeps its state while WSL restarts; a boot-scoped
+        # key would reopen the same condition and announce a false recovery.
+        return key + ':' + HOST_SCOPE
     return key + ':' + boot
+
+
+def _drop_recovery(row: dict) -> None:
+    """Withdraw a recovery that observations of the current drive state never confirmed."""
+    for field in ('recovery_pending', 'recovery_since', 'recovery_checked_at', 'recovery_paused'):
+        row.pop(field, None)
+    row['recovery_unconfirmed'] = True
+
+
+def _migrate_disk_keys(rows: list[dict], boot: str, now: float) -> None:
+    """Move boot-scoped disk keys written by older versions to the host scope.
+
+    Each drive keeps exactly one open row: an already host-scoped row first,
+    then this boot's row, then an older boot's. Further open rows are the same
+    condition counted twice and are merged into that row. A resolved row never
+    announces a recovery when it comes from another boot or when the drive
+    still has an open row.
+    """
+    legacy = []
+    for row in rows:
+        match = _LEGACY_DISK_KEY.match(str(row.get('key', '')))
+        if match and match[2] != HOST_SCOPE:
+            legacy.append((row, match[1] + ':' + HOST_SCOPE, bool(boot) and match[2] == boot))
+    if not legacy:
+        return
+    keys = {key for _, key, _ in legacy}
+    holders = {row['key']: row for row in rows
+               if row.get('key') in keys and row.get('state') != 'resolved'}
+    merged = []
+    for row, key, current in sorted(legacy, key=lambda item: not item[2]):
+        row['key'] = key
+        if row.get('state') == 'resolved':
+            if not current:
+                _drop_recovery(row)
+        elif key in holders:
+            holder = holders[key]
+            opened = [value for value in (holder.get('opened_at'), row.get('opened_at'))
+                      if type(value) in (int, float)]
+            if opened:
+                holder['opened_at'] = min(opened)
+            merged.append(id(row))
+        else:
+            holders[key] = row
+    for row in rows:
+        if row.get('state') == 'resolved' and row.get('recovery_pending') and row.get('key') in holders:
+            _drop_recovery(row)
+    if merged:
+        rows[:] = [row for row in rows if id(row) not in merged]
 
 
 def _targets(condition: dict, snapshot) -> list[dict]:
@@ -115,6 +169,7 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
     now = metrics.timestamp
     boot = boot_id() if boot is None else boot
     rows = copy.deepcopy(previous.get('incidents', []))
+    _migrate_disk_keys(rows, boot, now)
     active = {r['key']: r for r in rows if r.get('state') != 'resolved'}
     # Until recovery is confirmed by observations, a recurrence continues the
     # same incident even when a collection gap outlasted the wall-clock window.

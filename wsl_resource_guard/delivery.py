@@ -20,6 +20,17 @@ def read_json(path: Path, default):
         return default
 
 
+def failure_reason(detail: str) -> str:
+    """Short, single-line cause for the ledger and journal.
+
+    Channel senders already limit their detail to status codes, exception type
+    names and cleaned PowerShell error lines; recipients and secrets never
+    reach this value.
+    """
+    text = ' '.join(str(detail).split())
+    return ''.join(char for char in text if char.isprintable())[:200]
+
+
 def destination_id(channel: str, value: str = '') -> str:
     return channel + ':' + hashlib.sha256(value.encode()).hexdigest()[:16]
 
@@ -159,6 +170,8 @@ class Delivery:
                 continue
             if row['state'] == 'resolved' and not self.settings.recovery_notifications:
                 continue
+            if row['state'] == 'resolved' and (row.get('recovery_pending') or row.get('recovery_unconfirmed')):
+                continue  # Only a recovery confirmed by observations is announced.
             decision = decisions.get(row['id'], {})
             deferred = (decision.get('choice') == 'defer' and decision.get('until', 0) > now
                         and decision.get('at', 0) <= now and decision.get('revision') == row['revision'])
@@ -185,6 +198,7 @@ class Delivery:
                     'label': destination['label'], 'status': 'pending', 'attempts': 0, 'next_at': now})
                 if delivery['status'] == 'sending':
                     delivery.update(status='unknown', detail='이전 전송이 중단됐습니다. 접수 여부를 확인할 수 없습니다.')
+                    delivery.pop('reason', None)  # It described an earlier attempt.
                 if (delivery['status'] not in ('pending', 'retry') or delivery['next_at'] > now
                         or count >= max_sends or (deferred and not changed)):
                     continue
@@ -202,7 +216,14 @@ class Delivery:
                     '구독 만료 또는 발송 조건 미충족' if result.skipped else
                     '접수 여부 미확인. 중복 발송을 피하기 위해 자동 재전송하지 않습니다.' if ambiguous else '전송에 실패했습니다.'),
                     finished_at=self.clock(), next_at=now + (60, 300, 900)[min(2, delivery['attempts'] - 1)])
-                self._save(ledger)
+                if status in ('retry', 'failed', 'unknown'):
+                    delivery['reason'] = failure_reason(result.detail)
+                else:
+                    delivery.pop('reason', None)
+                self._save(ledger)  # Durable before the journal line: a closed stdout must not lose it.
+                if 'reason' in delivery:
+                    print(f"delivery channel={destination['channel']} status={status} "
+                          f"attempt={delivery['attempts']} reason={delivery['reason']}", flush=True)
                 count += 1
         # Persist only real changes, plus a periodic stamp for clock-rollback
         # detection; an fsync every 2 s idle tick is pointless disk work.

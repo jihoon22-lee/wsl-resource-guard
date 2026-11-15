@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -179,6 +180,42 @@ class NotificationTests(unittest.TestCase):
         }
         self.assertEqual(notifier.channel_status()["gmail"], "disabled")
 
+
+    def test_stalled_toast_times_out_without_piling_up_and_recovers(self) -> None:
+        from wsl_resource_guard import notifications
+        from wsl_resource_guard.disks import _PROBES
+        notifier = Notifier(Settings())
+        entered, release = threading.Event(), threading.Event()
+
+        def stalled():
+            entered.set()
+            release.wait(5)
+            return False
+
+        done = MagicMock(returncode=0, stderr=b"")
+        self.assertGreater(notifications.TOAST_TIMEOUT_SECONDS, 15)
+        with (patch("wsl_resource_guard.notifications.Path") as path,
+              patch("wsl_resource_guard.notifications.subprocess.run", return_value=done),
+              patch.object(notifications, "TOAST_TIMEOUT_SECONDS", .05)):
+            path.return_value.exists.side_effect = stalled
+            try:
+                first = notifier._send_windows_toast("t", "m")
+                second = notifier._send_windows_toast("t", "m")
+                self.assertTrue(entered.is_set())
+                for result in (first, second):
+                    self.assertFalse(result.sent)
+                    self.assertFalse(result.skipped)
+                self.assertIn("Timeout", first.detail)
+                # Not attempted at all: must stay retryable, not an unknown outcome.
+                self.assertTrue(second.detail.startswith("busy"))
+                self.assertNotIn("Timeout", second.detail)
+                self.assertEqual(path.return_value.exists.call_count, 1)
+            finally:
+                release.set()
+                _PROBES["windows-toast"].join(3)
+            path.return_value.exists.side_effect = None
+            path.return_value.exists.return_value = True
+            self.assertTrue(notifier._send_windows_toast("t", "m").sent)
 
     def test_unconfigured_channels_are_skipped_not_failed(self) -> None:
         notifier = Notifier(Settings(windows_toast_enabled=False, webhook_enabled=True))
