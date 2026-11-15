@@ -574,6 +574,9 @@ def check_disk_docker_and_vhd_guide(page, overrides: dict) -> None:
         expect(footnote).to_contain_text('E: 여유 5% 미만이면서 50 GiB 미만 Warning')
         expect(footnote).to_contain_text('<b>')  # server text is escaped
         expect(footnote.locator('b')).to_have_count(0)
+        # WSL shows 650 GiB free inside, but its VHDX sits on a drive with 30 GiB left.
+        expect(page.locator('#view-disks .wsl-storage')).to_contain_text(
+            'VHDX 파일이 더 커져야 하는 쓰기는 저장 드라이브 C:의 여유 30.00 GiB까지만 가능합니다.')
         panel = page.locator('#docker-df')
         expect(panel).to_contain_text('빌드 캐시')
         expect(panel).to_contain_text('9.1GB (50%)')

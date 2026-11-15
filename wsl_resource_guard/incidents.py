@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime
 
 from . import atomic
+from .disks import disk_limits
 from .identity import boot_id, describe_target, process_identity
 from .safe_read import read_text
 
@@ -144,8 +145,46 @@ def _unmonitored_disk(row: dict, metrics) -> bool:
     return not any(str(d.get('id', '')).rstrip(':') == drive for d in metrics.disks if isinstance(d, dict))
 
 
+def _disk_row(condition: dict, metrics) -> dict | None:
+    drive = condition['key'].split('.disk.', 1)[-1]
+    return next((d for d in metrics.disks if isinstance(d, dict) and d.get('id') == drive), None)
+
+
+def _vhd_share(disk: dict | None, metrics) -> dict | None:
+    """What part of this drive the WSL virtual disk holds, and how much of it WSL no longer uses."""
+    wsl = next((d for d in metrics.disks if isinstance(d, dict) and d.get('kind') == 'wsl'), None)
+    vhd = (wsl or {}).get('vhd') if isinstance((wsl or {}).get('vhd'), dict) else {}
+    size, drive_used = vhd.get('file_bytes'), (disk or {}).get('used_bytes')
+    number = lambda value: type(value) in (int, float) and value > 0
+    if not disk or vhd.get('host_drive') != disk.get('id') or not number(size) or not number(drive_used):
+        return None
+    unused = size - wsl['used_bytes'] if number(wsl.get('used_bytes')) else 0
+    # Same rule as the disks view: only a large, clear gap is worth a clean-up.
+    reclaim = round(unused / 2**30, 1) if unused > 5 * 2**30 and unused > size * 0.2 else None
+    return {'file_gib': round(size / 2**30, 1), 'share_percent': min(100, round(size / drive_used * 100)),
+            'reclaim_gib': reclaim}
+
+
+def _disk_guidance(vhd: dict | None) -> str:
+    if not vhd:
+        return '디스크 여유 공간이 기준 미만입니다. 저장 공간 화면에서 사용량과 추세를 확인하세요.'
+    text = f"이 드라이브 사용량의 {vhd['share_percent']}%는 WSL 가상 디스크({vhd['file_gib']:.0f} GiB)입니다."
+    if vhd['reclaim_gib']:
+        return (text + f" 그중 약 {vhd['reclaim_gib']:.0f} GiB는 WSL 안에서 더 이상 쓰지 않는 공간이라 정리하면 돌려받을 수 있습니다."
+                " 저장 공간 화면의 'VHDX 정리 방법'을 확인하세요.")
+    return text + ' WSL 안의 사용량을 줄여야 이 드라이브의 여유가 늘어납니다.'
+
+
 def _measurement(condition, snapshot, metrics, settings):
     key = condition['key']
+    if '.disk.' in key:
+        disk = _disk_row(condition, metrics)
+        percent = (disk or {}).get('available_percent')
+        if type(percent) not in (int, float):
+            return {}
+        warning, critical, _, _ = disk_limits(settings, disk['id'])
+        return {'value': round(percent, 1), 'threshold': float(critical if condition['severity'] == 'critical' else warning),
+                'unit': '%', 'label': '디스크 여유 · 기준 미만'}
     if key.endswith('mcp_total'):
         return {'value': round(snapshot.mcp_rss_kib / 1048576, 2), 'threshold': settings.mcp_warning_rss_gib, 'unit': 'GiB', 'label': 'MCP RSS 합계'}
     if '.session.' in key:
@@ -220,14 +259,17 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             measurement['change_since_open'] = round(measurement['value'] - row['initial_value'], 2)
         benign_memory = (not pressure and metrics.psi_some_avg60 is not None
                          and (condition['key'].endswith('mcp_total') or '.session.' in condition['key']))
+        on_disk = '.disk.' in condition['key']
+        vhd = _vhd_share(_disk_row(condition, metrics), metrics) if on_disk else None
         row.update(state='active', severity=condition['severity'], reason=condition['reason'],
                    observed_at=now, normal_since=None, targets=targets,
                    measurement=measurement,
                    priority='pressure' if pressure or condition['severity'] == 'critical' else 'review',
                    evidence={'available_gib': round(metrics.mem_available_gib, 2),
                              'psi_some_avg60': metrics.psi_some_avg60,
-                             'swap_out_mib_per_minute': metrics.swap_out_mib_per_minute},
-                   guidance=('현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
+                             'swap_out_mib_per_minute': metrics.swap_out_mib_per_minute,
+                             **({'vhd': vhd} if vhd else {})},
+                   guidance=(_disk_guidance(vhd) if on_disk else '현재 측정에서는 가용 RAM과 PSI가 압박 기준 안에 있습니다. 작업을 사용 중이면 유지하며 추이를 확인하세요.' if benign_memory else
                              '자원 압박이 관측됐습니다. 저장할 작업과 주요 점유 대상을 확인하세요.' if pressure else
                              '자원 기준을 넘었습니다. 점유량만으로 작업 중단이나 누수를 단정하지 않습니다.'))
     for condition in pending or []:
@@ -296,6 +338,10 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
     url = origin.rstrip('/') + '/#incident?id=' + row['id'] if valid_origin else ''
     label = '회복 확인' if row['state'] == 'resolved' else '자원 압박' if row.get('priority') == 'pressure' else '점유 상태 확인'
     names = list(dict.fromkeys(t.get('provider', '') for t in row.get('targets', [])))
+    if str(row.get('key', '')).startswith('disk.'):
+        # A drive is not an agent session: say what it is and which one.
+        label = '회복 확인' if row['state'] == 'resolved' else '디스크 여유 부족'
+        names = [row['key'].split(':', 1)[0].split('.', 1)[1] + ':']
     title = f"{label} · {' / '.join(names) or 'WSL'}"
     shared = any(t.get('kind') == 'shared_runtime' for t in row.get('targets', []))
     body = row['reason'] + ('\n여러 작업이 연결된 공용 실행기가 포함됩니다.' if shared else '')

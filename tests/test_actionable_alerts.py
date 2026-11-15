@@ -328,6 +328,36 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual([(r['id'], r['key'], r['state'], r['revision']) for r in out['incidents']],
                          [('e' * 32, 'disk.E::host', 'active', 1)])
 
+    def test_disk_incident_names_the_wsl_virtual_disk_that_fills_the_drive(self):
+        gib = 2 ** 30
+        def disks(file_gib=839, wsl_used_gib=299, host='E:'):
+            return [{'id': 'E:', 'kind': 'windows', 'status': 'ok', 'total_bytes': 931 * gib, 'used_bytes': 844 * gib,
+                     'available_bytes': 87 * gib, 'available_percent': 9.3, 'error': ''},
+                    {'id': 'wsl', 'kind': 'wsl', 'status': 'ok', 'used_bytes': wsl_used_gib * gib,
+                     'vhd': {'file_bytes': file_gib * gib if file_gib else None, 'host_drive': host,
+                             'status': 'ok' if file_gib else 'not-configured'}}]
+        def row(**kwargs):
+            m = metrics(1000); m.disks = disks(**kwargs)
+            return reconcile({}, [DISK], self.snap, m, self.settings, boot='boot-a')['incidents'][0]
+        full = row()
+        self.assertEqual(full['evidence']['vhd'], {'file_gib': 839.0, 'share_percent': 99, 'reclaim_gib': 540.0})
+        self.assertIn('99%', full['guidance']); self.assertIn('839 GiB', full['guidance'])
+        self.assertIn('540 GiB', full['guidance']); self.assertIn('VHDX 정리', full['guidance'])
+        self.assertEqual(full['measurement'], {'value': 9.3, 'threshold': 20.0, 'unit': '%',
+                                               'label': '디스크 여유 · 기준 미만', 'change_since_open': 0.0})
+        # Little to give back: the share is still named, the clean-up hint is not.
+        tight = row(file_gib=310)
+        self.assertIsNone(tight['evidence']['vhd']['reclaim_gib'])
+        self.assertNotIn('정리하면', tight['guidance'])
+        # The VHDX lives elsewhere or its size is unknown: no claim about this drive.
+        for other in (row(host='C:'), row(file_gib=0)):
+            self.assertNotIn('vhd', other['evidence'])
+            self.assertIn('저장 공간 화면', other['guidance'])
+            self.assertNotIn('가상 디스크', other['guidance'])
+        title, plain, _ = incident_message(full, 'https://dashboard.example.com')
+        self.assertEqual(title, '디스크 여유 부족 · E:')
+        self.assertIn('839 GiB', plain)
+
     def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         other = disk_metrics(1015)
