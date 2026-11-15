@@ -36,6 +36,16 @@ def condition(key='warning.mcp_total',severity='warning'):
     return {'key':key,'severity':severity,'reason':'MCP memory threshold exceeded'}
 
 
+DISK = {'key': 'warning.disk.E:', 'severity': 'warning', 'reason': 'E: 디스크 여유 15.0%'}
+
+
+def disk_metrics(now, percent=15.0, status='ok'):
+    value = metrics(now)
+    value.disks = [{'id': 'E:', 'kind': 'windows', 'status': status, 'total_bytes': 1000,
+                    'available_bytes': percent * 10, 'available_percent': percent, 'error': ''}]
+    return value
+
+
 class IdentityTests(unittest.TestCase):
     def test_shared_runtime_is_not_an_idle_conversation_or_kill_candidate(self):
         snap=fixture(True)
@@ -255,6 +265,55 @@ class IncidentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'incidents.json';path.write_text('{broken')
             with self.assertRaises(ValueError):read_store(path)
+
+    def test_disk_incident_continues_across_reboot(self):
+        one = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        two = reconcile(one, [DISK], self.snap, disk_metrics(5000), self.settings, boot='boot-b')
+        self.assertEqual([(r['id'], r['key'], r['state'], r['revision']) for r in two['incidents']],
+                         [(one['incidents'][0]['id'], 'disk.E::host', 'active', 1)])
+
+    def test_memory_incident_stays_boot_scoped(self):
+        one = self.update({}, [condition()], 1000, boot='boot-a')
+        two = self.update(one, [condition()], 5000, boot='boot-b')
+        self.assertEqual({r['key'] for r in two['incidents']}, {'mcp_total:boot-a', 'mcp_total:boot-b'})
+
+    def test_legacy_disk_rows_migrate_without_false_recovery(self):
+        def legacy(char, key, state, **extra):
+            return {'id': char * 32, 'key': key, 'state': state, 'severity': 'warning', 'revision': 1,
+                    'opened_at': 900, 'observed_at': 990, 'reason': 'E:', 'transitions': [], **extra}
+        out = {'version': 1, 'updated_at': 990, 'incidents': [
+            legacy('a', 'disk.E::boot-a', 'active'),
+            legacy('b', 'disk.E::boot-0', 'resolved', resolved_at=950, recovery_pending=True,
+                   recovery_since=950, recovery_checked_at=990),
+            legacy('c', 'disk.E::boot-b', 'active')]}
+        for now in range(1000, 1000 + RECURRENCE_MERGE_SECONDS + 60, 15):
+            out = reconcile(out, [DISK], self.snap, disk_metrics(now), self.settings, boot='boot-b')
+        rows = {r['id'][0]: r for r in out['incidents']}
+        self.assertEqual({r['key'] for r in rows.values()}, {'disk.E::host'})
+        self.assertEqual({k: (r['state'], r['revision']) for k, r in rows.items()},
+                         {'a': ('resolved', 1), 'b': ('resolved', 1), 'c': ('active', 1)})
+        self.assertTrue(rows['a']['transitions'][-1]['superseded'])
+        self.assertFalse(any('recovery_pending' in r or 'recovery_confirmed_at' in r for r in rows.values()))
+
+    def test_same_boot_legacy_row_keeps_pending_recovery_and_blank_boot_migrates(self):
+        base = {'severity': 'warning', 'revision': 1, 'opened_at': 900, 'reason': 'E:', 'transitions': []}
+        pending = dict(base, id='d' * 32, key='disk.E::boot-b', state='resolved', observed_at=950, resolved_at=950,
+                       recovery_pending=True, recovery_since=950, recovery_checked_at=990)
+        out = reconcile({'version': 1, 'updated_at': 990, 'incidents': [pending]}, [], self.snap,
+                        disk_metrics(1000, 50.0), self.settings, boot='boot-b')
+        self.assertEqual((out['incidents'][0]['key'], out['incidents'][0].get('recovery_pending')),
+                         ('disk.E::host', True))
+        active = dict(base, id='e' * 32, key='disk.E::', state='active', observed_at=990)
+        out = reconcile({'version': 1, 'updated_at': 990, 'incidents': [active]}, [DISK], self.snap,
+                        disk_metrics(1000), self.settings, boot='')
+        self.assertEqual([(r['id'], r['key'], r['state'], r['revision']) for r in out['incidents']],
+                         [('e' * 32, 'disk.E::host', 'active', 1)])
+
+    def test_unobserved_disk_after_reboot_is_unknown_not_recovered(self):
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        for now in range(5000, 5000 + RECURRENCE_MERGE_SECONDS + 300, 15):
+            out = reconcile(out, [], self.snap, disk_metrics(now, status='unmounted'), self.settings, boot='boot-b')
+        self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('unknown', 1)])
 
 
 class ActionTests(unittest.TestCase):
@@ -491,6 +550,20 @@ class DeliveryTests(unittest.TestCase):
         self.engine.tick(send=lambda destination,row,*rest:(seen.append(row['state']) or NotificationResult('gmail',True,'accepted')))
         self.assertEqual(seen,['resolved','resolved'])
 
+
+    def test_reboot_neither_resends_a_disk_alert_nor_claims_recovery(self):
+        sent, store = [], {}
+        def send(destination, row, notifier, origin):
+            sent.append((row['state'], row['revision']))
+            return NotificationResult('gmail', True, 'fixture')
+        for boot, start, seconds in (('boot-a', 1000, 90), ('boot-b', 1200, 2400)):
+            for now in range(start, start + seconds, 15):
+                self.now = now
+                store = reconcile(store, [DISK], fixture(True), disk_metrics(now), self.settings, boot=boot)
+                atomic_write(self.root/'incidents.json', store)
+                self.engine.tick(send=send)
+        self.assertEqual(sent, [('active', 1)] * 2)
+        self.assertEqual(len(store['incidents']), 1)
 
 
 class ProtocolTests(unittest.TestCase):

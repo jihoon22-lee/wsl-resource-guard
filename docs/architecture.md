@@ -51,7 +51,7 @@ root 컨트롤러의 실제 신호 전달도 소유자 UID·기본 GID·빈 보�
 
 `identity.py`는 boot ID·UID·PID·시작 토큰을 묶어 프로세스 신원을 만듭니다. native argv를 보존해 공백 경로나 설정 옵션 뒤의 Codex app-server도 구분합니다. 원시 argv는 웹/알림에 내보내지 않습니다. 작업 제목은 소유자 worker가 읽은 명시적 ID와 로컬 색인이 일치할 때만 연결하며 cwd 기반 추정은 하지 않습니다.
 
-`incidents.py`는 원인·대상별 사건 ID, revision, 관측 근거와 회복 상태를 관리합니다. 소유자 상태의 `incidents.json`은 최대 256건·약 3 MiB로 제한하며 생략을 표시합니다. 사건별 대응은 root 공유 `incident-decisions.json`에 별도로 기록합니다. 최신 관측을 잃으면 정상으로 해제하지 않습니다.
+`incidents.py`는 원인·대상별 사건 ID, revision, 관측 근거와 회복 상태를 관리합니다. Windows 드라이브 사건은 WSL 재시작을 넘어 같은 사건으로 이어지고, RAM·PSI·swap·OOM·MCP·세션 사건은 해당 부팅 범위입니다. 소유자 상태의 `incidents.json`은 최대 256건·약 3 MiB로 제한하며 생략을 표시합니다. 사건별 대응은 root 공유 `incident-decisions.json`에 별도로 기록합니다. 최신 관측을 잃으면 정상으로 해제하지 않습니다.
 
 `delivery.py`의 단일 worker가 사건·채널·수신처별 전송 상태를 `delivery.json`에 기록합니다. 전송 시도를 먼저 저장하고, 재시작 후 중단된 시도는 접수 미확인으로 처리합니다. 명확한 실패는 제한된 재시도를 사용하며 timeout처럼 결과가 불명확한 전송은 즉시 자동 반복하지 않습니다. 정기 메일·주간 보고도 수집 루프와 분리합니다. `state.json`은 수집기만 쓰고 웹/CLI는 전달 요약을 읽기 전용으로 합칩니다.
 
