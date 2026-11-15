@@ -10,6 +10,13 @@ from unittest.mock import patch
 from wsl_resource_guard import guard_install
 
 
+def setUpModule() -> None:
+    # sample() must never run the real nvidia-smi from a unit test.
+    gpu = patch("wsl_resource_guard.gpu.nvidia_smi_path", return_value=None)
+    gpu.start()
+    unittest.addModuleCleanup(gpu.stop)
+
+
 class GuardPathTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

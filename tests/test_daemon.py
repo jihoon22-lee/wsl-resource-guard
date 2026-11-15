@@ -30,6 +30,9 @@ def setUpModule() -> None:
     patcher = patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
+    gpu = patch("wsl_resource_guard.gpu.nvidia_smi_path", return_value=None)
+    gpu.start()
+    unittest.addModuleCleanup(gpu.stop)
 
 
 def metrics(

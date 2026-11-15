@@ -16,6 +16,13 @@ from wsl_resource_guard.config import Settings
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def setUpModule() -> None:
+    # sample() must never run the real nvidia-smi from a unit test.
+    gpu = patch("wsl_resource_guard.gpu.nvidia_smi_path", return_value=None)
+    gpu.start()
+    unittest.addModuleCleanup(gpu.stop)
+
+
 class AtomicWriteTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

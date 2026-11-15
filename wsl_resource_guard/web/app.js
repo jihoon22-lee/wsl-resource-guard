@@ -659,7 +659,7 @@ function renderOverview() {
       diskOverviewExpanded = !diskOverviewExpanded;
       renderOverview();
     });
-  $("view-overview").insertAdjacentHTML("beforeend", hostPanel(m.host, m));
+  $("view-overview").insertAdjacentHTML("beforeend", hostPanel(m.host, m) + pressurePanel(m));
   paintBars($("view-overview"));
   bindServiceButtons($("view-overview"));
 }
@@ -691,6 +691,24 @@ function hostPanel(host, m) {
   ].map((r) => [`<strong>${esc(r[0])}</strong>`, esc(r[1])]);
   const processes = (host.processes || []).map((p) => [esc(p.name), memory(p.working_set_bytes)]);
   return `<div class="panel${stale ? " stale" : ""}" id="overview-host">${heading}<div class="table-wrap">${table(["항목", "값"], rows)}</div>${processes.length ? `<div class="panel-heading"><h3>메모리를 많이 쓰는 Windows 프로세스</h3><span class="muted">표시 전용 · 이력과 알림에 저장하지 않습니다</span></div><div class="table-wrap">${table(["프로세스", { t: "작업 집합", cls: "num" }], processes)}</div>` : ""}</div>`;
+}
+// CPU/IO pressure and GPU memory: shown as observed, not alerted on.
+function pressurePanel(m) {
+  const pressure = m.pressure || {},
+    gpu = m.gpu || {};
+  const percent = (v) => (v == null ? "미제공" : `${Number(v).toFixed(2)}%`);
+  const states = { missing: "커널이 제공하지 않습니다", error: "읽지 못했습니다" };
+  const rows = [];
+  for (const [key, label] of [["cpu", "CPU 압력"], ["io", "IO 압력"]]) {
+    const p = pressure[key];
+    if (!p) continue;
+    rows.push([`<strong>${label}</strong>`, esc(p.status === "normal" ? `일부 정체 ${percent(p.some_avg60)} · 전체 정체 ${percent(p.full_avg60)} (60초 평균)` : states[p.status] || "미확인")]);
+  }
+  for (const d of gpu.devices || [])
+    rows.push([`<strong>GPU</strong> ${esc(d.name)}`, esc(`메모리 ${d.memory_used_bytes == null ? "미제공" : memory(d.memory_used_bytes)} / ${d.memory_total_bytes == null ? "미제공" : memory(d.memory_total_bytes)} · 사용률 ${d.utilization_percent == null ? "미제공" : `${Number(d.utilization_percent).toFixed(0)}%`}${gpu.status === "ok" ? "" : " · 마지막 확인값"}`)]);
+  if (gpu.status === "error" && !(gpu.devices || []).length) rows.push(["<strong>GPU</strong>", "조회하지 못했습니다"]);
+  if (!rows.length) return "";
+  return `<div class="panel" id="overview-pressure"><div class="panel-heading"><h2>CPU·IO 압력과 GPU</h2><span class="muted">표시 전용 · 경보에 쓰지 않습니다</span></div><div class="table-wrap">${table(["항목", "값"], rows)}</div></div>`;
 }
 function hostVolumesPanel() {
   const host = monitorData?.metrics?.host;

@@ -17,6 +17,13 @@ from wsl_resource_guard.metrics import _read_memory_psi
 from test_daemon import metrics, snapshot
 
 
+def setUpModule() -> None:
+    # sample() must never run the real nvidia-smi from a unit test.
+    gpu = patch("wsl_resource_guard.gpu.nvidia_smi_path", return_value=None)
+    gpu.start()
+    unittest.addModuleCleanup(gpu.stop)
+
+
 class PsiTests(unittest.TestCase):
     def test_missing_error_and_zero_are_distinct(self):
         with tempfile.TemporaryDirectory() as root:

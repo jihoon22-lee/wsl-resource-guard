@@ -30,6 +30,10 @@ class SystemMetrics:
     psi_status: str = "legacy"
     # Windows host as seen through hostbridge; {} until the first attempt.
     host: dict = field(default_factory=dict)
+    # CPU and IO pressure (memory pressure keeps its own fields above).
+    pressure: dict = field(default_factory=dict)
+    # GPU devices from nvidia-smi; display only.
+    gpu: dict = field(default_factory=dict)
 
     @property
     def mem_available_gib(self) -> float:
@@ -82,19 +86,40 @@ def _read_memory_psi(path: Path = Path("/proc/pressure/memory")) -> tuple[float 
         return None, None, "missing"
     except (OSError, UnicodeError):
         return None, None, "error"
-    values = {}
     try:
-        for line in lines:
-            parts = line.split()
-            if parts and parts[0] in ("some", "full"):
-                fields = dict(item.split("=", 1) for item in parts[1:] if "=" in item)
-                value = float(fields["avg60"])
-                if not math.isfinite(value) or not 0 <= value <= 100 or parts[0] in values:
-                    raise ValueError("invalid PSI avg60")
-                values[parts[0]] = value
+        values = _psi_values(lines)
         return values["some"], values["full"], "normal"
     except (KeyError, ValueError):
         return None, None, "error"
+
+
+def _psi_values(lines: list[str]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for line in lines:
+        parts = line.split()
+        if parts and parts[0] in ("some", "full"):
+            fields = dict(item.split("=", 1) for item in parts[1:] if "=" in item)
+            value = float(fields["avg60"])
+            if not math.isfinite(value) or not 0 <= value <= 100 or parts[0] in values:
+                raise ValueError("invalid PSI avg60")
+            values[parts[0]] = value
+    return values
+
+
+def read_pressure(root: Path = Path("/proc/pressure")) -> dict[str, dict]:
+    """CPU and IO pressure, 60-second averages. A kernel without a `full` line reports None for it."""
+    result = {}
+    for name in ("cpu", "io"):
+        row: dict[str, object] = {"some_avg60": None, "full_avg60": None, "status": "normal"}
+        try:
+            values = _psi_values((root / name).read_text(encoding="utf-8").splitlines())
+            row.update(some_avg60=values["some"], full_avg60=values.get("full"))
+        except FileNotFoundError:
+            row["status"] = "missing"
+        except (OSError, UnicodeError, KeyError, ValueError):
+            row["status"] = "error"
+        result[name] = row
+    return result
 
 
 def read_system_metrics(previous: SystemMetrics | None = None) -> SystemMetrics:
@@ -114,6 +139,7 @@ def read_system_metrics(previous: SystemMetrics | None = None) -> SystemMetrics:
         pswpout_pages=vm.get("pswpout", 0),
         oom_kills=vm.get("oom_kill", 0),
         pswpin_pages=vm.get("pswpin", 0),
+        pressure=read_pressure(),
     )
     if previous and now > previous.timestamp:
         elapsed = now - previous.timestamp

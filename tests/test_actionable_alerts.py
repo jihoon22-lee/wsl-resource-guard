@@ -17,6 +17,13 @@ from wsl_resource_guard.notifications import NotificationResult
 from wsl_resource_guard.processes import ProcessInfo, ProcessSnapshot, SessionUsage, ProjectUsage, is_stale_session, _persistent_provider
 
 
+def setUpModule() -> None:
+    # sample() must never run the real nvidia-smi from a unit test.
+    gpu = patch("wsl_resource_guard.gpu.nvidia_smi_path", return_value=None)
+    gpu.start()
+    unittest.addModuleCleanup(gpu.stop)
+
+
 def fixture(shared=False):
     p = ProcessInfo(100, 1, os.getuid(), 'codex', 'S', 500, 0, 200000, '/work/demo', '/init.scope',
                     '/usr/bin/codex app-server' if shared else '/usr/bin/codex', start_ticks=10)
