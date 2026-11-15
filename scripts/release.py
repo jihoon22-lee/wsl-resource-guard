@@ -19,27 +19,15 @@ sys.path.insert(0, str(ROOT))
 from wsl_resource_guard.build_info import release_revision
 
 ROOT_FILES = {'README.md', 'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
-              'AGENTS.md', 'workthrough/2026-10-07-public-release.md',
-              'workthrough/2026-10-08-uv-dependencies.md',
-              'workthrough/2026-10-08-review-remediation.md', 'workthrough/2026-10-08-full-code-review.md',
-              'workthrough/2026-10-09-scenario-usability-review.md',
-              'workthrough/2026-10-09-usability-remediation.md',
-              'workthrough/2026-10-09-release-deploy.md',
-              'workthrough/2026-10-10-actionable-alerts.md',
-              'workthrough/2026-10-18-detailed-code-review.md',
-              'workthrough/2026-10-18-review-remediation.md',
-              'workthrough/2026-10-18-maintenance-followup.md',
-              'workthrough/2026-10-19-recommended-improvements.md',
-              'workthrough/2026-10-22-release-0.2.3.md',
-              'workthrough/2026-10-23-five-stage-code-review.md',
-              'workthrough/2026-10-23-review-remediation.md',
+              'AGENTS.md',
               'pyproject.toml', 'uv.lock', 'install-user.sh',
               'install-root.sh', 'install-services.sh', '.github/workflows/checks.yml',
               '.github/workflows/release.yml', '.github/workflows/ci.yml',
               '.github/workflows/public-checks.yml', '.github/dependabot.yml'}
 PREFIXES = ('bin/', 'wsl_resource_guard/', 'config/', 'packaging/', 'tests/', 'scripts/')
 DOCS = {'docs/installation.md', 'docs/usage.md', 'docs/configuration.md',
-        'docs/architecture.md', 'docs/operations.md', 'docs/paseo.md'}
+        'docs/architecture.md', 'docs/operations.md', 'docs/paseo.md',
+        'docs/roadmap.md'}
 
 
 def git(*args):
