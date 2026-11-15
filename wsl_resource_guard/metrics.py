@@ -3,13 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import math
-import subprocess
 import time
 
 
 KIB_PER_GIB = 1024 * 1024
-POWERSHELL = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
-HOST_MEMORY_TIMEOUT_SECONDS = 15
 
 
 @dataclass(slots=True)
@@ -31,6 +28,8 @@ class SystemMetrics:
     vmmem_observed_at: float = 0.0
     vmmem_attempted_at: float = 0.0
     psi_status: str = "legacy"
+    # Windows host as seen through hostbridge; {} until the first attempt.
+    host: dict = field(default_factory=dict)
 
     @property
     def mem_available_gib(self) -> float:
@@ -126,52 +125,3 @@ def read_system_metrics(previous: SystemMetrics | None = None) -> SystemMetrics:
             pages = current.pswpin_pages - previous.pswpin_pages
             current.swap_in_mib_per_minute = pages * page_size / (1024 * 1024) * (60 / elapsed)
     return current
-
-
-def read_host_memory(
-    previous_bytes: int | None = None,
-    previous_at: float = 0.0,
-    interval: float = 300,
-    force: bool = False,
-    previous_attempt: float = 0.0,
-) -> tuple[int | None, float, float]:
-    """vmmem* working set as seen by Windows: (bytes, observed_at, attempted_at).
-
-    Keeps the last value on failure, and waits a full interval after any attempt,
-    so a broken interop path costs one PowerShell start per interval, not per sample.
-    """
-    now = time.time()
-    keep = (
-        int(previous_bytes)
-        if isinstance(previous_bytes, (int, float)) and not isinstance(previous_bytes, bool)
-        else None
-    )
-    # Attempts are authoritative after a clock rollback; observed_at can still
-    # describe a stale value from the old clock. Older states have no attempt.
-    last_try = previous_attempt if 0 < previous_attempt <= now else previous_at
-    if not force and 0 < last_try <= now and now - last_try < interval:
-        return keep, previous_at, previous_attempt
-    try:
-        # stat/exec on the Windows mount can block before subprocess's own
-        # timeout starts. Bound the whole operation, with at most one in flight.
-        from .disks import bounded_probe
-        value = bounded_probe('host-memory', _collect_host_memory,
-                              timeout=HOST_MEMORY_TIMEOUT_SECONDS)
-        if value is not None:
-            return value, now, now
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
-    return keep, previous_at, now
-
-
-def _collect_host_memory() -> int | None:
-    if not POWERSHELL.exists():
-        return None
-    completed = subprocess.run(
-        [str(POWERSHELL), "-NoProfile", "-NonInteractive", "-Command",
-         "(Get-Process vmmem* -ErrorAction SilentlyContinue | "
-         "Measure-Object WorkingSet64 -Sum).Sum"],
-        capture_output=True, text=True, timeout=HOST_MEMORY_TIMEOUT_SECONDS, check=False,
-    )
-    text = completed.stdout.strip()
-    return int(float(text)) if completed.returncode == 0 and text else None

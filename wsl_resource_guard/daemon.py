@@ -20,7 +20,8 @@ from .sdnotify import notify as notify_systemd
 from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations,
                      coerce_config_value, write_config_value)
 from .disks import disk_severity, read_disks
-from .metrics import KIB_PER_GIB, SystemMetrics, read_host_memory, read_system_metrics
+from .hostbridge import detected_vhd_path, read_host_snapshot
+from .metrics import KIB_PER_GIB, SystemMetrics, read_system_metrics
 from .notifications import SKIPPED_DETAILS, Notifier, NotificationResult
 from .processes import ProcessSnapshot, SessionUsage, apply_cpu_rates, build_snapshot, process_start_ticks
 from .reporting import build_html_report, build_text_report, collect_resource_rows
@@ -350,6 +351,8 @@ def _metrics_from_state(data: dict[str, object]) -> SystemMetrics | None:
             return None
     if metrics.psi_status not in ("normal", "missing", "error", "legacy", "partial"):
         return None
+    if not isinstance(metrics.host, dict) or metrics.host.get("schema") != 1:
+        metrics.host = {}  # Unknown shape: collect again instead of trusting it.
     return metrics if isinstance(metrics.disks, list) else None
 
 
@@ -400,6 +403,23 @@ def _event_title(metrics: SystemMetrics, label: str = "WSL 자원") -> str:
     )
 
 
+def _history_disks(disks: list) -> list:
+    """Disk rows for history: the VHDX location reported by Windows is not kept."""
+    rows = []
+    for disk in disks:
+        if isinstance(disk, dict) and isinstance(disk.get("vhd"), dict):
+            disk = dict(disk, vhd={key: value for key, value in disk["vhd"].items() if key != "path"})
+        rows.append(disk)
+    return rows
+
+
+def _history_metrics(metrics: SystemMetrics) -> dict:
+    """The host snapshot (with Windows process names) stays out of history."""
+    data = {key: value for key, value in metrics.to_dict().items() if key != "host"}
+    data["disks"] = _history_disks(data.get("disks") or [])
+    return data
+
+
 def _history_record(metrics: SystemMetrics, snapshot: ProcessSnapshot, evaluation: Evaluation) -> dict[str, object]:
     return {
         "timestamp": metrics.timestamp,
@@ -407,7 +427,7 @@ def _history_record(metrics: SystemMetrics, snapshot: ProcessSnapshot, evaluatio
         "reasons": evaluation.reasons,
         "observations": evaluation.observations,
         "pending_reasons": evaluation.pending_reasons,
-        "metrics": metrics.to_dict(),
+        "metrics": _history_metrics(metrics),
         "sessions": [session.to_dict() for session in snapshot.sessions],
         "mcp_rss_kib": snapshot.mcp_rss_kib,
         "mcp_count": snapshot.mcp_count,
@@ -476,7 +496,7 @@ def append_disk_history(state_dir: Path, metrics: SystemMetrics, retention_days:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"timestamp": metrics.timestamp, "disks": metrics.disks},
+        handle.write(json.dumps({"timestamp": metrics.timestamp, "disks": _history_disks(metrics.disks)},
                                 ensure_ascii=False, separators=(",", ":")) + "\n")
     cutoff = sampled_at.date() - timedelta(days=retention_days)
     for candidate in state_dir.glob("disk-history-*.jsonl"):
@@ -618,16 +638,20 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         state = {}
     previous = _metrics_from_state(state)
     metrics = read_system_metrics(previous)
+    previous_host = previous.host if previous else {}
     metrics.disks = read_disks(
-        settings.disk_drives, settings.wsl_vhd_path,
+        settings.disk_drives, settings.wsl_vhd_path or detected_vhd_path(previous_host),
         previous.disks if previous else None, interval=settings.disk_refresh_seconds,
     )
-    metrics.vmmem_bytes, metrics.vmmem_observed_at, metrics.vmmem_attempted_at = read_host_memory(
-        previous.vmmem_bytes if previous else None,
-        previous.vmmem_observed_at if previous else 0.0,
-        interval=settings.host_memory_refresh_seconds,
-        previous_attempt=previous.vmmem_attempted_at if previous else 0.0,
-    )
+    metrics.host = read_host_snapshot(previous_host, interval=settings.host_memory_refresh_seconds)
+    # The history chart keeps reading these three fields.
+    vmmem = metrics.host.get("vmmem") if isinstance(metrics.host.get("vmmem"), dict) else None
+    observed, attempted = metrics.host.get("observed_at"), metrics.host.get("attempted_at")
+    if vmmem and type(observed) in (int, float) and type(vmmem.get("working_set_bytes")) is int:
+        metrics.vmmem_bytes, metrics.vmmem_observed_at = vmmem["working_set_bytes"], float(observed)
+    elif previous:
+        metrics.vmmem_bytes, metrics.vmmem_observed_at = previous.vmmem_bytes, previous.vmmem_observed_at
+    metrics.vmmem_attempted_at = float(attempted) if type(attempted) in (int, float) else 0.0
     snapshot = build_snapshot(settings.project_roots)
     clock_ticks = os.sysconf("SC_CLK_TCK")
     next_cpu = apply_cpu_rates(snapshot, state.get("cpu_jiffies", {}), metrics.timestamp, clock_ticks)

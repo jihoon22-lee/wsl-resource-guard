@@ -36,8 +36,22 @@
 | `mem_total_kib`, `mem_available_kib`, `swap_total_kib`, `swap_free_kib` | `/proc/meminfo` |
 | `pswpin_pages`, `pswpout_pages`, `swap_in_mib_per_minute`, `swap_out_mib_per_minute`, `oom_kills` | `/proc/vmstat` 누적값과 직전 표본 대비 속도 |
 | `psi_some_avg60`, `psi_full_avg60`, `psi_status` | 메모리 PSI. 값은 숫자 또는 null이고 상태는 `normal`·`missing`·`error`·`partial`·`legacy` |
-| `disks` | 드라이브별 행: `id`, `kind`(`windows`·`wsl`), `status`(`ok`·`unmounted`·`error`), `checked_at`, `observed_at`, 용량 필드. 조회 실패 시 마지막 관측값을 유지하고 `status`로 구분합니다 |
-| `vmmem_bytes`, `vmmem_observed_at`, `vmmem_attempted_at` | Windows가 본 WSL VM 작업 집합과 관측·시도 시각 |
+| `disks` | 드라이브별 행: `id`, `kind`(`windows`·`wsl`), `status`(`ok`·`unmounted`·`error`), `checked_at`, `observed_at`, 용량 필드. 조회 실패 시 마지막 관측값을 유지하고 `status`로 구분합니다. 이력 파일에는 VHDX 경로를 뺀 행을 씁니다 |
+| `vmmem_bytes`, `vmmem_observed_at`, `vmmem_attempted_at` | Windows가 본 WSL VM 작업 집합과 관측·시도 시각. `host`의 값에서 채웁니다 |
+| `host` | 아래 "Windows 호스트". 수집을 한 번도 시도하지 않았으면 빈 객체입니다 |
+
+Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일에는 기록하지 않습니다.
+
+| 필드 | 내용 |
+|---|---|
+| `schema`, `status`, `error`, `attempted_at`, `observed_at`, `failures` | 형식 버전, `ok`·`unavailable`·`timeout`·`busy`·`error`, 표시 문구, 마지막 시도와 마지막 성공 시각, 연속 실패 횟수. 실패하면 아래 값은 마지막 관측값이며 `status`로 구분합니다 |
+| `memory` | `total_bytes`, `available_bytes`, `commit_used_bytes`, `commit_limit_bytes`, `pagefile_allocated_bytes`, `pagefile_used_bytes`, `pagefile_peak_bytes`. 얻지 못한 값은 null |
+| `vmmem` | `working_set_bytes`, `private_bytes`. 프로세스가 없으면 null |
+| `volumes` | 고정 볼륨별 `id`, `total_bytes`, `free_bytes`, `filesystem`, `mounted`(WSL 마운트 여부). WSL에 마운트되지 않은 볼륨도 포함합니다 |
+| `distros`, `distro`, `vhd_path` | 배포판별 `name`, `state`, `version`, `default`, `vhd_dir`, 현재 배포판 이름, 존재를 확인한 현재 배포판의 VHDX 경로(없으면 빈 문자열) |
+| `wslconfig` | `present`(파일을 확인하지 못하면 null), `memory`, `swap`, `processors`, `auto_memory_reclaim`, `sparse_vhd`. 알려진 키만 읽습니다 |
+| `processes` | 작업 집합 상위 8개의 `name`, `working_set_bytes`. 화면 표시 전용입니다 |
+| `windows` | `build`, `boot_at` |
 
 ### `incidents.json` — 경보 사건
 

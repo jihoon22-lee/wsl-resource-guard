@@ -65,7 +65,7 @@ class PsiTests(unittest.TestCase):
             with patch.object(daemon, 'read_system_metrics', side_effect=readings), \
                  patch.object(daemon, 'build_snapshot', return_value=snapshot()), \
                  patch.object(daemon, 'read_disks', return_value=[]), \
-                 patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)):
+                 patch.object(daemon, 'read_host_snapshot', return_value={}):
                 results = [daemon.sample(settings)[2] for _ in readings]
             self.assertEqual([r.severity for r in results],
                              ['warning', 'warning', 'warning', 'warning', 'warning', 'normal'])
@@ -88,7 +88,7 @@ class PsiTests(unittest.TestCase):
             with patch.object(daemon, 'read_system_metrics', side_effect=readings), \
                  patch.object(daemon, 'build_snapshot', return_value=snapshot()), \
                  patch.object(daemon, 'read_disks', return_value=[]), \
-                 patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)):
+                 patch.object(daemon, 'read_host_snapshot', return_value={}):
                 for _ in readings:
                     daemon.sample(settings)
                     states.append(daemon.load_state(Path(root) / 'state.json'))
@@ -111,7 +111,7 @@ class PsiTests(unittest.TestCase):
             with patch.object(daemon, 'read_system_metrics', side_effect=readings), \
                  patch.object(daemon, 'build_snapshot', return_value=snapshot()), \
                  patch.object(daemon, 'read_disks', return_value=[]), \
-                 patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)):
+                 patch.object(daemon, 'read_host_snapshot', return_value={}):
                 for _ in readings:
                     daemon.sample(settings)
                     states.append(daemon.load_state(Path(root) / 'state.json'))
@@ -128,7 +128,7 @@ class PsiTests(unittest.TestCase):
             with patch.object(daemon, 'read_system_metrics', side_effect=readings), \
                  patch.object(daemon, 'build_snapshot', return_value=snapshot()), \
                  patch.object(daemon, 'read_disks', return_value=[]), \
-                 patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)):
+                 patch.object(daemon, 'read_host_snapshot', return_value={}):
                 first = daemon.sample(settings)[2]
                 resumed = daemon.sample(settings)[2]
             self.assertEqual(first.severity, 'normal')

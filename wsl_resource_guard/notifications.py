@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 import re
 from datetime import datetime
@@ -14,6 +13,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from . import hostbridge
 from .config import Settings
 
 
@@ -145,9 +145,6 @@ class Notifier:
             return NotificationResult("windows_toast", False, "Timeout: Windows interop did not answer")
 
     def _deliver_windows_toast(self, title: str, message: str) -> NotificationResult:
-        powershell = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
-        if not powershell.exists():
-            return NotificationResult("windows_toast", False, "powershell.exe is unavailable")
         safe_title = html.escape(title[:120])
         safe_message = html.escape(message[:800])
         safe_app_id = self.settings.toast_app_id.replace("'", "''")
@@ -161,14 +158,10 @@ $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>{safe_title}
 $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{safe_app_id}').Show($toast)
 """
-        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
         try:
-            completed = subprocess.run(
-                [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                capture_output=True,
-                timeout=15,
-                check=False,
-            )
+            completed = hostbridge.run_powershell(script, timeout=15)
+        except hostbridge.HostUnavailable:
+            return NotificationResult("windows_toast", False, "powershell.exe is unavailable")
         except (OSError, subprocess.TimeoutExpired) as exc:
             return NotificationResult("windows_toast", False, type(exc).__name__)
         if completed.returncode == 0:

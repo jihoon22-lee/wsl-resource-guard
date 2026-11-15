@@ -372,5 +372,23 @@ class HistoryFilterTests(unittest.TestCase):
             self.assertNotIn("1.0", out.getvalue())
 
 
+class HostLineTests(unittest.TestCase):
+    def test_status_lines_label_gaps_instead_of_printing_zero(self):
+        from wsl_resource_guard.cli import _host_lines
+        self.assertEqual(_host_lines({}), [])
+        self.assertEqual(_host_lines("text"), [])
+        never = _host_lines({"schema": 1, "status": "unavailable", "observed_at": None, "error": "interop 없음"})
+        self.assertEqual(len(never), 1)
+        self.assertIn("미관측", never[0])
+        memory = {"total_bytes": 32 * 2**30, "available_bytes": 4 * 2**30, "commit_used_bytes": None,
+                  "commit_limit_bytes": 100 * 2**30}
+        ok = _host_lines({"schema": 1, "status": "ok", "observed_at": 1000.0, "memory": memory})
+        self.assertEqual(len(ok), 1)                      # the unreported commit value is omitted, not 0
+        self.assertIn("4.00 GiB / 32.00 GiB", ok[0])
+        stale = _host_lines({"schema": 1, "status": "timeout", "observed_at": 1000.0, "error": "응답 없음",
+                             "memory": memory})
+        self.assertIn("현재 조회 불가: 응답 없음", stale[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

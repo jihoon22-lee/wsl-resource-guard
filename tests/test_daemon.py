@@ -27,7 +27,7 @@ from wsl_resource_guard.processes import McpUsage, ProcessSnapshot, SessionUsage
 
 def setUpModule() -> None:
     # sample() must never start the real powershell.exe from a unit test.
-    patcher = patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe"))
+    patcher = patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
 
@@ -454,7 +454,7 @@ class SampleStateTests(unittest.TestCase):
                 patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0)),
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe")),
+                patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None),
             ):
                 sample(settings, notify=True)
             self.assertEqual(load_state(state_path)["last_channel_errors"], {"gmail": "smtp refused"})
@@ -462,7 +462,7 @@ class SampleStateTests(unittest.TestCase):
                 patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(1.0, timestamp=200)),
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe")),
+                patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None),
                 patch("wsl_resource_guard.daemon.Notifier") as notifier,
             ):
                 notifier.return_value.send.return_value = [
@@ -479,13 +479,66 @@ class SampleStateTests(unittest.TestCase):
                 patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0)),
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.daemon.read_host_memory", return_value=(None, 0.0, 123.0)) as host,
+                patch("wsl_resource_guard.daemon.read_host_snapshot",
+                      return_value={"schema": 1, "status": "unavailable", "attempted_at": 123.0,
+                                    "observed_at": None}) as host,
             ):
                 sample(settings)
                 sample(settings)
             saved = load_state(Path(directory) / "state.json")["metrics"]
             self.assertEqual(saved["vmmem_attempted_at"], 123.0)
-            self.assertEqual(host.call_args.kwargs["previous_attempt"], 123.0)
+            self.assertIsNone(saved["vmmem_bytes"])
+            self.assertEqual(saved["host"]["status"], "unavailable")
+            # The second sample hands the stored snapshot back for interval gating.
+            self.assertEqual(host.call_args.args[0]["attempted_at"], 123.0)
+
+    def test_host_snapshot_feeds_vmmem_and_stays_out_of_history(self) -> None:
+        from wsl_resource_guard.daemon import _history_record, append_disk_history
+        host = {"schema": 1, "status": "ok", "attempted_at": 900.0, "observed_at": 900.0, "failures": 0,
+                "vmmem": {"working_set_bytes": 12 * 2**30, "private_bytes": None},
+                "processes": [{"name": "private-app", "working_set_bytes": 1}], "vhd_path": "/mnt/c/Users/USER/x/ext4.vhdx"}
+        disk_rows = [{"id": "wsl", "kind": "wsl", "status": "ok",
+                      "vhd": {"path": "/mnt/c/Users/USER/x/ext4.vhdx", "file_bytes": 5, "host_drive": "C:", "status": "ok"}}]
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            with (
+                patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0)),
+                patch("wsl_resource_guard.daemon.read_disks", return_value=disk_rows) as read,
+                patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host),
+            ):
+                sample(settings)
+                sampled, processes, evaluation = sample(settings)
+            saved = load_state(Path(directory) / "state.json")["metrics"]
+            self.assertEqual((saved["vmmem_bytes"], saved["vmmem_observed_at"], saved["vmmem_attempted_at"]),
+                             (12 * 2**30, 900.0, 900.0))
+            self.assertEqual(saved["host"]["processes"][0]["name"], "private-app")   # latest sample only
+            self.assertEqual(read.call_args.args[1], "/mnt/c/Users/USER/x/ext4.vhdx")  # detected path is used
+            record = json.dumps(_history_record(sampled, processes, evaluation))
+            append_disk_history(Path(directory), sampled, 14)
+            written = "".join(p.read_text() for p in Path(directory).glob("disk-history-*.jsonl"))
+            for text in (record, written):
+                self.assertNotIn("private-app", text)
+                self.assertNotIn("Users/USER", text)
+                self.assertIn('"file_bytes"', text)   # the size stays, only the location is dropped
+            self.assertNotIn('"host"', record)
+
+    def test_malformed_host_in_state_does_not_break_sampling(self) -> None:
+        for host in ({"schema": 1, "observed_at": "soon", "attempted_at": [], "vmmem": {"working_set_bytes": "big"},
+                      "distros": 7, "vhd_path": 9}, {"schema": 2, "vhd_path": "/x"}, "text", 5):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as directory:
+                settings = Settings(state_dir=directory)
+                state = {"metrics": dict(metrics(8.0, timestamp=100).to_dict(), host=host)}
+                (Path(directory) / "state.json").write_text(json.dumps(state))
+                with (
+                    patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0, timestamp=115)),
+                    patch("wsl_resource_guard.daemon.read_disks", return_value=[]) as read,
+                    patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                    patch("wsl_resource_guard.daemon.read_host_snapshot", side_effect=lambda previous, **kw: previous),
+                ):
+                    sample(settings)
+                self.assertEqual(read.call_args.args[1], "")
+                self.assertIsNone(load_state(Path(directory) / "state.json")["metrics"]["vmmem_bytes"])
 
     def test_state_from_the_previous_version_is_still_a_valid_previous_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -626,7 +679,7 @@ class SampleStateTests(unittest.TestCase):
             with (
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe")),
+                patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None),
                 patch("wsl_resource_guard.daemon.Notifier") as notifier,
                 patch("wsl_resource_guard.daemon.read_system_metrics") as read_metrics,
             ):

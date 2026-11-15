@@ -25,6 +25,7 @@ from .daemon import (
     sample,
     state_writer_lock,
 )
+from .hostbridge import detected_vhd_path, read_host_snapshot
 from .metrics import KIB_PER_GIB, psi_text
 from .notifications import Notifier
 from .processes import (
@@ -87,6 +88,25 @@ def _channel_errors(settings: Settings) -> dict:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _host_lines(host: dict) -> list[str]:
+    """Windows host values for `wrg status`; a failed attempt is labelled, never zero."""
+    if not isinstance(host, dict) or not host.get("schema"):
+        return []
+    if not host.get("observed_at"):
+        return [f"Windows 호스트     미관측 ({host.get('error') or '수집 대기'})"]
+    memory = host.get("memory") or {}
+    gib = lambda value: f"{value / 2**30:.2f} GiB"
+    lines = []
+    if memory.get("available_bytes") is not None and memory.get("total_bytes"):
+        lines.append(f"Windows 가용 RAM   {gib(memory['available_bytes'])} / {gib(memory['total_bytes'])}")
+    if memory.get("commit_used_bytes") is not None and memory.get("commit_limit_bytes"):
+        lines.append(f"Windows 커밋      {gib(memory['commit_used_bytes'])} / {gib(memory['commit_limit_bytes'])}")
+    if host.get("status") != "ok":
+        observed = datetime.fromtimestamp(host["observed_at"]).astimezone()
+        lines.append(f"Windows 호스트     마지막 관측 {observed:%H:%M:%S} · 현재 조회 불가: {host.get('error', '')}")
+    return lines
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     settings = _load_settings(args)
     metrics, snapshot, evaluation = sample(settings, notify=False, persist=False)
@@ -123,6 +143,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     if metrics.vmmem_bytes is not None:
         observed = datetime.fromtimestamp(metrics.vmmem_observed_at).astimezone()
         print(f"호스트 vmmem      {metrics.vmmem_bytes / 2**30:.2f} GiB (관측 {observed:%H:%M:%S})")
+    for line in _host_lines(metrics.host):
+        print(line)
     print(f"LLM 세션          {len(snapshot.sessions)}개")
     print(
         f"MCP 계열          트리 {snapshot.mcp_count}개 / "
@@ -223,8 +245,10 @@ def _insight_text(info: dict, monitored: bool = True) -> str:
 
 def cmd_disks(args: argparse.Namespace) -> int:
     settings = _load_settings(args)
-    previous = (load_state(settings.state_path / "state.json").get("metrics") or {}).get("disks", [])
-    disks = read_disks(settings.disk_drives, settings.wsl_vhd_path, previous, force=True)
+    saved = load_state(settings.state_path / "state.json").get("metrics") or {}
+    previous = saved.get("disks", [])
+    disks = read_disks(settings.disk_drives, settings.wsl_vhd_path or detected_vhd_path(saved.get("host")),
+                       previous, force=True)
     history = daily_disk_records(settings.state_path, settings.retention_days)
     recent = recent_disk_records(settings.state_path) + [{"timestamp": time.time(), "disks": disks}]
     insights = disk_insights(
@@ -568,25 +592,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     check("config", "OK" if settings.config_path.exists() else "FAIL", str(settings.config_path))
     if settings.load_warnings:
         check("config values", "WARN", f"{len(settings.load_warnings)}개 값을 무시하고 기본값 사용 — wrg config로 확인")
-    check(
-        "PowerShell interop",
-        "OK" if Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe").exists() else "FAIL",
-    )
+    host = read_host_snapshot(force=True)
+    check("PowerShell interop", "OK" if host["status"] == "ok" else "FAIL", host.get("error", ""))
     settings.state_path.mkdir(parents=True, exist_ok=True)
     check("state directory writable", "OK" if os.access(settings.state_path, os.W_OK) else "FAIL",
           str(settings.state_path))
 
-    configs = sorted(Path("/mnt/c/Users").glob("*/.wslconfig"))
-    if configs:
-        detail = str(configs[0])
-        try:
-            text = configs[0].read_text(encoding="utf-8", errors="replace").lower()
-            found = [key for key in ("memory", "swap", "automemoryreclaim") if key in text]
-            if found:
-                detail += f" ({', '.join(found)} 설정)"
-        except OSError:
-            pass
-        check(".wslconfig", "OK", detail)
+    wslconfig = host.get("wslconfig") or {}
+    if host["status"] != "ok" or wslconfig.get("present") is None:
+        check(".wslconfig", "WARN", "Windows에서 파일을 확인하지 못했습니다")
+    elif wslconfig.get("present"):
+        found = [f"{label}={wslconfig[key]}" for label, key in (
+            ("memory", "memory"), ("swap", "swap"), ("processors", "processors"),
+            ("autoMemoryReclaim", "auto_memory_reclaim"), ("sparseVhd", "sparse_vhd")) if wslconfig.get(key)]
+        check(".wslconfig", "OK", ", ".join(found) or "memory/swap 설정 없음")
     else:
         check(".wslconfig", "WARN", "미설정 — README의 memory/swap 권장값을 참고하세요")
 

@@ -15,7 +15,7 @@ from test_daemon import metrics, snapshot
 
 def setUpModule() -> None:
     # sample() must never start the real powershell.exe from a unit test.
-    patcher = patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe"))
+    patcher = patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
 

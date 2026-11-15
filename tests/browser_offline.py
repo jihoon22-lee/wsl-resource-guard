@@ -377,6 +377,74 @@ def check_overview_stale_and_channel_chips(page, overrides: dict) -> None:
         overrides.pop('/api/monitor', None)
 
 
+def host_fixture(status: str = 'ok') -> dict:
+    return {'schema': 1, 'status': status, 'error': '' if status == 'ok' else 'Windows가 20초 안에 응답하지 않았습니다.',
+            'attempted_at': time.time(), 'observed_at': time.time() - (0 if status == 'ok' else 900),
+            'memory': {'total_bytes': 32 * 2**30, 'available_bytes': 4 * 2**30, 'commit_used_bytes': 44 * 2**30,
+                       'commit_limit_bytes': 100 * 2**30, 'pagefile_allocated_bytes': 69 * 2**30,
+                       'pagefile_used_bytes': 3 * 2**30, 'pagefile_peak_bytes': None},
+            'vmmem': {'working_set_bytes': 16 * 2**30, 'private_bytes': 19 * 2**30},
+            'volumes': [{'id': 'C:', 'total_bytes': 1000 * 2**30, 'free_bytes': 200 * 2**30, 'filesystem': 'NTFS',
+                         'mounted': True},
+                        {'id': 'F:', 'total_bytes': 800 * 2**30, 'free_bytes': 300 * 2**30, 'filesystem': 'NTFS',
+                         'mounted': True},
+                        {'id': 'G:', 'total_bytes': 500 * 2**30, 'free_bytes': 100 * 2**30, 'filesystem': 'FAT32',
+                         'mounted': False}],
+            'distros': [{'name': 'Ubuntu', 'state': 'Running', 'version': 2, 'default': True, 'vhd_dir': 'E:\\WSL\\Ubuntu'},
+                        {'name': 'docker-desktop', 'state': 'Stopped', 'version': 2, 'default': False, 'vhd_dir': ''}],
+            'distro': 'Ubuntu',
+            'wslconfig': {'present': True, 'memory': '20GB', 'swap': '8GB', 'processors': None,
+                          'auto_memory_reclaim': 'dropCache', 'sparse_vhd': None},
+            'processes': [{'name': '<img src=x onerror=alert(1)>', 'working_set_bytes': 2 * 2**30}],
+            'windows': {'build': '26200', 'boot_at': time.time() - 86400}}
+
+
+def check_windows_host_panels(page, overrides: dict) -> None:
+    """Host values are shown as observed, escaped, and marked when not current."""
+    monitor = fixtures()['/api/monitor']
+    try:
+        # A state written before host collection existed: no panel, no error.
+        page.goto(ORIGIN + '/#overview')
+        page.reload()
+        expect(page.locator('#refresh')).to_be_enabled()
+        expect(page.locator('#overview-host')).to_have_count(0)
+
+        monitor['metrics'] = dict(monitor['metrics'], host=host_fixture())
+        overrides['/api/monitor'] = monitor
+        page.reload()
+        panel = page.locator('#overview-host')
+        expect(panel).to_contain_text('4.00 GiB / 32.00 GiB (13%)')
+        expect(panel).to_contain_text('44.00 GiB / 100.00 GiB (44%)')
+        expect(panel).to_contain_text('16.00 GiB 점유')
+        expect(panel).to_contain_text('memory=20GB · swap=8GB · autoMemoryReclaim=dropCache')
+        expect(panel).to_contain_text('Ubuntu (현재) Running · docker-desktop Stopped')
+        expect(panel).to_contain_text('최고 —')  # an unreported value is not shown as 0
+        expect(panel).to_contain_text('<img src=x onerror=alert(1)>')  # rendered as text
+        expect(panel.locator('img')).to_have_count(0)
+        expect(panel.locator('.pill.warn')).to_have_count(0)
+
+        page.goto(ORIGIN + '/#disks')
+        volumes = page.locator('#host-volumes')
+        labels = volumes.locator('tbody tr td:last-child').all_inner_texts()
+        assert labels == ['경보 대상', 'WSL에 마운트됨 · 감시 안 함', 'WSL에 마운트되지 않음 · 감시 안 함'], labels
+
+        monitor['metrics'] = dict(monitor['metrics'], host=host_fixture('timeout'))
+        page.goto(ORIGIN + '/#overview')
+        page.reload()
+        stale = page.locator('#overview-host')
+        expect(stale.locator('.pill.warn')).to_contain_text('응답하지 않았습니다')
+        expect(stale).to_contain_text('마지막 관측')
+        expect(stale).to_contain_text('4.00 GiB / 32.00 GiB')  # last observation stays visible
+
+        never = dict(host_fixture('unavailable'), observed_at=None)
+        monitor['metrics'] = dict(monitor['metrics'], host=never)
+        page.reload()
+        expect(page.locator('#overview-host')).to_contain_text('아직 Windows 상태를 관측하지 못했습니다')
+        expect(page.locator('#overview-host')).not_to_contain_text('GiB')
+    finally:
+        overrides.pop('/api/monitor', None)
+
+
 def check_overview_alert_banner(page) -> None:
     # The previous check leaves the page on #overview with the stale override;
     # a same-URL goto does not reload, so force one to refetch fixtures.
@@ -1589,6 +1657,7 @@ def main() -> None:
         check_shell_navigation(page)
         check_overview_stale_and_channel_chips(page, overrides)
         check_overview_alert_banner(page)
+        check_windows_host_panels(page, overrides)
         check_legend_toggles_series(page)
         check_quick_service_action(page, posts)
         check_oneshot_status(page)

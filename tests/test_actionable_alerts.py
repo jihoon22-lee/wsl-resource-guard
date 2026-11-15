@@ -433,7 +433,7 @@ class DeliveryTests(unittest.TestCase):
                     return NotificationResult('gmail', True, 'fixture')
                 with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
                       patch.object(daemon, 'read_disks', return_value=[]),
-                      patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0))):
+                      patch.object(daemon, 'read_host_snapshot', return_value={})):
                     for now, available in ((1000, 1), (1015, 3), (1030, 3), (1045, 3), (1060, 1)):
                         self.now = now
                         with patch.object(daemon, 'read_system_metrics', return_value=metrics(now, available)):
@@ -459,7 +459,7 @@ class DeliveryTests(unittest.TestCase):
             return NotificationResult('gmail', True, 'fixture')
         with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
               patch.object(daemon, 'read_disks', return_value=[]),
-              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0))):
+              patch.object(daemon, 'read_host_snapshot', return_value={})):
             for now in range(1000, 4781, 15):
                 self.now = now
                 lost = 1180 <= now <= 2965
@@ -627,11 +627,11 @@ class DeliveryTests(unittest.TestCase):
         self.engine.settings = replace(self.settings, gmail_enabled=False, windows_toast_enabled=True,
                                        webhook_enabled=True)
         release = threading.Event()
-        with (patch('wsl_resource_guard.notifications.Path') as path,
+        with (patch('wsl_resource_guard.hostbridge.powershell_path') as path,
               patch.object(notifications, 'TOAST_TIMEOUT_SECONDS', .05),
               patch.object(Notifier, '_send_webhook',
                            return_value=NotificationResult('webhook', True, 'HTTP 200')) as webhook):
-            path.return_value.exists.side_effect = lambda: release.wait(5) and False
+            path.side_effect = lambda: release.wait(5) and None
             try:
                 self.engine.tick()
             finally:

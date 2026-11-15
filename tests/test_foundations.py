@@ -296,7 +296,7 @@ class DataFormatTests(unittest.TestCase):
             {'gmail_to': 'one@example.com', 'gmail_user': 'fixture', 'gmail_app_password': 'fixture'}))
         with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
               patch.object(daemon, 'read_disks', return_value=[]),
-              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)),
+              patch.object(daemon, 'read_host_snapshot', return_value={}),
               patch.object(daemon, 'read_system_metrics', return_value=metrics(1000, 1)),
               patch('builtins.print')):
             sampled = daemon.sample(settings, incident_mode=True, shared_dir=shared)
@@ -320,7 +320,7 @@ class DataFormatTests(unittest.TestCase):
         from wsl_resource_guard import daemon
         state, incidents, ledger, _ = self.written()
         self.assertEqual((state['version'], incidents['version'], ledger['version']), (1, 1, 1))
-        newer = dict(state, metrics=dict(state['metrics'], host={'schema': 1, 'memory': {}}))
+        newer = dict(state, metrics=dict(state['metrics'], field_from_a_later_version={'schema': 1}))
         restored = daemon._metrics_from_state(newer)
         self.assertIsNotNone(restored)
         self.assertEqual(restored.mem_total_kib, state['metrics']['mem_total_kib'])
@@ -340,7 +340,7 @@ class DataFormatTests(unittest.TestCase):
             {'version': 2, 'severity': 'critical', 'reasons': ['from the future'], 'condition_since': {'x': 1}}))
         with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
               patch.object(daemon, 'read_disks', return_value=[]),
-              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)),
+              patch.object(daemon, 'read_host_snapshot', return_value={}),
               patch.object(daemon, 'read_system_metrics', return_value=metrics(1000, 8))):
             _, _, evaluation = daemon.sample(settings, shared_dir=root)
         self.assertEqual((evaluation.severity, evaluation.reasons), ('normal', []))

@@ -659,8 +659,51 @@ function renderOverview() {
       diskOverviewExpanded = !diskOverviewExpanded;
       renderOverview();
     });
+  $("view-overview").insertAdjacentHTML("beforeend", hostPanel(m.host, m));
   paintBars($("view-overview"));
   bindServiceButtons($("view-overview"));
+}
+// Windows as reported through interop. Read-only: nothing here controls the host.
+// A failed attempt keeps the last values and says they are not current.
+function hostNote(host) {
+  if (!host || !host.schema) return "";
+  if (host.status === "ok") return `관측 ${when(host.observed_at)}`;
+  return `${esc(host.error || "Windows 상태를 읽지 못했습니다.")}${host.observed_at ? ` · 마지막 관측 ${when(host.observed_at)}` : ""}`;
+}
+function hostPanel(host, m) {
+  if (!host || !host.schema) return "";
+  const stale = host.status !== "ok";
+  const heading = `<div class="panel-heading"><h2>Windows 호스트</h2><span class="${stale ? "pill warn" : "muted"}">${hostNote(host)}</span></div>`;
+  if (!host.observed_at)
+    return `<div class="panel" id="overview-host">${heading}<div class="empty">아직 Windows 상태를 관측하지 못했습니다. WSL의 Windows interop과 PowerShell 사용 가능 여부를 확인하세요.</div></div>`;
+  const mem = host.memory || {},
+    vm = host.vmmem,
+    cfg = host.wslconfig || {};
+  const share = (part, whole) => (part != null && whole ? ` (${((part / whole) * 100).toFixed(0)}%)` : "");
+  const wslUsed = m && m.mem_total_kib != null ? (m.mem_total_kib - m.mem_available_kib) * 1024 : null;
+  const rows = [
+    ["물리 메모리 여유", mem.available_bytes == null ? "미제공" : `${memory(mem.available_bytes)} / ${memory(mem.total_bytes)}${share(mem.available_bytes, mem.total_bytes)}`],
+    ["커밋 사용량", mem.commit_used_bytes == null ? "미제공" : `${memory(mem.commit_used_bytes)} / ${memory(mem.commit_limit_bytes)}${share(mem.commit_used_bytes, mem.commit_limit_bytes)}`],
+    ["페이지 파일", mem.pagefile_used_bytes == null ? "미제공" : `${memory(mem.pagefile_used_bytes)} 사용 / ${memory(mem.pagefile_allocated_bytes)} 할당 · 최고 ${memory(mem.pagefile_peak_bytes)}`],
+    ["WSL VM (vmmem)", vm ? `${memory(vm.working_set_bytes)} 점유${wslUsed != null ? ` · WSL 내부 사용 ${memory(wslUsed)}` : ""}${vm.private_bytes != null ? ` · 전용 ${memory(vm.private_bytes)}` : ""}` : "미제공"],
+    [".wslconfig", cfg.present == null ? "확인하지 못했습니다" : cfg.present ? [["memory", cfg.memory], ["swap", cfg.swap], ["processors", cfg.processors], ["autoMemoryReclaim", cfg.auto_memory_reclaim], ["sparseVhd", cfg.sparse_vhd]].filter((x) => x[1]).map((x) => `${x[0]}=${x[1]}`).join(" · ") || "관련 설정 없음" : "파일 없음 (WSL 기본값)"],
+    ["배포판", (host.distros || []).map((d) => `${d.name}${d.name === host.distro ? " (현재)" : ""} ${d.state}`).join(" · ") || "미제공"],
+  ].map((r) => [`<strong>${esc(r[0])}</strong>`, esc(r[1])]);
+  const processes = (host.processes || []).map((p) => [esc(p.name), memory(p.working_set_bytes)]);
+  return `<div class="panel${stale ? " stale" : ""}" id="overview-host">${heading}<div class="table-wrap">${table(["항목", "값"], rows)}</div>${processes.length ? `<div class="panel-heading"><h3>메모리를 많이 쓰는 Windows 프로세스</h3><span class="muted">표시 전용 · 이력과 알림에 저장하지 않습니다</span></div><div class="table-wrap">${table(["프로세스", { t: "작업 집합", cls: "num" }], processes)}</div>` : ""}</div>`;
+}
+function hostVolumesPanel() {
+  const host = monitorData?.metrics?.host;
+  if (!host || !host.schema || !host.observed_at || !(host.volumes || []).length) return "";
+  const monitored = new Set((diskData?.disks || []).filter((d) => d.kind === "windows").map((d) => d.id));
+  const rows = host.volumes.map((v) => [
+    `<strong>${esc(v.id)}</strong>`,
+    esc(v.filesystem || "—"),
+    memory(v.total_bytes),
+    v.free_bytes == null ? "미제공" : `${memory(v.free_bytes)} (${((v.free_bytes / v.total_bytes) * 100).toFixed(1)}%)`,
+    monitored.has(v.id) ? "경보 대상" : v.mounted ? "WSL에 마운트됨 · 감시 안 함" : "WSL에 마운트되지 않음 · 감시 안 함",
+  ]);
+  return `<div class="panel" id="host-volumes"><div class="panel-heading"><h2>Windows 고정 볼륨 전체</h2><span class="${host.status === "ok" ? "muted" : "pill warn"}">${hostNote(host)}</span></div><div class="table-wrap">${table(["볼륨", "파일시스템", { t: "전체", cls: "num" }, { t: "여유", cls: "num" }, "감시"], rows)}</div></div>`;
 }
 function sparkline(records, id) {
   const pts = records.filter((r) => r.services[id] != null);
@@ -3116,6 +3159,7 @@ function renderDisks() {
   $("view-disks").innerHTML =
     `<div class="panel"><div class="panel-heading"><h2>Windows 볼륨</h2><span class="muted">${diskData.sample_interval_seconds}초 간격 수집 · 수동 갱신 가능</span></div><div class="disk-grid windows-disks">${windows.map(diskRow).join("")}</div><div class="disk-footnote">남은 공간 ${thresholds.warning_free_percent}% 미만 Warning · ${thresholds.critical_free_percent}% 미만 Critical</div></div>
   ${wsl ? `<div class="panel"><div class="panel-heading"><h2>WSL 저장 공간</h2><span class="pill">${esc(vhd?.host_drive || "저장 위치 미설정")}에 저장</span></div><div class="wsl-storage"><div>${diskRow(wsl)}<p class="disk-note">파일시스템 예약 공간 ${memory(wsl.reserved_bytes)} · 회색 막대는 예약 공간입니다.<br>WSL 내부 여유 비율은 표시용이며, 경보 대상은 ${windows.length ? esc(windows.map((d) => d.id).join(", ")) + " 드라이브" : "설정된 Windows 드라이브"}입니다.</p></div><div class="vhd-info"><h3>Windows의 VHDX 파일</h3><div class="metric-value">${vhd?.file_bytes != null ? memory(vhd.file_bytes) : "조회 불가"}</div><p class="disk-path">${esc(vhd?.path || "config.toml에서 wsl_vhd_path를 설정하세요.")}</p><p class="health-description">${vhd?.status === "error" ? esc(vhd.error) : "WSL 내부 파일 사용량과 VHDX 파일 크기는 다릅니다. 파일 크기 차이가 즉시 회수 가능한 공간을 뜻하지는 않습니다."}</p>${vhd?.path ? '<button class="button secondary" data-vhd-guide>VHDX 정리 방법 보기</button>' : ""}${host?.available_bytes != null ? `<div class="host-space">저장 드라이브 ${esc(host.id)}의 여유 <strong>${memory(host.available_bytes)}</strong><small>${host.status !== "ok" ? "마지막 확인값 · 현재 조회 불가" : `남은 공간 ${Number(host.available_percent).toFixed(1)}%`}</small></div>` : ""}</div></div></div>` : ""}
+  ${hostVolumesPanel()}
   ${dockerPanel()}
   <div class="panel"><div class="panel-heading"><h2>일별 사용량 변화</h2><span class="muted">GiB · 일별 마지막 측정값 · 합산하지 않음</span></div><div class="panel-body">${diskChart(diskData.history, diskData.disks)}</div></div>
   <div class="panel"><div class="panel-heading"><h2>일별 측정 기록</h2><span class="muted">설치 이후 수집된 기록</span></div><div class="table-wrap">${table(["날짜", "볼륨", "사용 중", "여유 공간", "측정 시각"], historyRows)}</div></div>`;

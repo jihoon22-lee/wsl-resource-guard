@@ -90,7 +90,7 @@ class GuardReadyTests(unittest.TestCase):
             stack.enter_context(patch.object(daemon, 'read_system_metrics', return_value=metrics(12, timestamp=time.time())))
             stack.enter_context(patch.object(daemon, 'build_snapshot', return_value=snapshot()))
             stack.enter_context(patch.object(daemon, 'read_disks', return_value=[]))
-            stack.enter_context(patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)))
+            stack.enter_context(patch.object(daemon, 'read_host_snapshot', return_value={}))
             daemon.sample(Settings(state_dir=directory, disk_drives=[]), notify=False)
             with patch.object(guard_install, 'run', return_value=str(os.getpid())):
                 guard_install.wait_for_guard(owner, True, state, before, timeout=2)
