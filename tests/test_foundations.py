@@ -296,7 +296,7 @@ class DataFormatTests(unittest.TestCase):
             {'gmail_to': 'one@example.com', 'gmail_user': 'fixture', 'gmail_app_password': 'fixture'}))
         with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
               patch.object(daemon, 'read_disks', return_value=[]),
-              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)),
+              patch.object(daemon, 'read_host_snapshot', return_value={}),
               patch.object(daemon, 'read_system_metrics', return_value=metrics(1000, 1)),
               patch('builtins.print')):
             sampled = daemon.sample(settings, incident_mode=True, shared_dir=shared)
@@ -340,7 +340,7 @@ class DataFormatTests(unittest.TestCase):
             {'version': 2, 'severity': 'critical', 'reasons': ['from the future'], 'condition_since': {'x': 1}}))
         with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
               patch.object(daemon, 'read_disks', return_value=[]),
-              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)),
+              patch.object(daemon, 'read_host_snapshot', return_value={}),
               patch.object(daemon, 'read_system_metrics', return_value=metrics(1000, 8))):
             _, _, evaluation = daemon.sample(settings, shared_dir=root)
         self.assertEqual((evaluation.severity, evaluation.reasons), ('normal', []))

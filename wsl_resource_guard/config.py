@@ -62,7 +62,7 @@ CONFIG_RULES: dict[str, tuple[str, float, float, str]] = {
     "gmail_enabled": ("bool", 0, 0, "Gmail 알림 사용"),
     "discord_enabled": ("bool", 0, 0, "Discord 알림 사용"),
     "webhook_enabled": ("bool", 0, 0, "범용 webhook 알림 사용 (URL은 secrets.json의 webhook_url)"),
-    "host_memory_refresh_seconds": ("int", 60, 3600, "호스트 vmmem 수집 주기 (초)"),
+    "host_memory_refresh_seconds": ("int", 60, 3600, "Windows 호스트 상태 수집 주기 (초)"),
     "push_enabled": ("bool", 0, 0, "등록한 기기로 브라우저 푸시 알림"),
     "weekly_report_enabled": ("bool", 0, 0, "주간 리포트 발송 (Gmail·Discord·webhook)"),
     "weekly_report_weekday": ("int", 0, 6, "주간 리포트 요일 (0=월 … 6=일)"),
@@ -316,7 +316,7 @@ class Settings:
 
     disk_drives: list[str] = field(default_factory=lambda: ["C", "D", "E"])
     disk_refresh_seconds: int = 60
-    host_memory_refresh_seconds: int = 300
+    host_memory_refresh_seconds: int = 60
     warning_disk_free_percent: float = 20.0
     critical_disk_free_percent: float = 10.0
     wsl_vhd_path: str = ""

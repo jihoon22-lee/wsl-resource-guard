@@ -39,7 +39,7 @@ class HeartbeatSlotTests(unittest.TestCase):
             daemon.save_state(settings.state_path/'state.json',{'last_email_hour_slot':f'epoch:{int(now+86400)}'})
             with (patch.object(daemon,'read_system_metrics',return_value=metrics(12,timestamp=now)),
                   patch.object(daemon,'read_disks',return_value=[]),
-                  patch.object(daemon,'read_host_memory',return_value=(None,0,0)),
+                  patch.object(daemon, 'read_host_snapshot', return_value={}),
                   patch.object(daemon,'build_snapshot',return_value=snapshot()),
                   patch.object(daemon,'_event_reports',return_value=('fixture','fixture')),
                   patch.object(daemon,'Notifier') as notifier):
@@ -109,7 +109,7 @@ class HeartbeatSlotTests(unittest.TestCase):
             states=[]
             with (patch.object(daemon,'read_system_metrics',side_effect=readings),
                   patch.object(daemon,'read_disks',return_value=[]),
-                  patch.object(daemon,'read_host_memory',return_value=(None,0,0)),
+                  patch.object(daemon, 'read_host_snapshot', return_value={}),
                   patch.object(daemon,'build_snapshot',return_value=snapshot()),
                   patch.object(daemon,'_event_reports',return_value=('fixture','<body>fixture</body>')),
                   patch.object(daemon,'Notifier') as notifier):
@@ -131,7 +131,7 @@ class HeartbeatSlotTests(unittest.TestCase):
             now=datetime(2026,10,6,1,1).timestamp()
             with (patch.object(daemon,'read_system_metrics',return_value=metrics(1,timestamp=now)),
                   patch.object(daemon,'read_disks',return_value=[]),
-                  patch.object(daemon,'read_host_memory',return_value=(None,0,0)),
+                  patch.object(daemon, 'read_host_snapshot', return_value={}),
                   patch.object(daemon,'build_snapshot',return_value=snapshot()),
                   patch.object(daemon,'_event_reports',return_value=('fixture','fixture')),
                   patch.object(daemon,'Notifier') as notifier):

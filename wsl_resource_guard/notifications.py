@@ -14,6 +14,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from . import hostbridge
 from .config import Settings
 
 
@@ -145,8 +146,8 @@ class Notifier:
             return NotificationResult("windows_toast", False, "Timeout: Windows interop did not answer")
 
     def _deliver_windows_toast(self, title: str, message: str) -> NotificationResult:
-        powershell = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
-        if not powershell.exists():
+        powershell = hostbridge.powershell_path()
+        if powershell is None:
             return NotificationResult("windows_toast", False, "powershell.exe is unavailable")
         safe_title = html.escape(title[:120])
         safe_message = html.escape(message[:800])

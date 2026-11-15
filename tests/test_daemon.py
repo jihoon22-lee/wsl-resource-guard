@@ -27,7 +27,7 @@ from wsl_resource_guard.processes import McpUsage, ProcessSnapshot, SessionUsage
 
 def setUpModule() -> None:
     # sample() must never start the real powershell.exe from a unit test.
-    patcher = patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe"))
+    patcher = patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
 
@@ -454,7 +454,7 @@ class SampleStateTests(unittest.TestCase):
                 patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0)),
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe")),
+                patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None),
             ):
                 sample(settings, notify=True)
             self.assertEqual(load_state(state_path)["last_channel_errors"], {"gmail": "smtp refused"})
@@ -462,7 +462,7 @@ class SampleStateTests(unittest.TestCase):
                 patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(1.0, timestamp=200)),
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe")),
+                patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None),
                 patch("wsl_resource_guard.daemon.Notifier") as notifier,
             ):
                 notifier.return_value.send.return_value = [
@@ -479,13 +479,18 @@ class SampleStateTests(unittest.TestCase):
                 patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0)),
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.daemon.read_host_memory", return_value=(None, 0.0, 123.0)) as host,
+                patch("wsl_resource_guard.daemon.read_host_snapshot",
+                      return_value={"schema": 1, "status": "unavailable", "attempted_at": 123.0,
+                                    "observed_at": None}) as host,
             ):
                 sample(settings)
                 sample(settings)
             saved = load_state(Path(directory) / "state.json")["metrics"]
             self.assertEqual(saved["vmmem_attempted_at"], 123.0)
-            self.assertEqual(host.call_args.kwargs["previous_attempt"], 123.0)
+            self.assertIsNone(saved["vmmem_bytes"])
+            self.assertEqual(saved["host"]["status"], "unavailable")
+            # The second sample hands the stored snapshot back for interval gating.
+            self.assertEqual(host.call_args.args[0]["attempted_at"], 123.0)
 
     def test_state_from_the_previous_version_is_still_a_valid_previous_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -626,7 +631,7 @@ class SampleStateTests(unittest.TestCase):
             with (
                 patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
                 patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
-                patch("wsl_resource_guard.metrics.POWERSHELL", Path("/nonexistent/powershell.exe")),
+                patch("wsl_resource_guard.hostbridge.powershell_path", return_value=None),
                 patch("wsl_resource_guard.daemon.Notifier") as notifier,
                 patch("wsl_resource_guard.daemon.read_system_metrics") as read_metrics,
             ):

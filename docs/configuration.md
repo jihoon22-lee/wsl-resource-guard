@@ -19,7 +19,7 @@ wrg configure-alerts
 |---|---|
 | project_roots | 프로젝트 분류 기준. 기본 `~/projects`, 소유자 HOME 기준으로 해석 |
 | disk_drives | 관측할 Windows 드라이브 목록. 연결되지 않은 드라이브는 미관측 표시 |
-| wsl_vhd_path | 선택적 VHDX 경로. 표시를 위한 조회만 수행 |
+| wsl_vhd_path | 선택적 VHDX 경로. 비우면 자동 탐지. 표시를 위한 조회만 수행 |
 | interval_seconds / history_interval_seconds | 수집·이력 기록 간격, 초 |
 | retention_days | 이력과 해소된 사건의 보존 기간, 일. 사건에는 개수/크기 한도도 적용 |
 | alert_quiet_hours | 예: `23-08`. warning 재알림 억제, 새 경보·critical·회복은 별도 |
@@ -80,10 +80,10 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `gmail_enabled` | `true` | true / false | Gmail 알림 사용 |
 | `discord_enabled` | `true` | true / false | Discord 알림 사용 |
 | `webhook_enabled` | `false` | true / false | 범용 webhook 알림 사용 (URL은 secrets.json의 webhook_url) |
-| `host_memory_refresh_seconds` | `300` | 60–3600 | 호스트 vmmem 수집 주기 (초) |
+| `host_memory_refresh_seconds` | `60` | 60–3600 | Windows 호스트 상태 수집 주기 (초). 주기마다 PowerShell을 한 번 실행합니다 |
 | `push_enabled` | `true` | true / false | 등록한 기기로 브라우저 푸시 알림 |
 | `weekly_report_enabled` | `true` | true / false | 주간 리포트 발송 (Gmail·Discord·webhook) |
 | `weekly_report_weekday` | `0` | 0–6 | 주간 리포트 요일 (0=월 … 6=일) |
 | `weekly_report_hour` | `9` | 0–23 | 주간 리포트 발송 시각 (시) |
 
-`project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로의 빈 값은 미설정(`not-configured`)이며 자동 탐색하지 않습니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.
+`project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로를 비워 두면 Windows가 알려 준 현재 배포판의 VHDX 위치를 사용하고, 찾지 못하면 미설정(`not-configured`)으로 표시합니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.

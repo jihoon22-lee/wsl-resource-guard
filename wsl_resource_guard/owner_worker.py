@@ -161,7 +161,9 @@ class OwnerData:
         state_path = settings.state_path
         state = load_state(state_path / 'state.json')
         previous = (state.get('metrics') or {}).get('disks', [])
-        rows = read_disks(settings.disk_drives, settings.wsl_vhd_path, previous,
+        from .hostbridge import detected_vhd_path
+        vhd_path = settings.wsl_vhd_path or detected_vhd_path((state.get('metrics') or {}).get('host'))
+        rows = read_disks(settings.disk_drives, vhd_path, previous,
                           interval=settings.disk_refresh_seconds, force=force)
         for row in rows:
             row['severity'] = (disk_severity(row, settings.warning_disk_free_percent, settings.critical_disk_free_percent)

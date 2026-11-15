@@ -119,8 +119,7 @@ class NotificationTests(unittest.TestCase):
         failed = MagicMock()
         failed.returncode = 1
         failed.stderr = "경로가 없습니다".encode("cp949")
-        with patch("wsl_resource_guard.notifications.Path") as path:
-            path.return_value.exists.return_value = True
+        with patch("wsl_resource_guard.hostbridge.powershell_path", return_value=Path("/fixture/powershell.exe")):
             with patch("wsl_resource_guard.notifications.subprocess.run",
                        return_value=failed) as run:
                 result = notifier._send_windows_toast("t", "m")
@@ -136,8 +135,7 @@ class NotificationTests(unittest.TestCase):
         failed.returncode = 1
         failed.stderr = ('#< CLIXML<Objs><S>앱 ID를 찾을 수 없습니다</S></Objs>'
                          ).encode("utf-8")
-        with patch("wsl_resource_guard.notifications.Path") as path:
-            path.return_value.exists.return_value = True
+        with patch("wsl_resource_guard.hostbridge.powershell_path", return_value=Path("/fixture/powershell.exe")):
             with patch("wsl_resource_guard.notifications.subprocess.run",
                        return_value=failed):
                 result = notifier._send_windows_toast("t", "m")
@@ -154,8 +152,7 @@ class NotificationTests(unittest.TestCase):
             '<S S="Error">New-Object : Cannot find type &lt;Toast&gt;_x000D__x000A_</S>'
             '<S S="Error">At line:1 char:1_x000D__x000A_</S></Objs>'
         ).encode("utf-8")
-        with patch("wsl_resource_guard.notifications.Path") as path:
-            path.return_value.exists.return_value = True
+        with patch("wsl_resource_guard.hostbridge.powershell_path", return_value=Path("/fixture/powershell.exe")):
             with patch("wsl_resource_guard.notifications.subprocess.run",
                        return_value=failed):
                 result = notifier._send_windows_toast("t", "m")
@@ -190,14 +187,14 @@ class NotificationTests(unittest.TestCase):
         def stalled():
             entered.set()
             release.wait(5)
-            return False
+            return None
 
         done = MagicMock(returncode=0, stderr=b"")
         self.assertGreater(notifications.TOAST_TIMEOUT_SECONDS, 15)
-        with (patch("wsl_resource_guard.notifications.Path") as path,
+        with (patch("wsl_resource_guard.hostbridge.powershell_path") as path,
               patch("wsl_resource_guard.notifications.subprocess.run", return_value=done),
               patch.object(notifications, "TOAST_TIMEOUT_SECONDS", .05)):
-            path.return_value.exists.side_effect = stalled
+            path.side_effect = stalled
             try:
                 first = notifier._send_windows_toast("t", "m")
                 second = notifier._send_windows_toast("t", "m")
@@ -209,12 +206,12 @@ class NotificationTests(unittest.TestCase):
                 # Not attempted at all: must stay retryable, not an unknown outcome.
                 self.assertTrue(second.detail.startswith("busy"))
                 self.assertNotIn("Timeout", second.detail)
-                self.assertEqual(path.return_value.exists.call_count, 1)
+                self.assertEqual(path.call_count, 1)
             finally:
                 release.set()
                 _PROBES["windows-toast"].join(3)
-            path.return_value.exists.side_effect = None
-            path.return_value.exists.return_value = True
+            path.side_effect = None
+            path.return_value = Path("/fixture/powershell.exe")
             # The recovered send must not race the short stall limit on a slow machine.
             with patch.object(notifications, "TOAST_TIMEOUT_SECONDS", 30):
                 self.assertTrue(notifier._send_windows_toast("t", "m").sent)

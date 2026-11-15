@@ -17,7 +17,7 @@ class ObservationGapTests(unittest.TestCase):
             stack.enter_context(patch.object(daemon,'read_system_metrics',side_effect=readings))
             stack.enter_context(patch.object(daemon,'build_snapshot',side_effect=snapshots or [snapshot()]*len(readings)))
             stack.enter_context(patch.object(daemon,'read_disks',side_effect=disks or [[]]*len(readings)))
-            stack.enter_context(patch.object(daemon,'read_host_memory',return_value=(None,0,0)))
+            stack.enter_context(patch.object(daemon, 'read_host_snapshot', return_value={}))
             for _ in readings:
                 results.append(daemon.sample(settings)[2])
                 states.append(daemon.load_state(settings.state_path/'state.json'))
