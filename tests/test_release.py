@@ -74,12 +74,11 @@ class ReleaseDocumentationTests(unittest.TestCase):
                 tar.addfile(member, io.BytesIO(payload))
         return path
 
-    def test_allowlist_includes_current_readme_and_review_documents(self):
-        for name in ('docs/paseo.md', 'workthrough/2026-10-22-release-0.2.3.md',
-                     'workthrough/2026-10-23-five-stage-code-review.md',
-                     'workthrough/2026-10-23-review-remediation.md'):
+    def test_allowlist_includes_linked_documents_and_no_dated_records(self):
+        for name in ('docs/paseo.md', 'docs/roadmap.md'):
             with self.subTest(name=name):
                 self.assertIn(name, release.ROOT_FILES | release.DOCS)
+        self.assertFalse([name for name in release.ROOT_FILES | release.DOCS if name.startswith('workthrough/')])
 
     def test_archive_links_resolve_inside_the_artifact(self):
         with tempfile.TemporaryDirectory() as folder:
