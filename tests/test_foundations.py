@@ -34,6 +34,15 @@ class AtomicWriteTests(unittest.TestCase):
         self.assertGreaterEqual(fsync.call_count, 2)  # the file, then its directory
         self.assertEqual([p.name for p in path.parent.iterdir()], ['state.json'])
 
+    def test_sample_cache_is_replaced_without_waiting_for_the_disk(self):
+        from wsl_resource_guard import atomic, daemon
+        with patch.object(atomic.os, 'fsync') as fsync:
+            daemon.save_state(self.root / 'state.json', {'a': 1})
+            self.assertEqual(fsync.call_count, 0)
+            daemon.save_state(self.root / 'result.json', {'a': 1}, durable=True)
+            self.assertGreaterEqual(fsync.call_count, 2)
+        self.assertEqual((self.root / 'state.json').read_text(), '{"a":1}\n')
+
     def test_compact_json_matches_the_state_file_format(self):
         from wsl_resource_guard import atomic
         path = self.root / 'state.json'
@@ -134,13 +143,16 @@ class WatchdogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             code = """
 import sys
+from pathlib import Path
 sys.path.insert(0, 'tests')
 from test_daemon import metrics, snapshot
 from wsl_resource_guard import daemon
 from wsl_resource_guard.config import Settings
 daemon.sample = lambda *a, **kw: (metrics(12), snapshot(), daemon.Evaluation('normal', [], []))
+daemon.apply_config_request = lambda *a, **kw: None
 daemon.WATCHDOG_FEED_SECONDS = .2
-daemon.run_forever(Settings(state_dir=sys.argv[1], interval_seconds=600, weekly_report_enabled=False))
+daemon.run_forever(Settings(state_dir=sys.argv[1], config_path=Path(sys.argv[1]) / 'config.toml',
+                            interval_seconds=600, weekly_report_enabled=False))
 """
             process = subprocess.Popen([sys.executable, '-u', '-c', code, root], cwd=ROOT,
                                        env=dict(os.environ, NOTIFY_SOCKET=path),
@@ -160,10 +172,13 @@ daemon.run_forever(Settings(state_dir=sys.argv[1], interval_seconds=600, weekly_
         with tempfile.TemporaryDirectory() as root:
             code = """
 import sys, time
+from pathlib import Path
 from wsl_resource_guard import daemon
 from wsl_resource_guard.config import Settings
 daemon.sample = lambda *a, **kw: time.sleep(60)
-daemon.run_forever(Settings(state_dir=sys.argv[1], interval_seconds=5, weekly_report_enabled=False))
+daemon.apply_config_request = lambda *a, **kw: None
+daemon.run_forever(Settings(state_dir=sys.argv[1], config_path=Path(sys.argv[1]) / 'config.toml',
+                            interval_seconds=5, weekly_report_enabled=False))
 """
             process = subprocess.Popen([sys.executable, '-u', '-c', code, root], cwd=ROOT,
                                        env=dict(os.environ, NOTIFY_SOCKET=path),
@@ -173,6 +188,7 @@ daemon.run_forever(Settings(state_dir=sys.argv[1], interval_seconds=5, weekly_re
                 server.settimeout(3)
                 with self.assertRaises(TimeoutError):
                     server.recv(64)
+                self.assertIsNone(process.poll(), 'the guard must still be running, only silent')
             finally:
                 process.kill()
                 process.wait(timeout=10)
@@ -190,6 +206,76 @@ class WeeklyCatchUpTests(unittest.TestCase):
         self.assertEqual(weekly_report_slot(at(11, 23), '', settings), '2026-W41')  # Sunday, still that week
         self.assertIsNone(weekly_report_slot(at(9, 3), '2026-W41', settings))  # Already sent this week
         self.assertIsNone(weekly_report_slot(at(12, 12), '2026-W41', settings))  # Next Monday: not due yet
+
+
+class WeeklySendTests(unittest.TestCase):
+    FRIDAY = datetime(2026, 10, 9, 3, 0).timestamp()
+
+    def setUp(self):
+        from wsl_resource_guard import daemon
+        from wsl_resource_guard.notifications import NotificationResult
+        self.daemon, self.Result = daemon, NotificationResult
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.settings = Settings(state_dir=str(self.root), weekly_report_weekday=2, weekly_report_hour=9)
+        self.record = self.root / 'weekly-report.json'
+        self.record.write_text(json.dumps({'slot': '2026-W40', 'sent_at': 1}))
+        self.outcomes = []
+        patcher = patch.object(daemon, 'Notifier')
+        self.notifier = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.notifier.return_value.send.side_effect = lambda *a, **kw: self.outcomes.pop(0)
+        printer = patch('builtins.print')
+        printer.start()
+        self.addCleanup(printer.stop)
+
+    def saved(self):
+        return json.loads(self.record.read_text())
+
+    def test_unwritable_record_never_sends(self):
+        with patch.object(self.daemon, 'save_state', side_effect=PermissionError):
+            for _ in range(3):
+                with self.assertRaises(PermissionError):
+                    self.daemon.send_weekly_report(self.settings, self.FRIDAY)
+        self.assertEqual(self.notifier.return_value.send.call_count, 0)
+
+    def test_sent_once_and_recorded_before_the_transport(self):
+        def send(*a, **kw):
+            self.assertEqual((self.saved()['slot'], self.saved()['status']), ('2026-W41', 'sending'))
+            return [self.Result('gmail', True, 'sent')]
+        self.notifier.return_value.send.side_effect = send
+        self.assertTrue(self.daemon.send_weekly_report(self.settings, self.FRIDAY))
+        self.assertEqual((self.saved()['status'], self.saved()['attempts']), ('sent', 1))
+        self.assertFalse(self.daemon.send_weekly_report(self.settings, self.FRIDAY + 7200))
+        self.assertEqual(self.notifier.return_value.send.call_count, 1)
+
+    def test_clear_failure_is_retried_hourly_at_most_three_times(self):
+        self.outcomes = [[self.Result('gmail', False, 'TimeoutError')]] * 3
+        self.assertTrue(self.daemon.send_weekly_report(self.settings, self.FRIDAY))
+        self.assertEqual(self.saved()['status'], 'failed')
+        self.assertFalse(self.daemon.send_weekly_report(self.settings, self.FRIDAY + 600))   # too early
+        self.assertTrue(self.daemon.send_weekly_report(self.settings, self.FRIDAY + 3600))
+        self.assertTrue(self.daemon.send_weekly_report(self.settings, self.FRIDAY + 7200))
+        self.assertFalse(self.daemon.send_weekly_report(self.settings, self.FRIDAY + 10800))  # three attempts used
+        self.assertEqual((self.notifier.return_value.send.call_count, self.saved()['attempts']), (3, 3))
+
+    def test_interrupted_or_skipped_send_is_not_repeated(self):
+        for status in ('sending', 'skipped', 'sent'):
+            with self.subTest(status=status):
+                self.record.write_text(json.dumps({'slot': '2026-W41', 'sent_at': 1, 'status': status,
+                                                   'attempts': 1, 'next_attempt_at': 0}))
+                self.assertFalse(self.daemon.send_weekly_report(self.settings, self.FRIDAY))
+        self.outcomes = [[self.Result('gmail', False, 'credentials not configured', skipped=True)]]
+        self.record.write_text(json.dumps({'slot': '2026-W40', 'sent_at': 1}))
+        self.assertTrue(self.daemon.send_weekly_report(self.settings, self.FRIDAY))
+        self.assertEqual(self.saved()['status'], 'sent')  # nothing to retry when every channel is unconfigured
+
+    def test_first_week_without_a_record_is_not_sent(self):
+        self.record.unlink()
+        self.assertFalse(self.daemon.send_weekly_report(self.settings, self.FRIDAY))
+        self.assertEqual((self.saved()['slot'], self.saved()['status']), ('2026-W41', 'skipped'))
+        self.assertEqual(self.notifier.return_value.send.call_count, 0)
 
 
 class DataFormatTests(unittest.TestCase):
@@ -238,6 +324,34 @@ class DataFormatTests(unittest.TestCase):
         restored = daemon._metrics_from_state(newer)
         self.assertIsNotNone(restored)
         self.assertEqual(restored.mem_total_kib, state['metrics']['mem_total_kib'])
+
+    def test_files_from_a_later_version_are_not_reinterpreted(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_actionable_alerts import fixture, metrics
+        from wsl_resource_guard import daemon
+        from wsl_resource_guard.delivery import Delivery
+        from wsl_resource_guard.incidents import atomic_write
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        settings = Settings(state_dir=str(root), secrets_path=root / 'secrets.json')
+        # state.json is only the latest sample: a newer one counts as no previous sample.
+        (root / 'state.json').write_text(json.dumps(
+            {'version': 2, 'severity': 'critical', 'reasons': ['from the future'], 'condition_since': {'x': 1}}))
+        with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
+              patch.object(daemon, 'read_disks', return_value=[]),
+              patch.object(daemon, 'read_host_memory', return_value=(None, 0, 0)),
+              patch.object(daemon, 'read_system_metrics', return_value=metrics(1000, 8))):
+            _, _, evaluation = daemon.sample(settings, shared_dir=root)
+        self.assertEqual((evaluation.severity, evaluation.reasons), ('normal', []))
+        self.assertEqual(json.loads((root / 'state.json').read_text())['version'], 1)
+        # The ledger carries delivery history: a newer one is refused, not rewritten.
+        atomic_write(root / 'incidents.json', {'version': 1, 'updated_at': 1000, 'incidents': []})
+        future = json.dumps({'version': 2, 'events': {}, 'updated_at': 1000})
+        (root / 'delivery.json').write_text(future)
+        with self.assertRaisesRegex(ValueError, 'version'):
+            Delivery(settings, root, clock=lambda: 1000).tick()
+        self.assertEqual((root / 'delivery.json').read_text(), future)
 
     def test_document_lists_every_controller_operation(self):
         import re

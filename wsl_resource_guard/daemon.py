@@ -361,8 +361,10 @@ def load_state(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def save_state(path: Path, state: dict[str, object]) -> None:
-    atomic.write_json(path, state, compact=True, trailing_newline=True)
+def save_state(path: Path, state: dict[str, object], *, durable: bool = False) -> None:
+    """Atomic replace. The sample cache is rewritten every interval and is not
+    flushed; records that must survive a crash pass durable=True."""
+    atomic.write_json(path, state, compact=True, trailing_newline=True, durable=durable)
 
 
 def _event_reports(
@@ -609,6 +611,11 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
            shared_dir: Path = SHARED_DIR, incident_mode: bool = False) -> tuple[SystemMetrics, ProcessSnapshot, Evaluation]:
     state_path = settings.state_path / "state.json"
     state = load_state(state_path)
+    newer = state.get("version", STATE_VERSION)
+    if type(newer) is not int or newer > STATE_VERSION:
+        # Written by a later version: its meaning is unknown here. This file is
+        # only the latest sample, so it is replaced rather than interpreted.
+        state = {}
     previous = _metrics_from_state(state)
     metrics = read_system_metrics(previous)
     metrics.disks = read_disks(
@@ -965,7 +972,7 @@ def apply_config_request(settings: Settings, shared_dir: Path = SHARED_DIR,
         result.update(ok=True, value=value, message=f"{key} = {value!r} 적용")
     except (ValueError, TypeError, OSError) as exc:
         result.update(ok=False, message=str(exc))
-    save_state(result_path, result)
+    save_state(result_path, result, durable=True)
     print(f"config request id={request['id']} key={key} ok={result['ok']}", flush=True)
     return result
 
@@ -984,20 +991,50 @@ def weekly_report_slot(now: float, last_slot: str, settings: Settings) -> str | 
     return slot if slot != last_slot else None
 
 
+WEEKLY_RETRY_SECONDS = 3600
+WEEKLY_MAX_ATTEMPTS = 3
+
+
 def send_weekly_report(settings: Settings, now: float | None = None) -> bool:
-    """Send this week's report once; the attempt is recorded even on failure."""
+    """Send this week's report once.
+
+    The attempt is recorded before the transport, so an unwritable state
+    directory cannot resend on every worker tick. A clear failure is retried
+    hourly, at most three times; an interrupted send is not repeated.
+    """
     from .reporting import build_weekly_report
     current = time.time() if now is None else now
     path = settings.state_path / "weekly-report.json"
-    slot = weekly_report_slot(current, str(load_state(path).get("slot", "")), settings)
+    slot = weekly_report_slot(current, "", settings)
     if slot is None:
         return False
+    record = load_state(path)
+    attempts = 0
+    if not record:
+        # First run (or an unreadable record): there is no week of history to
+        # report yet, and a catch-up must not fire the moment the guard starts.
+        save_state(path, {"slot": slot, "sent_at": 0, "status": "skipped", "results": {}}, durable=True)
+        return False
+    if record.get("slot") == slot:
+        attempts = record.get("attempts")
+        retry_at = record.get("next_attempt_at")
+        if (record.get("status") != "failed" or type(attempts) is not int
+                or attempts >= WEEKLY_MAX_ATTEMPTS
+                or type(retry_at) not in (int, float) or current < retry_at):
+            return False
+    entry: dict[str, object] = {"slot": slot, "sent_at": current, "status": "sending",
+                               "attempts": attempts + 1, "next_attempt_at": current + WEEKLY_RETRY_SECONDS,
+                               "results": {}}
+    save_state(path, entry, durable=True)
     title, text, html_message = build_weekly_report(settings.state_path, current)
     results = Notifier(settings).send(title, text, "report", channels={"gmail", "discord", "webhook"},
                                       html_message=html_message)
     _log_notification_results(results)
-    save_state(path, {"slot": slot, "sent_at": current,
-                      "results": {r.channel: r.detail for r in results}})
+    delivered = any(result.sent for result in results)
+    failed = any(not result.sent and not result.skipped for result in results)
+    entry.update(status="failed" if failed and not delivered else "sent",
+                 results={r.channel: r.detail for r in results})
+    save_state(path, entry, durable=True)
     return True
 
 

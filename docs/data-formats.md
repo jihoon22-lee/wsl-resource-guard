@@ -6,8 +6,8 @@
 
 - 필드 추가는 호환 변경입니다. 읽는 쪽은 모르는 필드를 무시하고, 없는 필드는 "미제공"으로 다룹니다. 없는 값을 0이나 정상으로 채우지 않습니다.
 - 필드 삭제·이름 변경·의미 변경은 비호환 변경입니다. 해당 파일의 `version`을 올리고, 읽을 때 이전 버전을 이전하는 코드를 함께 넣습니다.
-- `version`이 있는 파일에서 모르는 버전을 만나면 덮어쓰지 않고 오류로 처리합니다.
-- 모든 파일은 임시 파일에 쓰고 디스크에 반영한 뒤 이름을 바꿔 교체합니다(`atomic.py`). 읽는 쪽이 쓰다 만 파일을 보는 일은 없습니다.
+- `incidents.json`과 `delivery.json`에서 모르는 버전을 만나면 덮어쓰지 않고 오류로 처리합니다. 그동안 사건 갱신과 알림 전달이 멈추고 저널에 사유가 남습니다. `state.json`은 최근 표본일 뿐이므로 이후 버전의 파일은 이전 표본이 없는 것으로 보고 새로 씁니다.
+- JSON 파일은 임시 파일에 쓴 뒤 이름을 바꿔 교체합니다(`atomic.py`). 읽는 쪽이 쓰다 만 파일을 보는 일은 없습니다. 사건·전달 기록·설정·공유 파일은 교체 전에 디스크에 반영하고, 표본마다 다시 쓰는 `state.json`은 반영을 기다리지 않습니다. 이력(`*.jsonl`)과 감사 기록은 한 줄씩 덧붙입니다.
 - 시각은 epoch 초(float)입니다. 용량 단위는 필드 이름의 접미사(`_kib`, `_bytes`, `_gib`)를 따릅니다.
 
 ## 소유자 상태 디렉터리
@@ -87,14 +87,14 @@
 | `history-YYYY-MM-DD.jsonl` | 한 줄에 표본 하나: `timestamp`, `severity`, `reasons`, `observations`, `pending_reasons`, `metrics`, `sessions`, `mcp_rss_kib`, `mcp_count`, `mcp_process_count` |
 | `disk-history-YYYY-MM-DD.jsonl` | 한 시간에 한 줄: `timestamp`, `disks` |
 | `scheduled-delivery.json` | 정기 이메일의 `slot`, `status`, `attempted_at`, `finished_at`, `last_attempt_at`, `last_success_at` |
-| `weekly-report.json` | 주간 리포트의 `slot`, `sent_at`, `results` |
+| `weekly-report.json` | 주간 리포트의 `slot`, `sent_at`, `status`(`sending`·`sent`·`failed`·`skipped`), `attempts`, `next_attempt_at`, `results` |
 | `config-request-result.json` | 웹 설정 요청의 처리 결과: `id`, `key`, `value`, `ok`, `message`, `requested_at`, `applied_at` |
 | `push-expired.json` | 푸시 서비스가 만료로 알린 구독 endpoint 목록 |
 | `daemon.lock` | 상태 디렉터리당 Guard 하나를 보장하는 잠금 |
 
 ## root 공유 디렉터리
 
-`/var/lib/wrg-shared`입니다. 컨트롤러만 쓰고(0640, root:소유자 그룹) Guard는 읽기만 합니다.
+`/var/lib/wrg-shared`입니다. root만 쓰고 Guard는 읽기만 합니다. 컨트롤러가 쓰는 파일은 0640, root:소유자 그룹이고 `dashboard.json`은 설치기가 씁니다.
 
 | 파일 | 내용 |
 |---|---|
@@ -112,7 +112,8 @@
 ```text
 요청  {"op": "<연산>", ...}
 응답  {"ok": true, "data": ...}
-      {"ok": false, "error": "<문구>", "code": "<정해진 코드>"}
+      {"ok": false, "error": "<문구>"}
+      {"ok": false, "error": "<문구>", "code": "<정해진 코드>"}   정해진 코드가 있는 오류만
 ```
 
 요청에는 연산 이름과 범위가 정해진 값만 들어갑니다. 명령문·경로·유닛 내용은 받지 않습니다.
@@ -122,4 +123,4 @@
 | 조회 | `list`, `discover`, `monitor`, `summary`, `history`, `attribution`, `session-history`, `alerts`, `incidents`, `target-detail`, `disks`, `docker-df`, `service-memory`, `settings`, `config-request`, `audit`, `logs`, `push-key`, `push-status`, `action-status` |
 | 변경 | `register`, `action`, `restore`, `snooze`, `incident-decision`, `config-change`, `push-subscribe`, `push-unsubscribe`, `push-test`, `action-preview`, `action-execute`, `kill`, `kill-stale` |
 
-변경 연산은 감사 기록(`/var/lib/wrg-services/audit.jsonl`)에 식별자와 결과만 남깁니다. `kill`·`kill-stale`·`restore`는 웹 계정의 요청을 거부합니다.
+변경 연산은 감사 기록(`/var/lib/wrg-services/audit.jsonl`)에 식별자와 결과만 남깁니다. `push-key`는 조회지만 첫 호출 때 푸시 키를 만듭니다. 웹 계정의 요청 중 `kill`·`kill-stale`·`restore`와, Tailscale 서비스를 끄거나 다시 시작하는 `action`은 거부합니다.

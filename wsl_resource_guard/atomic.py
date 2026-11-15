@@ -13,7 +13,9 @@ import tempfile
 
 
 def write_text(path: Path, text: str, *, mode: int = 0o600,
-               owner: tuple[int, int] | None = None) -> None:
+               owner: tuple[int, int] | None = None, durable: bool = True) -> None:
+    """Replace `path` atomically. `durable=False` skips the disk flushes for a
+    file that is rewritten constantly and may safely be lost in a crash."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
@@ -24,23 +26,25 @@ def write_text(path: Path, text: str, *, mode: int = 0o600,
                 os.fchown(handle.fileno(), *owner)
             handle.write(text)
             handle.flush()
-            os.fsync(handle.fileno())
+            if durable:
+                os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         try:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
-    _sync_directory(path.parent)
+    if durable:
+        _sync_directory(path.parent)
 
 
 def write_json(path: Path, value: object, *, mode: int = 0o600,
                owner: tuple[int, int] | None = None, indent: int | None = None,
-               compact: bool = False, trailing_newline: bool = False) -> None:
+               compact: bool = False, trailing_newline: bool = False, durable: bool = True) -> None:
     """Serialize first, so a value that cannot be encoded never creates a file."""
     text = json.dumps(value, ensure_ascii=False, indent=indent,
                       separators=(',', ':') if compact else None)
-    write_text(path, text + ('\n' if trailing_newline else ''), mode=mode, owner=owner)
+    write_text(path, text + ('\n' if trailing_newline else ''), mode=mode, owner=owner, durable=durable)
 
 
 def _sync_directory(directory: Path) -> None:
