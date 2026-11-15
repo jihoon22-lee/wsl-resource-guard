@@ -2,6 +2,7 @@
 from __future__ import annotations
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -28,18 +29,76 @@ def atomic_write(path: Path, data: dict):
     atomic.write_json(path, data)
 
 
+class DamagedStore(ValueError):
+    """The file is not a usable version-1 store."""
+
+
+class UnsupportedStore(ValueError):
+    """A later version wrote the file; it must not be rewritten in this format."""
+
+
+_STATES = ('new', 'active', 'resolving', 'resolved', 'unknown')
+MAX_DAMAGE_FILES = 5
+
+
+def _usable(row) -> bool:
+    """Every field reconcile, delivery and the views read without a default."""
+    number = lambda value: type(value) in (int, float)
+    return (isinstance(row, dict) and IDENTIFIER.fullmatch(str(row.get('id', ''))) is not None
+            and isinstance(row.get('key'), str) and bool(row['key'])
+            and row.get('state') in _STATES and isinstance(row.get('severity'), str)
+            and type(row.get('revision')) is int and row['revision'] >= 0
+            and number(row.get('opened_at')) and number(row.get('observed_at'))
+            and isinstance(row.get('reason'), str)
+            and isinstance(row.get('transitions', []), list) and isinstance(row.get('targets', []), list))
+
+
 def read_store(path: Path) -> dict:
+    """Usable rows of the store; rows that are not are returned under 'damaged_rows'.
+
+    One bad row must not stop every alert. Readers ignore damaged rows; the
+    guard, the only writer, sets them aside before it rewrites the file.
+    """
     try:
-        value = json.loads(read_text(path, max_bytes=4 * 1024 * 1024))
+        text = read_text(path, max_bytes=4 * 1024 * 1024)
     except FileNotFoundError:
         return {'version': 1, 'updated_at': 0, 'incidents': []}
-    if (not isinstance(value, dict) or value.get('version') != 1
-            or not isinstance(value.get('incidents'), list) or len(value['incidents']) > MAX_INCIDENTS):
-        raise ValueError('Invalid incident store')
-    for row in value['incidents']:
-        if not isinstance(row, dict) or not IDENTIFIER.fullmatch(str(row.get('id', ''))):
-            raise ValueError('Invalid incident identity')
+    try:
+        value = json.loads(text)
+    except ValueError:
+        raise DamagedStore('Invalid incident store') from None
+    if (not isinstance(value, dict) or not isinstance(value.get('incidents'), list)
+            or len(value['incidents']) > MAX_INCIDENTS):
+        raise DamagedStore('Invalid incident store')
+    version = value.get('version')
+    if version != 1:
+        if type(version) is int and version > 1:
+            raise UnsupportedStore('Unsupported incident store version')
+        raise DamagedStore('Invalid incident store')
+    damaged = [row for row in value['incidents'] if not _usable(row)]
+    if damaged:
+        value['incidents'] = [row for row in value['incidents'] if _usable(row)]
+        value['damaged_rows'] = damaged
     return value
+
+
+def set_damage_aside(path: Path, now: float, *, rows: list | None = None) -> Path:
+    """Keep damaged content next to the store instead of erasing it.
+
+    `rows` writes just those rows; without it the unreadable file itself is
+    moved. Only the newest few such files are kept.
+    """
+    target = path.with_name(f'incidents.damaged-{int(now)}-{secrets.token_hex(3)}.json')
+    if rows is None:
+        os.replace(path, target)
+    else:
+        atomic.write_json(target, {'set_aside_at': now, 'rows': rows})
+    for old in sorted(path.parent.glob('incidents.damaged-*.json'))[:-MAX_DAMAGE_FILES]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return target
 
 
 def _key(condition: dict, snapshot, boot: str) -> str:

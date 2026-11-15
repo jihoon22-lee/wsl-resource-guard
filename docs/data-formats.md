@@ -55,7 +55,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 
 ### `incidents.json` — 경보 사건
 
-`version`은 1입니다. 최대 256건, 약 3 MiB입니다.
+`version`은 1입니다. 최대 256건, 약 3 MiB입니다. 필수 필드가 빠진 행이나 해석할 수 없는 파일은 Guard가 같은 디렉터리의 `incidents.damaged-*.json`(최근 5개)으로 옮기고 나머지로 계속 동작합니다.
 
 | 필드 | 내용 |
 |---|---|

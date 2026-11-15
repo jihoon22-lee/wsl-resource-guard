@@ -7,9 +7,7 @@
 | ID | 중요도 | 내용 | 위치 | 수정 방향 |
 |---|---|---|---|---|
 | N6 | P3 | WSL VM이 내려가면 알림이 오지 않습니다. Guard 표본 루프의 정지는 systemd watchdog이 다시 시작합니다 | Windows 측 | Windows 예약 작업이 Guard의 생존 표식을 확인 |
-| N9 | P3 | 사건 저장소에 필드가 빠진 행이 하나라도 있으면 `reconcile`이 표본마다 실패해 사건 갱신이 멈춥니다. 자원 표본 저장은 계속됩니다 | `incidents.py`의 `read_store`·`reconcile`, `daemon.py`의 `sample` | 읽을 때 행 형식을 검증하고 손상된 행을 격리 |
 
-N9는 코드로만 확인했습니다.
 
 ## 구조·효율 개선
 
