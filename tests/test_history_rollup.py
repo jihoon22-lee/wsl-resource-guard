@@ -122,10 +122,93 @@ class RollupTests(unittest.TestCase):
         self.assertFalse((self.state / 'rollup-2026-10-05.jsonl').exists())
         history.rollup_path(self.state / 'history-2026-10-06.jsonl').unlink()
         history._ROLLUPS_VERIFIED.clear()
-        with patch.object(history, 'build_rollup', side_effect=OSError('too large')) as build:
+        with patch.object(history, 'build_rollup', side_effect=OSError('too large')) as build, patch('builtins.print'):
             for _ in range(3):
                 history.maintain_rollups(self.state, self.now)
             self.assertEqual(build.call_count, 1)
+
+    def test_two_weeks_of_full_size_samples_fit_the_result_limit(self):
+        # Production rows carry drives, pressure and sessions: about 2.5 KiB each.
+        # 14 days of 5-minute buckets is over 10 MiB, more than one answer may hold.
+        for old in self.state.glob('history-*.jsonl'):
+            old.unlink()
+        padding = [{'id': f'{letter}:', 'label': 'x' * 180} for letter in 'CDEFGHIJKL']
+        ts = self.start
+        end = self.start + 14 * DAY
+        index = 0
+        handles = {}
+        while ts < end:
+            row = sample(ts, index)
+            row['metrics']['disks'] = padding
+            day = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+            if day not in handles:
+                handles[day] = open(self.state / f'history-{day}.jsonl', 'a', encoding='utf-8')
+            handles[day].write(json.dumps(row) + '\n')
+            ts += 300
+            index += 1
+        for handle in handles.values():
+            handle.close()
+        now = end + 3600
+        while history.maintain_rollups(self.state, now):
+            pass
+        stored = sum(len(history.load_rollup(p)['buckets']) * len(json.dumps(history.load_rollup(p)['buckets'][0]))
+                     for p in self.state.glob('history-*.jsonl'))
+        self.assertGreater(stored, history.MAX_RESULT_BYTES)       # the case this guards
+        history._file_cache.clear()
+        with patch.object(history, '_iter_records', wraps=history._iter_records) as parsed:
+            rows = history.read_history_downsampled(self.state, self.start, 3600)
+            parsed.assert_not_called()
+        self.assertEqual(len(rows), 14 * 24)
+        self.assertEqual(rows[0]['metrics']['disks'], padding)
+
+    def test_a_day_that_cannot_be_aggregated_is_skipped_without_stopping_the_guard(self):
+        for error in (TypeError('unorderable'), OverflowError('too large'), KeyError('timestamp')):
+            history._ROLLUPS_VERIFIED.clear()
+            history._ROLLUPS_FAILED.clear()
+            for old in self.state.glob('rollup-*.jsonl'):
+                old.unlink()
+            with self.subTest(error=type(error).__name__), patch('builtins.print') as out:
+                with patch.object(history, 'build_rollup', side_effect=error) as build:
+                    # A failed parse costs as much as a good one: one day per call.
+                    self.assertTrue(history.maintain_rollups(self.state, self.now))
+                    self.assertEqual(build.call_count, 1)
+                    while history.maintain_rollups(self.state, self.now):
+                        pass
+                    self.assertEqual(build.call_count, 3)
+                    history.maintain_rollups(self.state, self.now)
+                    self.assertEqual(build.call_count, 3)              # not retried
+                self.assertIn('history rollup skipped', out.call_args.args[0])
+                self.assertEqual(list(self.state.glob('rollup-*.jsonl')), [])
+
+    def test_a_rollup_with_unusable_rows_is_not_trusted(self):
+        self.build_all()
+        raw_day = self.state / 'history-2026-10-06.jsonl'
+        expected = history.read_history_downsampled(self.state, self.start, 3600)
+        sessions = history.session_history(self.state, self.start, now=self.now)
+        attribution = history.memory_attribution(self.state, self.start, 3600)
+        target = history.rollup_path(raw_day)
+        head, _, body = target.read_text().partition('\n')
+        good = json.loads(body)
+        key = next(iter(good['sessions']))
+        for name, change in (
+                ('bucket without timestamp', lambda d: d['buckets'][0].pop('timestamp')),
+                ('bucket timestamp text', lambda d: d['buckets'][0].update(timestamp='noon')),
+                ('bucket is a list', lambda d: d['buckets'].append([])),
+                ('bucket without metrics', lambda d: d['buckets'][0].pop('metrics')),
+                ('attribution without n', lambda d: d['attribution'][0].pop('n')),
+                ('attribution zero n', lambda d: d['attribution'][0].update(n=0)),
+                ('attribution text amount', lambda d: d['attribution'][0]['sum'].update(alpha='much')),
+                ('session without last_seen', lambda d: d['sessions'][key].pop('last_seen')),
+                ('session is text', lambda d: d['sessions'].update({key: 'gone'}))):
+            data = json.loads(body)
+            change(data)
+            target.write_text(head + '\n' + json.dumps(data))
+            history._file_cache.clear()
+            with self.subTest(damage=name):
+                self.assertIsNone(history.load_rollup(raw_day))
+                self.assertEqual(history.read_history_downsampled(self.state, self.start, 3600), expected)
+                self.assertEqual(history.session_history(self.state, self.start, now=self.now), sessions)
+                self.assertEqual(history.memory_attribution(self.state, self.start, 3600), attribution)
 
     def test_guard_maintains_rollups_when_it_appends_history(self):
         from wsl_resource_guard import daemon
@@ -139,11 +222,12 @@ class RollupTests(unittest.TestCase):
         with patch('builtins.print'):
             daemon.record_history(settings, current, snapshot(), evaluation, 0.0, self.now)
         self.assertEqual(len(list(self.state.glob('rollup-*.jsonl'))), 1)
-        with patch.object(history, 'maintain_rollups', side_effect=OSError('disk full')), patch('builtins.print') as out:
-            last, _ = daemon.record_history(settings, metrics(8.0, timestamp=self.now + 60), snapshot(), evaluation,
-                                            0.0, self.now)
-        self.assertEqual(last, self.now + 60)                 # sampling is not disturbed
-        self.assertIn('history rollup unavailable', out.call_args.args[0])
+        for offset, error in ((60, OSError('disk full')), (120, TypeError('malformed line'))):
+            with patch.object(history, 'maintain_rollups', side_effect=error), patch('builtins.print') as out:
+                last, _ = daemon.record_history(settings, metrics(8.0, timestamp=self.now + offset), snapshot(),
+                                                evaluation, 0.0, self.now)
+            self.assertEqual(last, self.now + offset)             # sampling is not disturbed
+            self.assertIn('history rollup unavailable', out.call_args.args[0])
 
 
 if __name__ == '__main__':

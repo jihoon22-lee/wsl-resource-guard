@@ -386,7 +386,10 @@ def read_history_downsampled(state_path: Path, since: float, bucket_seconds: int
     for path in _history_files(state_path, since):
         rollup = load_rollup(path) if bucket_seconds % ROLLUP_SECONDS == 0 else None
         if rollup is not None:
-            rows = [row for row in rollup['buckets'] if row['timestamp'] >= since]
+            # Fold a day down to the requested bucket before it counts against
+            # the result budget; two weeks of 5-minute rows would exceed it.
+            rows = downsample((row for row in rollup['buckets'] if row['timestamp'] >= since),
+                              bucket_seconds)
         else:
             rows = _cached(path, f'down:{bucket_seconds}:{since}', lambda p: downsample(
                 ({k: r.get(k) for k in HISTORY_FIELDS} for r in _iter_records(p, deadline=deadline)
@@ -552,6 +555,7 @@ ROLLUP_SECONDS = 300
 MAX_ROLLUP_BYTES = 32 * 1024 * 1024
 _ROLLUPS_VERIFIED: dict[str, list] = {}
 _ROLLUPS_FAILED: set[str] = set()
+_SESSION_NUMBERS = ('first_seen', 'last_seen', 'started_at', 'peak_rss_kib', 'peak_mcp_count')
 
 
 def rollup_path(history_path: Path) -> Path:
@@ -600,6 +604,18 @@ def load_rollup(history_path: Path) -> dict | None:
     if (not isinstance(data, dict) or not isinstance(data.get('buckets'), list)
             or not isinstance(data.get('attribution'), list) or not isinstance(data.get('sessions'), dict)):
         return None
+    number = lambda value: type(value) in (int, float) and math.isfinite(value)
+    if not all(isinstance(row, dict) and number(row.get('timestamp')) and isinstance(row.get('metrics'), dict)
+               for row in data['buckets']):
+        return None
+    amounts = lambda value: isinstance(value, dict) and all(number(v) for v in value.values())
+    if not all(isinstance(row, dict) and number(row.get('timestamp')) and type(row.get('n')) is int
+               and row['n'] > 0 and amounts(row.get('sum')) and amounts(row.get('peak'))
+               for row in data['attribution']):
+        return None
+    if not all(isinstance(row, dict) and all(number(row.get(field)) for field in _SESSION_NUMBERS)
+               for row in data['sessions'].values()):
+        return None
     return data
 
 
@@ -640,8 +656,10 @@ def maintain_rollups(state_path: Path, now: float, limit: int = 1) -> bool:
                 text = (json.dumps(_rollup_header(path), separators=(',', ':')) + '\n'
                         + json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')))
                 atomic.write_text(rollup_path(path), text)
-            except (OSError, ValueError):
+            except Exception as exc:        # a malformed day must not stop sampling
                 _ROLLUPS_FAILED.add(key)    # do not re-parse a bad day every minute
+                print(f"history rollup skipped for {path.name}: {type(exc).__name__}", flush=True)
+                built += 1                  # the parse was paid for, even though it failed
                 continue
             built += 1
         _ROLLUPS_VERIFIED[key] = stamp
