@@ -1,6 +1,7 @@
 """GPU memory as nvidia-smi reports it inside WSL. Display only."""
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -25,7 +26,7 @@ def _number(text: str) -> float | None:
         value = float(text)
     except ValueError:
         return None   # "[N/A]" and the like: not reported
-    return value if value == value and value >= 0 else None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def _collect() -> list[dict] | None:

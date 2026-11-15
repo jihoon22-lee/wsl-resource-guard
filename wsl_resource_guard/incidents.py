@@ -1,6 +1,7 @@
 """Bounded, owner-written incident state shared by notifications and the mobile UI."""
 from __future__ import annotations
 import copy
+import errno
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ class UnsupportedStore(ValueError):
 
 _STATES = ('new', 'active', 'resolving', 'resolved', 'unknown')
 MAX_DAMAGE_FILES = 5
+_OPTIONAL_TIMES = ('resolved_at', 'normal_since', 'recovery_since', 'recovery_checked_at')
 
 
 def _usable(row) -> bool:
@@ -50,6 +52,7 @@ def _usable(row) -> bool:
             and type(row.get('revision')) is int and row['revision'] >= 0
             and number(row.get('opened_at')) and number(row.get('observed_at'))
             and isinstance(row.get('reason'), str)
+            and all(row.get(field) is None or number(row[field]) for field in _OPTIONAL_TIMES)
             and isinstance(row.get('transitions', []), list) and isinstance(row.get('targets', []), list))
 
 
@@ -63,9 +66,15 @@ def read_store(path: Path) -> dict:
         text = read_text(path, max_bytes=4 * 1024 * 1024)
     except FileNotFoundError:
         return {'version': 1, 'updated_at': 0, 'incidents': []}
+    except UnicodeDecodeError:
+        raise DamagedStore('Invalid incident store') from None
+    except OSError as exc:
+        if exc.errno != errno.EFBIG:
+            raise                       # unreadable for now is not the same as damaged
+        raise DamagedStore('Invalid incident store') from None
     try:
         value = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise DamagedStore('Invalid incident store') from None
     if (not isinstance(value, dict) or not isinstance(value.get('incidents'), list)
             or len(value['incidents']) > MAX_INCIDENTS):
@@ -93,7 +102,14 @@ def set_damage_aside(path: Path, now: float, *, rows: list | None = None) -> Pat
         os.replace(path, target)
     else:
         atomic.write_json(target, {'set_aside_at': now, 'rows': rows})
-    for old in sorted(path.parent.glob('incidents.damaged-*.json'))[:-MAX_DAMAGE_FILES]:
+    def age(item: Path) -> float:
+        try:
+            return item.stat().st_mtime
+        except OSError:
+            return 0.0
+    # By modification time: after a clock rollback the newest file has the smallest name.
+    kept = sorted((item for item in path.parent.glob('incidents.damaged-*.json') if item != target), key=age)
+    for old in kept[:-(MAX_DAMAGE_FILES - 1)]:
         try:
             old.unlink()
         except OSError:

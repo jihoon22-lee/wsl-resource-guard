@@ -248,17 +248,10 @@ def coerce_config_value(key: str, value: Any):
             raise ValueError("드라이브별 표가 필요합니다. 예: [disk_thresholds.E]")
         table = {}
         for drive, limits in value.items():
-            if not re.fullmatch("[A-Za-z]", str(drive)) or not isinstance(limits, dict):
-                raise ValueError("드라이브 문자 하나와 그 기준 표가 필요합니다.")
-            row = {}
-            for name, number in limits.items():
-                if name not in DISK_LIMIT_KEYS or isinstance(number, bool) or not isinstance(number, (int, float)):
-                    raise ValueError("드라이브 기준의 이름 또는 값이 올바르지 않습니다.")
-                low, high = DISK_LIMIT_KEYS[name]
-                if not low <= number <= high:
-                    raise ValueError(f"{name}는 {low:g}~{high:g} 범위가 필요합니다.")
-                row[name] = number
-            table[drive.upper()] = row
+            row, problem = _drive_row(drive, limits)
+            if problem:
+                raise ValueError(problem)
+            table[str(drive).upper()] = row
         return table
     if kind == "path":
         if isinstance(value, str) and value:
@@ -273,6 +266,25 @@ def coerce_config_value(key: str, value: Any):
     raise ValueError("문자열 값이 필요합니다.")
 
 
+def _drive_row(drive, limits) -> tuple[dict, str]:
+    """One drive's limits and '', or {} and why they cannot be used.
+
+    Returns the reason instead of raising it: these texts reach the settings
+    screen, and text taken from an exception object must not.
+    """
+    if not re.fullmatch("[A-Za-z]", str(drive)) or not isinstance(limits, dict):
+        return {}, "드라이브 문자 하나와 그 기준 표가 필요합니다."
+    row = {}
+    for name, number in limits.items():
+        if name not in DISK_LIMIT_KEYS or isinstance(number, bool) or not isinstance(number, (int, float)):
+            return {}, "드라이브 기준의 이름 또는 값이 올바르지 않습니다."
+        low, high = DISK_LIMIT_KEYS[name]
+        if not low <= number <= high:
+            return {}, f"{name}는 {low:g}~{high:g} 범위가 필요합니다."
+        row[name] = number
+    return row, ""
+
+
 def load_drive_table(value, drives: list[str]) -> tuple[dict, list[str]]:
     """Per-drive limits from a hand-written file: one bad table costs only that drive."""
     if not isinstance(value, dict):
@@ -281,17 +293,16 @@ def load_drive_table(value, drives: list[str]) -> tuple[dict, list[str]]:
     problems: list[str] = []
     monitored = {str(drive).upper() for drive in drives}
     for drive, limits in value.items():
-        try:
-            row = coerce_config_value("disk_thresholds", {drive: limits})
-        except ValueError as exc:
-            problems.append(f"disk_thresholds.{drive}: {exc} 이 드라이브는 공통 기준을 사용합니다.")
+        limits, problem = _drive_row(drive, limits)
+        if problem:
+            problems.append(f"disk_thresholds.{drive}: {problem} 이 드라이브는 공통 기준을 사용합니다.")
             continue
-        letter = next(iter(row))
+        letter = str(drive).upper()
         if letter in table:
             problems.append(f"disk_thresholds.{drive}: 같은 드라이브의 표가 둘입니다. 나중 것을 사용합니다.")
         if letter not in monitored:
             problems.append(f"disk_thresholds.{drive}: disk_drives에 없는 드라이브라 사용되지 않습니다.")
-        table.update(row)
+        table[letter] = limits
     return table, problems
 
 

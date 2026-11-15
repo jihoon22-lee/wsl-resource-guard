@@ -51,6 +51,14 @@ class GpuTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertEqual(run.call_args.args[0][0], '/fixture/nvidia-smi')
 
+    def test_values_that_are_not_finite_are_not_reported(self):
+        with self.run_result('NVIDIA, inf, 1e999, nan\nSecond, -5, 4096, -inf\n'):
+            result = gpu.read_gpu(now=1000.0)
+        self.assertEqual(result['devices'], [
+            {'name': 'NVIDIA', 'memory_used_bytes': None, 'memory_total_bytes': None, 'utilization_percent': None},
+            {'name': 'Second', 'memory_used_bytes': None, 'memory_total_bytes': 4096 * 2**20,
+             'utilization_percent': None}])
+
     def test_no_tool_or_failure_is_a_gap_not_zero(self):
         with patch.object(gpu, 'nvidia_smi_path', return_value=None):
             missing = gpu.read_gpu(now=1000.0)

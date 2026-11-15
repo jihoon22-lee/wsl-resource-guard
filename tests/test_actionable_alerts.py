@@ -278,7 +278,10 @@ class IncidentTests(unittest.TestCase):
         good = reconcile({}, [condition()], fixture(True), metrics(), Settings(), boot='test')['incidents'][0]
         damaged = [{'id': 'b' * 32}, {'id': 'not-hex', 'key': 'x'}, 'text', dict(good, id='c' * 32, revision='two'),
                    dict(good, id='d' * 32, transitions='none'), dict(good, id='e' * 32, state='exploded'),
-                   {k: v for k, v in dict(good, id='f' * 32).items() if k != 'reason'}]
+                   {k: v for k, v in dict(good, id='f' * 32).items() if k != 'reason'},
+                   dict(good, id='1' * 32, state='resolved', resolved_at='yesterday'),
+                   dict(good, id='2' * 32, normal_since=[1]), dict(good, id='3' * 32, recovery_since='soon'),
+                   dict(good, id='4' * 32, recovery_checked_at=True)]
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'incidents.json'
             atomic_write(path, {'version': 1, 'updated_at': 1000, 'incidents': [good, *damaged]})
@@ -290,6 +293,41 @@ class IncidentTests(unittest.TestCase):
                 path.write_text(text)
                 with self.subTest(text=text), self.assertRaises(error):
                     read_store(path)
+            for name, content in (('not text', b'\xff\xfe{"version":1}'), ('too large', b' ' * (4 * 1024 * 1024 + 1)),
+                                  ('nested too deep', b'[' * 100_000)):
+                path.write_bytes(content)
+                with self.subTest(content=name), self.assertRaises(DamagedStore):
+                    read_store(path)
+            path.unlink()
+            path.mkdir()                        # not readable now, but nothing says it is damaged
+            with self.assertRaises(OSError) as raised:
+                read_store(path)
+            self.assertNotIsInstance(raised.exception, DamagedStore)
+
+    def test_a_resolved_row_with_a_bad_time_does_not_stop_reconcile(self):
+        good = reconcile({}, [condition()], fixture(True), metrics(), Settings(), boot='test')['incidents'][0]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'incidents.json'
+            atomic_write(path, {'version': 1, 'updated_at': 1000, 'incidents': [
+                good, dict(good, id='1' * 32, key='other', state='resolved', resolved_at='yesterday')]})
+            store = read_store(path)
+            after = reconcile(store, [condition()], fixture(True), metrics(1015), Settings(), boot='test')
+            self.assertEqual([r['id'] for r in after['incidents']], [good['id']])
+
+    def test_only_the_newest_damage_files_are_kept_even_after_a_clock_rollback(self):
+        from wsl_resource_guard.incidents import MAX_DAMAGE_FILES, set_damage_aside
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'incidents.json'
+            made = []
+            for index in range(MAX_DAMAGE_FILES + 2):
+                made.append(set_damage_aside(path, 5000 + index, rows=[index]))
+                os.utime(made[-1], (9000 + index, 9000 + index))
+            # The clock went back: the newest file now has the smallest name.
+            newest = set_damage_aside(path, 100, rows=['newest'])
+            kept = set(Path(d).glob('incidents.damaged-*.json'))
+            self.assertEqual(len(kept), MAX_DAMAGE_FILES)
+            self.assertIn(newest, kept)
+            self.assertEqual(kept - {newest}, set(made[-(MAX_DAMAGE_FILES - 1):]))
 
     def test_guard_keeps_alerting_after_setting_damage_aside(self):
         from wsl_resource_guard import daemon
