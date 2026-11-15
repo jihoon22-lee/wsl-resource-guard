@@ -20,6 +20,17 @@ def read_json(path: Path, default):
         return default
 
 
+def failure_reason(detail: str) -> str:
+    """Short, single-line cause for the ledger and journal.
+
+    Channel senders already limit their detail to status codes, exception type
+    names and cleaned PowerShell error lines; recipients and secrets never
+    reach this value.
+    """
+    text = ' '.join(str(detail).split())
+    return ''.join(char for char in text if char.isprintable())[:200]
+
+
 def destination_id(channel: str, value: str = '') -> str:
     return channel + ':' + hashlib.sha256(value.encode()).hexdigest()[:16]
 
@@ -202,6 +213,12 @@ class Delivery:
                     '구독 만료 또는 발송 조건 미충족' if result.skipped else
                     '접수 여부 미확인. 중복 발송을 피하기 위해 자동 재전송하지 않습니다.' if ambiguous else '전송에 실패했습니다.'),
                     finished_at=self.clock(), next_at=now + (60, 300, 900)[min(2, delivery['attempts'] - 1)])
+                if status in ('retry', 'failed', 'unknown'):
+                    delivery['reason'] = failure_reason(result.detail)
+                    print(f"delivery channel={destination['channel']} status={status} "
+                          f"attempt={delivery['attempts']} reason={delivery['reason']}", flush=True)
+                else:
+                    delivery.pop('reason', None)
                 self._save(ledger)
                 count += 1
         # Persist only real changes, plus a periodic stamp for clock-rollback

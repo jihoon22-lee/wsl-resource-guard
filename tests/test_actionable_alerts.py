@@ -587,6 +587,39 @@ class DeliveryTests(unittest.TestCase):
         states = {d['channel']: d['status'] for d in self.ledger()['events'][self.row['id']]['destinations'].values()}
         self.assertEqual(states, {'windows_toast': 'unknown', 'webhook': 'accepted'})
 
+    def test_failure_reason_is_kept_logged_and_cleared_on_success(self):
+        import contextlib, io
+        outcome = {'two': 'PowerShell exit 1: 액세스가\n거부되었습니다 ' + 'x' * 300}
+        def send(destination, row, notifier, origin):
+            detail = outcome.get(destination['recipient'][:3], 'sent')
+            return NotificationResult('gmail', detail == 'sent', detail)
+        journal = io.StringIO()
+        with contextlib.redirect_stdout(journal):
+            self.engine.tick(send=send)
+        rows = {d['status']: d for d in self.ledger()['events'][self.row['id']]['destinations'].values()}
+        self.assertNotIn('reason', rows['accepted'])
+        self.assertTrue(rows['retry']['reason'].startswith('PowerShell exit 1: 액세스가 거부되었습니다 x'))
+        self.assertEqual(len(rows['retry']['reason']), 200)
+        self.assertEqual(rows['retry']['detail'], '전송에 실패했습니다.')
+        self.assertEqual(journal.getvalue().count('delivery channel='), 1)
+        self.assertIn('delivery channel=gmail status=retry attempt=1 reason=PowerShell exit 1: 액세스가 거부되었습니다',
+                      journal.getvalue())
+        outcome.clear()
+        self.now = 1060; self.store['updated_at'] = 1060; atomic_write(self.root/'incidents.json', self.store)
+        self.engine.tick(send=send)
+        self.assertFalse(any('reason' in d for d in self.ledger()['events'][self.row['id']]['destinations'].values()))
+
+    def test_exception_text_never_reaches_the_ledger_or_journal(self):
+        import contextlib, io
+        def send(destination, row, notifier, origin):
+            raise RuntimeError('https://hooks.example.test/private-marker')
+        journal = io.StringIO()
+        with contextlib.redirect_stdout(journal):
+            self.engine.tick(send=send)
+        reasons = {d['reason'] for d in self.ledger()['events'][self.row['id']]['destinations'].values()}
+        self.assertEqual(reasons, {'RuntimeError'})
+        self.assertNotIn('private-marker', (self.root/'delivery.json').read_text() + journal.getvalue())
+
 
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
