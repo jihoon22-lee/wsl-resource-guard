@@ -39,6 +39,13 @@ disk_drives = ["C", "D", "E"]
 disk_refresh_seconds = 60
 warning_disk_free_percent = 20.0
 critical_disk_free_percent = 10.0
+# Optional: a level alerts only while the free space is also under this many GiB (0 = percent only).
+# warning_disk_free_gib = 50.0
+# critical_disk_free_gib = 20.0
+# Optional per-drive limits go in tables at the very end of this file:
+# [disk_thresholds.E]
+# warning_free_percent = 5
+# critical_free_percent = 3
 # Optional WSL path to the distro's VHDX file (display only).
 wsl_vhd_path = ""
 

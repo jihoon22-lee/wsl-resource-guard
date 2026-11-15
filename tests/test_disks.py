@@ -308,6 +308,54 @@ class DiskAlertTests(unittest.TestCase):
                     self.assertEqual(result.severity,expected)
                     if expected!='normal':self.assertIn(drive,result.reasons[0])
 
+    def test_absolute_floor_and_per_drive_limits(self):
+        gib = 2 ** 30
+        def row(drive, total_gib, free_gib):
+            return {'id': drive, 'name': drive, 'kind': 'windows', 'status': 'ok', 'total_bytes': total_gib * gib,
+                    'available_bytes': free_gib * gib, 'available_percent': free_gib / total_gib * 100, 'error': ''}
+        def severity(settings, *rows):
+            m = metrics(8); m.disks = list(rows)
+            return evaluate(m, snapshot(), settings)
+        # 93 GiB free on 1 TB is 9.3%: critical by percent alone.
+        self.assertEqual(severity(Settings(), row('E:', 1000, 93)).severity, 'critical')
+        # With floors, percent alone is not enough: the free space must also be under the floor.
+        floors = Settings(warning_disk_free_gib=50, critical_disk_free_gib=20)
+        self.assertEqual(severity(floors, row('E:', 1000, 93)).severity, 'normal')
+        self.assertEqual(severity(floors, row('E:', 1000, 49.9)).severity, 'warning')
+        self.assertEqual(severity(floors, row('E:', 1000, 19.9)).severity, 'critical')
+        self.assertEqual(severity(floors, row('E:', 1000, 50)).severity, 'normal')   # exactly the floor is not below it
+        # A small drive never reaches the floor before the percent limit matters.
+        self.assertEqual(severity(floors, row('C:', 100, 15)).severity, 'warning')
+        # Per-drive values replace the global ones for that drive only.
+        per_drive = Settings(disk_thresholds={'E': {'warning_free_percent': 5, 'critical_free_percent': 3}})
+        result = severity(per_drive, row('E:', 1000, 93), row('C:', 1000, 93))
+        self.assertEqual(result.severity, 'critical')
+        self.assertEqual([r[:2] for r in result.reasons], ['C:'])
+        self.assertEqual(severity(per_drive, row('E:', 1000, 40)).severity, 'warning')
+        self.assertEqual(disks.disk_limits(per_drive, 'E:'), (5, 3, 0, 0))
+        self.assertEqual(disks.disk_limits(per_drive, 'c:'), (20, 10, 0, 0))
+
+    def test_limit_lines_describe_what_is_configured(self):
+        settings = Settings(disk_drives=['C', 'E'], warning_disk_free_gib=50,
+                            disk_thresholds={'E': {'warning_free_percent': 5, 'critical_free_percent': 3,
+                                                   'warning_free_gib': 0}})
+        lines = disks.disk_limit_lines(settings)
+        self.assertEqual(len(lines), 2)
+        self.assertIn('C:', lines[0]); self.assertIn('20%', lines[0]); self.assertIn('50 GiB', lines[0])
+        self.assertIn('E:', lines[1]); self.assertIn('5%', lines[1]); self.assertNotIn('GiB', lines[1])
+        self.assertEqual(disks.disk_limit_lines(Settings(disk_drives=[])), [])
+
+    def test_forecast_uses_the_alert_floor_of_each_drive(self):
+        gib = 2 ** 30
+        row = {'id': 'E:', 'kind': 'windows', 'total_bytes': 1000 * gib, 'available_bytes': 93 * gib}
+        history = [{'date': f'2026-10-{day:02d}', 'disks': [{'id': 'E:', 'available_bytes': (100 - day) * gib}]}
+                   for day in range(1, 8)]
+        plain = disks.disk_insights([row], history, 20, 10)['E:']
+        self.assertNotIn('days_to_warning', plain)          # already below 20%
+        floored = disks.disk_insights([row], history, 20, 10, limits={'E:': (20, 10, 50, 20)})['E:']
+        self.assertAlmostEqual(floored['days_to_warning'], 43, delta=1)   # 93 -> 50 GiB at 1 GiB/day
+        self.assertAlmostEqual(floored['days_to_critical'], 73, delta=1)
+
     def test_wsl_internal_usage_is_display_only(self):
         m=metrics(8);m.disks=[disk(1,'wsl','wsl')]
         self.assertEqual(evaluate(m,snapshot(),Settings()).severity,'normal')

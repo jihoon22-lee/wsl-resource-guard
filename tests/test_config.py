@@ -33,6 +33,43 @@ class SettingsTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
             return Settings.load(path)
 
+    def test_drive_thresholds_load_and_reject_bad_tables(self) -> None:
+        good = self.load_text('disk_drives = ["C", "E"]\nwarning_disk_free_gib = 50\n\n'
+                              '[disk_thresholds.e]\nwarning_free_percent = 5\ncritical_free_percent = 3\n'
+                              'warning_free_gib = 40\n')
+        self.assertEqual(good.load_warnings, [])
+        self.assertEqual(good.disk_thresholds, {'E': {'warning_free_percent': 5, 'critical_free_percent': 3,
+                                                       'warning_free_gib': 40}})
+        self.assertEqual(good.warning_disk_free_gib, 50)
+        for text in ('[disk_thresholds.EE]\nwarning_free_percent = 5\n',           # not a drive letter
+                     '[disk_thresholds.E]\nwarning_free_percent = 500\n',         # out of range
+                     '[disk_thresholds.E]\nunknown_key = 1\n',
+                     '[disk_thresholds.E]\nwarning_free_percent = true\n',
+                     'disk_thresholds = "E"\n'):
+            with self.subTest(text=text):
+                bad = self.load_text(text)
+                self.assertEqual(bad.disk_thresholds, {})
+                self.assertEqual(len(bad.load_warnings), 1)
+
+    def test_inconsistent_drive_limits_fall_back_for_that_drive_only(self) -> None:
+        settings = self.load_text('[disk_thresholds.C]\nwarning_free_percent = 5\n\n'
+                                  '[disk_thresholds.E]\nwarning_free_percent = 3\ncritical_free_percent = 5\n\n'
+                                  '[disk_thresholds.D]\nwarning_free_gib = 10\ncritical_free_gib = 30\n')
+        # C: warning 5% is not above the global critical 10%.
+        self.assertEqual(settings.disk_thresholds, {})
+        self.assertEqual(len(settings.load_warnings), 3)
+
+    def test_absolute_floors_are_optional_but_ordered_when_both_set(self) -> None:
+        self.assertEqual(self.load_text('warning_disk_free_gib = 50\n').load_warnings, [])
+        self.assertEqual(self.load_text('critical_disk_free_gib = 20\n').load_warnings, [])
+        bad = self.load_text('warning_disk_free_gib = 20\ncritical_disk_free_gib = 50\n')
+        self.assertEqual((bad.warning_disk_free_gib, bad.critical_disk_free_gib), (0, 0))
+        self.assertEqual(len(bad.load_warnings), 1)
+        from wsl_resource_guard.config import check_relations
+        with self.assertRaises(ValueError):
+            check_relations(Settings(critical_disk_free_gib=50), 'warning_disk_free_gib', 20)
+        check_relations(Settings(critical_disk_free_gib=50), 'warning_disk_free_gib', 0)   # 0 turns the floor off
+
     def test_shipped_template_loads_without_warnings(self) -> None:
         self.assertEqual(Settings.load(TEMPLATE).load_warnings, [])
 

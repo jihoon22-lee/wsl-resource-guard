@@ -99,7 +99,9 @@ def fixtures() -> dict:
              'available_percent': 6.0, 'used_percent': 94.0,
              'insight': {'hours_to_critical': 9, 'recent_gib_per_hour': 2.8}}],
             'history': [], 'updated_at': time.time(), 'sample_interval_seconds': 60,
-            'thresholds': {'warning_free_percent': 20, 'critical_free_percent': 10}},
+            'thresholds': {'warning_free_percent': 20, 'critical_free_percent': 10},
+            'threshold_lines': ['C: 여유 20% 미만 Warning · 여유 10% 미만 Critical',
+                                'E: 여유 5% 미만이면서 50 GiB 미만 Warning · 여유 3% 미만 Critical <b>']},
         '/api/docker-df': {'available': True, 'checked_at': time.time(), 'rows': [
             {'Type': 'Images', 'TotalCount': '12', 'Active': '4', 'Size': '18.2GB',
              'Reclaimable': '9.1GB (50%)'},
@@ -568,6 +570,10 @@ def check_disk_docker_and_vhd_guide(page, overrides: dict) -> None:
     try:
         page.goto(ORIGIN + '/#disks')
         page.reload()
+        footnote = page.locator('#view-disks .disk-footnote')
+        expect(footnote).to_contain_text('E: 여유 5% 미만이면서 50 GiB 미만 Warning')
+        expect(footnote).to_contain_text('<b>')  # server text is escaped
+        expect(footnote.locator('b')).to_have_count(0)
         panel = page.locator('#docker-df')
         expect(panel).to_contain_text('빌드 캐시')
         expect(panel).to_contain_text('9.1GB (50%)')

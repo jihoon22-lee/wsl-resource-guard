@@ -135,6 +135,15 @@ def _unobserved(row: dict, metrics) -> bool:
     return False
 
 
+def _unmonitored_disk(row: dict, metrics) -> bool:
+    """True when disks were collected and this incident's drive is not among them."""
+    key = row['key']
+    if not key.startswith('disk.') or not metrics.disks:
+        return False
+    drive = key.split(':', 1)[0].split('.', 1)[1].rstrip(':')
+    return not any(str(d.get('id', '')).rstrip(':') == drive for d in metrics.disks if isinstance(d, dict))
+
+
 def _measurement(condition, snapshot, metrics, settings):
     key = condition['key']
     if key.endswith('mcp_total'):
@@ -246,6 +255,13 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
                 row.update(revision=row['revision'] + 1, recovery_confirmed_at=now)
             continue
         if row['key'] in seen or row['state'] == 'resolved':
+            continue
+        if _unmonitored_disk(row, metrics):
+            # Removed from disk_drives: nothing observes it any more, so it can
+            # neither stay open forever nor be announced as recovered.
+            row.update(state='resolved', resolved_at=now, recovery_unconfirmed=True, normal_since=None)
+            row['transitions'] = (row.get('transitions', []) + [
+                {'at': now, 'state': 'resolved', 'unmonitored': True}])[-16:]
             continue
         gap = now < row.get('observed_at', now) or now - row.get('observed_at', now) > max(60, 3 * settings.interval_seconds)
         if gap or _unobserved(row, metrics):

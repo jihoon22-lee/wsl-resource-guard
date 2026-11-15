@@ -55,6 +55,8 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `warning_swap_out_max_available_gib` | `6.0` | 0.1–1024 | swap-out 경보의 가용 RAM 상한 (GiB) |
 | `warning_disk_free_percent` | `20.0` | 1–95 | Warning: 디스크 여유 (%) |
 | `critical_disk_free_percent` | `10.0` | 0.5–95 | Critical: 디스크 여유 (%) |
+| `warning_disk_free_gib` | `0.0` | 0–100000 | Warning 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함) |
+| `critical_disk_free_gib` | `0.0` | 0–100000 | Critical 예외: 여유가 이 용량(GiB) 이상이면 경보 안 함 (0=사용 안 함) |
 | `session_observe_rss_gib` | `4.0` | 0.5–1024 | 세션 관찰 시작 RSS (GiB) |
 | `session_warning_rss_gib` | `6.0` | 0.5–1024 | Warning: 세션 RSS (GiB) |
 | `mcp_observe_rss_gib` | `3.0` | 0.5–1024 | MCP 관찰 시작 RSS (GiB) |
@@ -85,5 +87,18 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `weekly_report_enabled` | `true` | true / false | 주간 리포트 발송 (Gmail·Discord·webhook) |
 | `weekly_report_weekday` | `0` | 0–6 | 주간 리포트 요일 (0=월 … 6=일) |
 | `weekly_report_hour` | `9` | 0–23 | 주간 리포트 발송 시각 (시) |
+
+디스크 경보는 여유 비율이 기준 미만일 때 발생합니다. 용량이 큰 드라이브는 비율만으로는 너무 일찍 경보가 나므로, 절대 용량 하한(`*_disk_free_gib`)을 설정하면 여유가 그 용량 미만일 때만 경보합니다. 예를 들어 Warning 20%·50 GiB이면 여유가 20% 미만이면서 50 GiB 미만일 때 Warning입니다.
+드라이브마다 다른 기준이 필요하면 `config.toml` 맨 끝에 드라이브별 표를 둡니다. 적지 않은 값은 공통 기준을 따르고, Warning이 Critical보다 크지 않은 표는 무시하고 사유를 `wrg config`에 표시합니다. 드라이브별 표는 웹에서 바꿀 수 없습니다.
+
+```toml
+[disk_thresholds.E]
+warning_free_percent = 5
+critical_free_percent = 3
+warning_free_gib = 50
+critical_free_gib = 20
+```
+
+`disk_drives`에서 뺀 드라이브의 진행 중 경보는 회복 알림 없이 종료합니다.
 
 `project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로를 비워 두면 Windows가 알려 준 현재 배포판 위치에서 `ext4.vhdx`를 찾아 사용하고, 그 파일이 없으면 미설정(`not-configured`)으로 표시합니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.

@@ -328,6 +328,21 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual([(r['id'], r['key'], r['state'], r['revision']) for r in out['incidents']],
                          [('e' * 32, 'disk.E::host', 'active', 1)])
 
+    def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        other = disk_metrics(1015)
+        other.disks = [dict(other.disks[0], id='C:'), {'id': 'wsl', 'kind': 'wsl', 'status': 'ok'}]
+        out = reconcile(out, [], self.snap, other, self.settings, boot='boot-a')
+        row = out['incidents'][0]
+        self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')), ('resolved', 1, True))
+        self.assertNotIn('recovery_pending', row)
+        self.assertTrue(row['transitions'][-1]['unmonitored'])
+        # An empty disk list is a failed collection, not a configuration change.
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        empty = disk_metrics(1015); empty.disks = []
+        self.assertEqual(reconcile(out, [], self.snap, empty, self.settings, boot='boot-a')['incidents'][0]['state'],
+                         'unknown')
+
     def test_unobserved_disk_after_reboot_is_unknown_not_recovered(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         for now in range(5000, 5000 + RECURRENCE_MERGE_SECONDS + 300, 15):

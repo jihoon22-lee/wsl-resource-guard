@@ -19,7 +19,7 @@ from .safe_read import read_text
 from .sdnotify import notify as notify_systemd
 from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations,
                      coerce_config_value, write_config_value)
-from .disks import disk_severity, read_disks
+from .disks import disk_limits, disk_severity, read_disks
 from .hostbridge import detected_vhd_path, read_host_snapshot
 from .metrics import KIB_PER_GIB, SystemMetrics, read_system_metrics
 from .notifications import SKIPPED_DETAILS, Notifier, NotificationResult
@@ -106,7 +106,7 @@ def evaluate(
             continue
         if disk.get("status") != "ok":
             observations.append(f"{disk['id']} 디스크 조회 불가: {disk.get('error', '')}")
-        severity = disk_severity(disk, settings.warning_disk_free_percent, settings.critical_disk_free_percent)
+        severity = disk_severity(disk, *disk_limits(settings, disk['id']))
         if severity in ("warning", "critical"):
             stale = " (마지막 확인값 · 현재 조회 불가)" if disk.get("status") != "ok" else ""
             conditions.append(AlertCondition(
@@ -789,7 +789,7 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
                 old_notified_disks.remove(key)
             disk_normal_since.pop(drive, None)
         elif current_disk.get("status") == "ok" and disk_severity(
-            current_disk, settings.warning_disk_free_percent, settings.critical_disk_free_percent
+            current_disk, *disk_limits(settings, drive)
         ) == "normal":
             try:
                 started = float(disk_normal_since.get(drive, now))
