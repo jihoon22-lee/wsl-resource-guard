@@ -50,7 +50,8 @@ class OwnerDataTests(unittest.TestCase):
             state = Path(directory) / '.local/state/wsl-resource-guard'
             state.mkdir(parents=True)
             identifier = 'a' * 32
-            incident = {'id': identifier, 'state': 'active', 'revision': 1}
+            incident = {'id': identifier, 'key': 'mcp_total:fixture', 'state': 'active', 'severity': 'warning',
+                        'revision': 1, 'opened_at': 100, 'observed_at': 120, 'reason': 'fixture'}
             (state / 'incidents.json').write_text(json.dumps({'version': 1, 'updated_at': 123, 'incidents': [incident]}))
             (state / 'delivery.json').write_text(json.dumps({'events': {identifier: {'destinations': {}}}}))
             def invoke(operation, args):

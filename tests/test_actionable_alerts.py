@@ -266,6 +266,67 @@ class IncidentTests(unittest.TestCase):
             path=Path(d)/'incidents.json';path.write_text('{broken')
             with self.assertRaises(ValueError):read_store(path)
 
+    def test_damaged_rows_are_set_aside_and_readers_use_the_rest(self):
+        from wsl_resource_guard.incidents import DamagedStore, UnsupportedStore
+        good = reconcile({}, [condition()], fixture(True), metrics(), Settings(), boot='test')['incidents'][0]
+        damaged = [{'id': 'b' * 32}, {'id': 'not-hex', 'key': 'x'}, 'text', dict(good, id='c' * 32, revision='two'),
+                   dict(good, id='d' * 32, transitions='none'), dict(good, id='e' * 32, state='exploded'),
+                   {k: v for k, v in dict(good, id='f' * 32).items() if k != 'reason'}]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'incidents.json'
+            atomic_write(path, {'version': 1, 'updated_at': 1000, 'incidents': [good, *damaged]})
+            store = read_store(path)
+            self.assertEqual([r['id'] for r in store['incidents']], [good['id']])
+            self.assertEqual(len(store['damaged_rows']), len(damaged))
+            for text, error in (('{broken', DamagedStore), ('[]', DamagedStore), ('{"version":1,"incidents":5}', DamagedStore),
+                                ('{"version":2,"incidents":[]}', UnsupportedStore)):
+                path.write_text(text)
+                with self.subTest(text=text), self.assertRaises(error):
+                    read_store(path)
+
+    def test_guard_keeps_alerting_after_setting_damage_aside(self):
+        from wsl_resource_guard import daemon
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            settings = Settings(state_dir=str(root), secrets_path=root / 'secrets.json')
+            def run(now, available):
+                with (patch.object(daemon, 'build_snapshot', return_value=fixture()),
+                      patch.object(daemon, 'read_disks', return_value=[]),
+                      patch.object(daemon, 'read_host_snapshot', return_value={}),
+                      patch.object(daemon, 'read_system_metrics', return_value=metrics(now, available)),
+                      patch('builtins.print') as printed):
+                    daemon.sample(settings, incident_mode=True, shared_dir=root)
+                return ' '.join(str(call.args[0]) for call in printed.call_args_list)
+            run(1000, 1)
+            store = read_store(root / 'incidents.json')
+            open_row = store['incidents'][0]
+            atomic_write(root / 'incidents.json', dict(store, incidents=[open_row, {'id': 'b' * 32, 'key': 'broken'}]))
+            log = run(1015, 1)
+            after = read_store(root / 'incidents.json')
+            self.assertEqual([(r['id'], r['state']) for r in after['incidents']], [(open_row['id'], 'active')])
+            self.assertNotIn('damaged_rows', after)
+            aside = sorted(root.glob('incidents.damaged-*.json'))
+            self.assertEqual(len(aside), 1)
+            self.assertEqual(json.loads(aside[0].read_text())['rows'], [{'id': 'b' * 32, 'key': 'broken'}])
+            self.assertIn('1 damaged incident row', log)
+            # A file that cannot be parsed at all is moved aside whole and alerting restarts.
+            (root / 'incidents.json').write_text('{broken')
+            log = run(1030, 1)
+            self.assertEqual(len(read_store(root / 'incidents.json')['incidents']), 1)
+            self.assertEqual(len(sorted(root.glob('incidents.damaged-*.json'))), 2)
+            self.assertIn('incident store was unreadable', log)
+            # A later version's store is refused and left exactly as it is.
+            future = '{"version": 2, "incidents": [], "updated_at": 1}'
+            (root / 'incidents.json').write_text(future)
+            log = run(1045, 1)
+            self.assertEqual((root / 'incidents.json').read_text(), future)
+            self.assertIn('incident storage unavailable', log)
+            # Old damage files do not accumulate without bound.
+            for index in range(12):
+                (root / 'incidents.json').write_text('{broken')
+                run(1100 + index * 15, 1)
+            self.assertLessEqual(len(list(root.glob('incidents.damaged-*.json'))), 5)
+
     def test_disk_incident_continues_across_reboot(self):
         one = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         two = reconcile(one, [DISK], self.snap, disk_metrics(5000), self.settings, boot='boot-b')

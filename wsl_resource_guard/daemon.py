@@ -919,16 +919,28 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
     if persist:
         save_state(state_path, next_state)
         if incident_mode:
-            from .incidents import read_store, reconcile, atomic_write
+            from .incidents import DamagedStore, atomic_write, read_store, reconcile, set_damage_aside
             incident_path = settings.state_path / 'incidents.json'
             try:
-                previous_incidents = read_store(incident_path)
+                try:
+                    previous_incidents = read_store(incident_path)
+                except DamagedStore:
+                    # Unreadable content would stop every alert until someone
+                    # repaired it by hand. Keep it aside and start again.
+                    aside = set_damage_aside(incident_path, now)
+                    print(f'incident store was unreadable; kept as {aside.name} and restarted', flush=True)
+                    previous_incidents = read_store(incident_path)
+                damaged = previous_incidents.pop('damaged_rows', None)
+                if damaged:
+                    aside = set_damage_aside(incident_path, now, rows=damaged)
+                    print(f'{len(damaged)} damaged incident row(s) kept in {aside.name}', flush=True)
                 active_keys = {c['key'] for c in evaluation.conditions}
                 pending = [{'key': key} for key in evaluation.condition_since if key not in active_keys]
                 atomic_write(incident_path, reconcile(previous_incidents, evaluation.conditions, snapshot,
                                                       metrics, settings, pending=pending))
             except (OSError, ValueError):
-                # Do not erase damaged records or stop resource sampling.
+                # A later version's store or a filesystem error: leave the file
+                # alone and keep sampling.
                 print('incident storage unavailable; resource sample retained', flush=True)
     return metrics, snapshot, evaluation
 

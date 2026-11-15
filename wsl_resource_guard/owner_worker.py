@@ -278,6 +278,7 @@ def dispatch(operation: str, args: dict, reader=None):
         from .incidents import read_store, IDENTIFIER
         from .delivery import read_json
         store = read_store(reader._state_path() / 'incidents.json')
+        store['damaged'] = len(store.pop('damaged_rows', []))
         identifier = args.get('id')
         if identifier is None:
             return store
