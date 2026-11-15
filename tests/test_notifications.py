@@ -205,7 +205,10 @@ class NotificationTests(unittest.TestCase):
                 for result in (first, second):
                     self.assertFalse(result.sent)
                     self.assertFalse(result.skipped)
-                    self.assertIn("Timeout", result.detail)
+                self.assertIn("Timeout", first.detail)
+                # Not attempted at all: must stay retryable, not an unknown outcome.
+                self.assertTrue(second.detail.startswith("busy"))
+                self.assertNotIn("Timeout", second.detail)
                 self.assertEqual(path.return_value.exists.call_count, 1)
             finally:
                 release.set()

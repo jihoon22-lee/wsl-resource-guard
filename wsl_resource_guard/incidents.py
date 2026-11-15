@@ -62,35 +62,52 @@ def _key(condition: dict, snapshot, boot: str) -> str:
     return key + ':' + boot
 
 
+def _drop_recovery(row: dict) -> None:
+    """Withdraw a recovery that observations of the current drive state never confirmed."""
+    for field in ('recovery_pending', 'recovery_since', 'recovery_checked_at', 'recovery_paused'):
+        row.pop(field, None)
+    row['recovery_unconfirmed'] = True
+
+
 def _migrate_disk_keys(rows: list[dict], boot: str, now: float) -> None:
     """Move boot-scoped disk keys written by older versions to the host scope.
 
-    Rows of another boot never confirmed their recovery by observation, so they
-    lose the pending recovery announcement. An open row of another boot carries
-    on as the same incident unless this boot already tracks that drive.
+    Each drive keeps exactly one open row: an already host-scoped row first,
+    then this boot's row, then an older boot's. Further open rows are the same
+    condition counted twice and are merged into that row. A resolved row never
+    announces a recovery when it comes from another boot or when the drive
+    still has an open row.
     """
     legacy = []
     for row in rows:
         match = _LEGACY_DISK_KEY.match(str(row.get('key', '')))
         if match and match[2] != HOST_SCOPE:
             legacy.append((row, match[1] + ':' + HOST_SCOPE, bool(boot) and match[2] == boot))
-    for row, key, current in legacy:
-        if current:
-            row['key'] = key
-    held = {row['key'] for row in rows if row.get('state') != 'resolved'}
-    for row, key, current in legacy:
-        if current:
-            continue
+    if not legacy:
+        return
+    keys = {key for _, key, _ in legacy}
+    holders = {row['key']: row for row in rows
+               if row.get('key') in keys and row.get('state') != 'resolved'}
+    merged = []
+    for row, key, current in sorted(legacy, key=lambda item: not item[2]):
         row['key'] = key
-        if row.get('state') != 'resolved' and key not in held:
-            held.add(key)
-            continue
-        for field in ('recovery_pending', 'recovery_since', 'recovery_checked_at', 'recovery_paused'):
-            row.pop(field, None)
-        if row.get('state') != 'resolved':
-            row.update(state='resolved', resolved_at=now)
-            row['transitions'] = (row.get('transitions', []) + [
-                {'at': now, 'state': 'resolved', 'superseded': True}])[-16:]
+        if row.get('state') == 'resolved':
+            if not current:
+                _drop_recovery(row)
+        elif key in holders:
+            holder = holders[key]
+            opened = [value for value in (holder.get('opened_at'), row.get('opened_at'))
+                      if type(value) in (int, float)]
+            if opened:
+                holder['opened_at'] = min(opened)
+            merged.append(id(row))
+        else:
+            holders[key] = row
+    for row in rows:
+        if row.get('state') == 'resolved' and row.get('recovery_pending') and row.get('key') in holders:
+            _drop_recovery(row)
+    if merged:
+        rows[:] = [row for row in rows if id(row) not in merged]
 
 
 def _targets(condition: dict, snapshot) -> list[dict]:

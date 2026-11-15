@@ -133,10 +133,13 @@ class Notifier:
         # stat/exec on the Windows mount can block before subprocess's own
         # timeout starts. The delivery worker is a single thread, so a stuck
         # toast must not hold back Gmail, push or any later incident.
-        from .disks import ProbeTimeout, bounded_probe
+        from .disks import ProbeBusy, ProbeTimeout, bounded_probe
         try:
             return bounded_probe("windows-toast", lambda: self._deliver_windows_toast(title, message),
                                  timeout=TOAST_TIMEOUT_SECONDS)
+        except ProbeBusy:
+            # Nothing was sent, so this stays an ordinary retryable failure.
+            return NotificationResult("windows_toast", False, "busy: an earlier Windows notification has not finished")
         except ProbeTimeout:
             # "Timeout" marks the outcome as unknown: the toast may still appear.
             return NotificationResult("windows_toast", False, "Timeout: Windows interop did not answer")

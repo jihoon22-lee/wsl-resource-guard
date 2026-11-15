@@ -11,8 +11,9 @@
 | N6 | P3 | Guard가 멈추거나 WSL VM이 내려가도 알림이 오지 않습니다 | `packaging/wsl-resource-guard.service` | 유닛 watchdog, VM 정지는 Windows 측 감시 |
 | N7 | P3 | 주간 리포트는 지정 요일에 PC가 꺼져 있으면 그 주를 건너뜁니다 | `daemon.py`의 `weekly_report_slot` | 같은 ISO 주 안에서 놓친 발송을 따라잡기 |
 | N8 | P3 | 설정에서 뺀 드라이브의 사건이 `unknown` 상태로 계속 남습니다 | `incidents.py`의 `reconcile` | N5와 함께 정리 |
+| N9 | P3 | 사건 저장소에 필드가 빠진 행이 하나라도 있으면 `reconcile`이 표본마다 실패해 사건 갱신이 멈춥니다. 자원 표본 저장은 계속됩니다 | `incidents.py`의 `read_store`·`reconcile`, `daemon.py`의 `sample` | 읽을 때 행 형식을 검증하고 손상된 행을 격리 |
 
-N8은 코드로만 확인했습니다.
+N8과 N9는 코드로만 확인했습니다.
 
 ## 구조·효율 개선
 

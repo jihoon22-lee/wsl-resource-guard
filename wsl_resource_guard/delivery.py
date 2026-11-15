@@ -170,6 +170,8 @@ class Delivery:
                 continue
             if row['state'] == 'resolved' and not self.settings.recovery_notifications:
                 continue
+            if row['state'] == 'resolved' and (row.get('recovery_pending') or row.get('recovery_unconfirmed')):
+                continue  # Only a recovery confirmed by observations is announced.
             decision = decisions.get(row['id'], {})
             deferred = (decision.get('choice') == 'defer' and decision.get('until', 0) > now
                         and decision.get('at', 0) <= now and decision.get('revision') == row['revision'])
@@ -196,6 +198,7 @@ class Delivery:
                     'label': destination['label'], 'status': 'pending', 'attempts': 0, 'next_at': now})
                 if delivery['status'] == 'sending':
                     delivery.update(status='unknown', detail='이전 전송이 중단됐습니다. 접수 여부를 확인할 수 없습니다.')
+                    delivery.pop('reason', None)  # It described an earlier attempt.
                 if (delivery['status'] not in ('pending', 'retry') or delivery['next_at'] > now
                         or count >= max_sends or (deferred and not changed)):
                     continue
@@ -215,11 +218,12 @@ class Delivery:
                     finished_at=self.clock(), next_at=now + (60, 300, 900)[min(2, delivery['attempts'] - 1)])
                 if status in ('retry', 'failed', 'unknown'):
                     delivery['reason'] = failure_reason(result.detail)
-                    print(f"delivery channel={destination['channel']} status={status} "
-                          f"attempt={delivery['attempts']} reason={delivery['reason']}", flush=True)
                 else:
                     delivery.pop('reason', None)
-                self._save(ledger)
+                self._save(ledger)  # Durable before the journal line: a closed stdout must not lose it.
+                if 'reason' in delivery:
+                    print(f"delivery channel={destination['channel']} status={status} "
+                          f"attempt={delivery['attempts']} reason={delivery['reason']}", flush=True)
                 count += 1
         # Persist only real changes, plus a periodic stamp for clock-rollback
         # detection; an fsync every 2 s idle tick is pointless disk work.

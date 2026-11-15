@@ -282,7 +282,7 @@ class IncidentTests(unittest.TestCase):
             return {'id': char * 32, 'key': key, 'state': state, 'severity': 'warning', 'revision': 1,
                     'opened_at': 900, 'observed_at': 990, 'reason': 'E:', 'transitions': [], **extra}
         out = {'version': 1, 'updated_at': 990, 'incidents': [
-            legacy('a', 'disk.E::boot-a', 'active'),
+            legacy('a', 'disk.E::boot-a', 'active', opened_at=500),
             legacy('b', 'disk.E::boot-0', 'resolved', resolved_at=950, recovery_pending=True,
                    recovery_since=950, recovery_checked_at=990),
             legacy('c', 'disk.E::boot-b', 'active')]}
@@ -291,9 +291,28 @@ class IncidentTests(unittest.TestCase):
         rows = {r['id'][0]: r for r in out['incidents']}
         self.assertEqual({r['key'] for r in rows.values()}, {'disk.E::host'})
         self.assertEqual({k: (r['state'], r['revision']) for k, r in rows.items()},
-                         {'a': ('resolved', 1), 'b': ('resolved', 1), 'c': ('active', 1)})
-        self.assertTrue(rows['a']['transitions'][-1]['superseded'])
+                         {'b': ('resolved', 1), 'c': ('active', 1)})
+        self.assertEqual(rows['c']['opened_at'], 500)  # The duplicate's history continues in the survivor.
+        self.assertTrue(rows['b']['recovery_unconfirmed'])
         self.assertFalse(any('recovery_pending' in r or 'recovery_confirmed_at' in r for r in rows.values()))
+
+    def test_rollback_then_redeploy_keeps_one_open_disk_row(self):
+        base = {'severity': 'warning', 'revision': 1, 'opened_at': 900, 'reason': 'E:', 'transitions': []}
+        legacy = dict(base, id='2' * 32, key='disk.E::boot-b', state='active', observed_at=990)
+        for label, host in (
+                ('pending', dict(base, id='1' * 32, key='disk.E::host', state='resolved', observed_at=950,
+                                 resolved_at=950, recovery_pending=True, recovery_since=950, recovery_checked_at=990)),
+                ('resolving', dict(base, id='1' * 32, key='disk.E::host', state='resolving', observed_at=990,
+                                   normal_since=980))):
+            with self.subTest(host=label):
+                out = {'version': 1, 'updated_at': 990, 'incidents': [dict(host), dict(legacy)]}
+                for now in range(1000, 1000 + RECURRENCE_MERGE_SECONDS + 60, 15):
+                    out = reconcile(out, [DISK], self.snap, disk_metrics(now), self.settings, boot='boot-b')
+                rows = out['incidents']
+                self.assertEqual({r['key'] for r in rows}, {'disk.E::host'})
+                self.assertEqual([(r['state'], r['revision']) for r in rows if r['state'] != 'resolved'],
+                                 [('active', 1)])
+                self.assertFalse(any('recovery_confirmed_at' in r or r['revision'] != 1 for r in rows))
 
     def test_same_boot_legacy_row_keeps_pending_recovery_and_blank_boot_migrates(self):
         base = {'severity': 'warning', 'revision': 1, 'opened_at': 900, 'reason': 'E:', 'transitions': []}
@@ -536,6 +555,41 @@ class DeliveryTests(unittest.TestCase):
         self.calls=[];self.engine.tick(send=self.send)
         self.assertEqual(self.calls,[])
         self.assertEqual({d['status'] for d in self.ledger()['events'][self.row['id']]['destinations'].values()},{'unknown'})
+
+    def test_interrupted_retry_drops_the_previous_reason(self):
+        self.engine.tick(send=self.send)
+        ledger=self.ledger()
+        for d in ledger['events'][self.row['id']]['destinations'].values():d.update(status='sending',reason='HTTP 500')
+        atomic_write(self.root/'delivery.json',ledger)
+        self.engine.tick(send=self.send)
+        self.assertFalse(any('reason' in d for d in self.ledger()['events'][self.row['id']]['destinations'].values()))
+
+    def test_unconfirmed_recovery_is_never_announced(self):
+        self.engine.tick(send=self.send)
+        alerted=(self.root/'delivery.json').read_text()
+        for marker in ('recovery_pending', 'recovery_unconfirmed'):
+            with self.subTest(marker=marker):
+                (self.root/'delivery.json').write_text(alerted)
+                row=dict(self.row,state='resolved',revision=2,resolved_at=1015,observed_at=1015,**{marker:True})
+                self.now=1015;atomic_write(self.root/'incidents.json',dict(self.store,updated_at=1015,incidents=[row]))
+                self.calls=[];self.engine.tick(send=self.send)
+                self.assertEqual(self.calls,[])
+        row=dict(self.row,state='resolved',revision=2,resolved_at=1015,observed_at=1015,recovery_confirmed_at=1015)
+        atomic_write(self.root/'incidents.json',dict(self.store,updated_at=1015,incidents=[row]))
+        self.engine.tick(send=self.send)
+        self.assertEqual(len(self.calls),2)
+
+    def test_journal_failure_does_not_lose_the_delivery_result(self):
+        def send(destination,row,notifier,origin):
+            return NotificationResult('gmail',False,'HTTP 500')
+        with patch('builtins.print',side_effect=BrokenPipeError):
+            try:
+                self.engine.tick(send=send)
+            except BrokenPipeError:
+                pass
+        states=[d['status'] for d in self.ledger()['events'][self.row['id']]['destinations'].values()]
+        self.assertIn('retry',states)
+        self.assertNotIn('sending',[s for s in states if s!='pending'])
 
     def test_stale_collection_sends_nothing(self):
         self.now=2000
