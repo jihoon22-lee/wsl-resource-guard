@@ -57,7 +57,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 
 ### `incidents.json` — 경보 사건
 
-`version`은 1입니다. 최대 256건, 약 3 MiB입니다. 필수 필드가 빠진 행이나 해석할 수 없는 파일은 Guard가 같은 디렉터리의 `incidents.damaged-*.json`(최근 5개)으로 옮기고 나머지로 계속 동작합니다.
+`version`은 1입니다. 최대 256건, 약 3 MiB입니다. 필수 필드가 빠졌거나 시각 필드가 숫자가 아닌 행, 그리고 해석할 수 없는 파일(UTF-8이 아니거나 4 MiB를 넘는 경우 포함)은 Guard가 같은 디렉터리의 `incidents.damaged-*.json`(최근 5개)으로 옮기고 나머지로 계속 동작합니다.
 
 | 필드 | 내용 |
 |---|---|
@@ -102,7 +102,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 |---|---|
 | `history-YYYY-MM-DD.jsonl` | 한 줄에 표본 하나: `timestamp`, `severity`, `reasons`, `observations`, `pending_reasons`, `metrics`, `sessions`, `mcp_rss_kib`, `mcp_count`, `mcp_process_count` |
 | `disk-history-YYYY-MM-DD.jsonl` | 한 시간에 한 줄: `timestamp`, `disks` |
-| `rollup-YYYY-MM-DD.jsonl` | 지난 날짜의 이력 집계. 첫 줄은 `version`, `bucket_seconds`(300), `source`(원본 이력 파일의 크기와 수정 시각), 둘째 줄은 `buckets`(그래프용 5분 집계), `attribution`(프로젝트별 메모리), `sessions`(세션별 최고치). 원본에서 다시 만들 수 있는 파생 자료이며, `source`가 원본과 다르면 읽는 쪽이 무시하고 원본을 읽습니다 |
+| `rollup-YYYY-MM-DD.jsonl` | 지난 날짜의 이력 집계. 첫 줄은 `version`, `bucket_seconds`(300), `source`(원본 이력 파일의 크기와 수정 시각), 둘째 줄은 `buckets`(그래프용 5분 집계), `attribution`(프로젝트별 메모리), `sessions`(세션별 최고치). 원본에서 다시 만들 수 있는 파생 자료이며, `source`가 원본과 다르거나 행의 형식이 맞지 않으면 읽는 쪽이 무시하고 원본을 읽습니다 |
 | `scheduled-delivery.json` | 정기 이메일의 `slot`, `status`, `attempted_at`, `finished_at`, `last_attempt_at`, `last_success_at` |
 | `weekly-report.json` | 주간 리포트의 `slot`, `sent_at`, `status`(`sending`·`sent`·`failed`·`skipped`), `attempts`, `next_attempt_at`, `results` |
 | `config-request-result.json` | 웹 설정 요청의 처리 결과: `id`, `key`, `value`, `ok`, `message`, `requested_at`, `applied_at` |
