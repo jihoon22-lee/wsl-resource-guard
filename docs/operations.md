@@ -50,6 +50,8 @@ wrg services restore --dry-run                     # 변경 없이 계획만 표
 
 ## 수집·이력·알림 진단
 
+`rollup-*.jsonl`은 지난 날짜 이력의 집계이며 지워도 됩니다. Guard가 다음 이력 기록 때 하루씩 다시 만들고, 그동안 조회는 원본 이력을 읽습니다.
+
 경보 사건 기록(`incidents.json`)이 손상되면 Guard가 손상된 행이나 파일을 `incidents.damaged-<시각>-<난수>.json`으로 옮기고 저널에 한 줄 남긴 뒤 계속 동작합니다. 파일 전체를 옮긴 경우 진행 중이던 경보는 새 경보로 다시 열립니다.
 
 Guard는 표본을 마칠 때와 다음 표본을 기다리는 동안 systemd에 생존 신호를 보냅니다. 표본 수집이 180초 넘게 멈추면 systemd가 Guard를 종료하고 다시 시작하며, 저널에 `Watchdog timeout`이 남습니다. WSL VM 전체가 멈춘 경우는 이 방법으로 감지할 수 없습니다.

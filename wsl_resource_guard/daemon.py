@@ -965,6 +965,11 @@ def record_history(
             settings.retention_days,
         )
         last_history = metrics.timestamp
+        try:
+            from .history import maintain_rollups
+            maintain_rollups(settings.state_path, metrics.timestamp)
+        except (OSError, ValueError) as exc:  # Aggregates are optional; readers fall back to raw files.
+            print(f"history rollup unavailable: {type(exc).__name__}", flush=True)
     if metrics.disks and metrics.timestamp - last_disk_history >= DISK_HISTORY_INTERVAL_SECONDS:
         append_disk_history(settings.state_path, metrics, settings.retention_days)
         last_disk_history = metrics.timestamp

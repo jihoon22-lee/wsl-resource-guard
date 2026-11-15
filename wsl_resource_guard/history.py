@@ -384,9 +384,13 @@ def read_history_downsampled(state_path: Path, since: float, bucket_seconds: int
     budget = _Budget()
     deadline = time.monotonic() + READ_SECONDS
     for path in _history_files(state_path, since):
-        rows = _cached(path, f'down:{bucket_seconds}:{since}', lambda p: downsample(
-            ({k: r.get(k) for k in HISTORY_FIELDS} for r in _iter_records(p, deadline=deadline)
-             if r['timestamp'] >= since), bucket_seconds))
+        rollup = load_rollup(path) if bucket_seconds % ROLLUP_SECONDS == 0 else None
+        if rollup is not None:
+            rows = [row for row in rollup['buckets'] if row['timestamp'] >= since]
+        else:
+            rows = _cached(path, f'down:{bucket_seconds}:{since}', lambda p: downsample(
+                ({k: r.get(k) for k in HISTORY_FIELDS} for r in _iter_records(p, deadline=deadline)
+                 if r['timestamp'] >= since), bucket_seconds))
         for row in rows or []:
             budget.keep(len(result), row)
             result.append(row)
@@ -395,36 +399,65 @@ def read_history_downsampled(state_path: Path, since: float, bucket_seconds: int
     return _check_result(downsample(result, bucket_seconds))
 
 
-def _scan_sessions(path: Path, deadline: float) -> dict:
+def _add_sessions(sessions: dict, budget: _Budget, record: dict) -> None:
     """Retain session extremes, never the full daily sample list."""
+    ts = record['timestamp']
+    for session in record.get('sessions') or []:
+        if not isinstance(session, dict):
+            continue
+        age = session.get('age_seconds')
+        pid = session.get('root_pid')
+        if not isinstance(age, (int, float)) or not isinstance(pid, int):
+            continue
+        started = round((ts - age) / 60) * 60
+        key = f"{session.get('provider')}:{pid}:{started:.0f}"
+        entry = sessions.get(key)
+        rss = int(session.get('rss_kib') or 0)
+        if entry is None:
+            entry = sessions[key] = {
+                'provider': session.get('provider'), 'root_pid': pid,
+                'root_name': session.get('root_name'), 'project': session.get('project'),
+                'started_at': ts - age, 'first_seen': ts, 'last_seen': ts,
+                'peak_rss_kib': rss, 'peak_mcp_count': int(session.get('mcp_count') or 0),
+                'persistent': bool(session.get('persistent'))}
+        entry['last_seen'] = max(entry['last_seen'], ts)
+        entry['first_seen'] = min(entry['first_seen'], ts)
+        entry['peak_rss_kib'] = max(entry['peak_rss_kib'], rss)
+        entry['peak_mcp_count'] = max(entry['peak_mcp_count'], int(session.get('mcp_count') or 0))
+        budget.keep(key, entry)
+
+
+def _scan_sessions(path: Path, deadline: float) -> dict:
     budget = _Budget()
     sessions: dict[str, dict] = {}
     for record in _iter_records(path, deadline=deadline):
-        ts = record['timestamp']
-        for session in record.get('sessions') or []:
-            if not isinstance(session, dict):
-                continue
-            age = session.get('age_seconds')
-            pid = session.get('root_pid')
-            if not isinstance(age, (int, float)) or not isinstance(pid, int):
-                continue
-            started = round((ts - age) / 60) * 60
-            key = f"{session.get('provider')}:{pid}:{started:.0f}"
-            entry = sessions.get(key)
-            rss = int(session.get('rss_kib') or 0)
-            if entry is None:
-                entry = sessions[key] = {
-                    'provider': session.get('provider'), 'root_pid': pid,
-                    'root_name': session.get('root_name'), 'project': session.get('project'),
-                    'started_at': ts - age, 'first_seen': ts, 'last_seen': ts,
-                    'peak_rss_kib': rss, 'peak_mcp_count': int(session.get('mcp_count') or 0),
-                    'persistent': bool(session.get('persistent'))}
-            entry['last_seen'] = max(entry['last_seen'], ts)
-            entry['first_seen'] = min(entry['first_seen'], ts)
-            entry['peak_rss_kib'] = max(entry['peak_rss_kib'], rss)
-            entry['peak_mcp_count'] = max(entry['peak_mcp_count'], int(session.get('mcp_count') or 0))
-            budget.keep(key, entry)
+        _add_sessions(sessions, budget, record)
     return {'sessions': sessions}
+
+
+def _project_usage(record: dict) -> dict[str, int]:
+    projects: dict[str, int] = {}
+    for session in record.get('sessions') or []:
+        if not isinstance(session, dict):
+            continue
+        for part in session.get('projects') or [session]:
+            if isinstance(part, dict) and isinstance(part.get('rss_kib'), (int, float)):
+                name = str(part.get('project') or '(unknown)')
+                projects[name] = projects.get(name, 0) + int(part['rss_kib'])
+    return projects
+
+
+def _add_attribution(buckets: dict, budget: _Budget, key: int, timestamp: float, samples: int,
+                     sums: dict, peaks: dict) -> None:
+    """Fold `samples` observations (one raw record, or one rollup bucket) into a bucket."""
+    acc = buckets.setdefault(key, {'timestamp': timestamp, 'n': 0, 'sum': {}, 'peak': {}})
+    acc['timestamp'] = max(acc['timestamp'], timestamp)
+    acc['n'] += samples
+    for name, kib in sums.items():
+        acc['sum'][name] = acc['sum'].get(name, 0) + kib
+    for name, kib in peaks.items():
+        acc['peak'][name] = max(acc['peak'].get(name, 0), kib)
+    budget.keep(key, acc)
 
 
 def memory_attribution(state_path: Path, since: float, bucket_seconds: int,
@@ -435,28 +468,27 @@ def memory_attribution(state_path: Path, since: float, bucket_seconds: int,
     absent from a sample counts as 0 there). The `top` projects by peak keep
     their own series; the rest fold into '기타'.
     """
-    peaks: dict[str, int] = {}
     buckets: dict[int, dict] = {}
     budget = _Budget()
     step = bucket_seconds or 60
-    for record in iter_history(state_path, since, fields=None):
-        ts = record['timestamp']
-        projects = {}
-        for session in record.get('sessions') or []:
-            if not isinstance(session, dict):
-                continue
-            for part in session.get('projects') or [session]:
-                if isinstance(part, dict) and isinstance(part.get('rss_kib'), (int, float)):
-                    name = str(part.get('project') or '(unknown)')
-                    projects[name] = projects.get(name, 0) + int(part['rss_kib'])
-        key = int(ts // step)
-        acc = buckets.setdefault(key, {'timestamp': ts, 'n': 0, 'sum': {}})
-        acc['timestamp'] = max(acc['timestamp'], ts)
-        acc['n'] += 1
-        for name, kib in projects.items():
+    deadline = time.monotonic() + READ_SECONDS
+    for path in _history_files(state_path, since):
+        rollup = load_rollup(path) if step % ROLLUP_SECONDS == 0 else None
+        if rollup is not None:
+            for entry in rollup['attribution']:
+                if entry['timestamp'] >= since:
+                    _add_attribution(buckets, budget, int(entry['timestamp'] // step), entry['timestamp'],
+                                     entry['n'], entry['sum'], entry['peak'])
+            continue
+        for record in _iter_records(path, deadline=deadline):
+            if record['timestamp'] >= since:
+                usage = _project_usage(record)
+                _add_attribution(buckets, budget, int(record['timestamp'] // step), record['timestamp'],
+                                 1, usage, usage)
+    peaks: dict[str, int] = {}
+    for acc in buckets.values():
+        for name, kib in acc['peak'].items():
             peaks[name] = max(peaks.get(name, 0), kib)
-            acc['sum'][name] = acc['sum'].get(name, 0) + kib
-        budget.keep(key, acc)
     keep = [name for name, _ in sorted(peaks.items(), key=lambda kv: -kv[1])[:top]]
     keys = keep + (['기타'] if len(peaks) > len(keep) else [])
     rows = []
@@ -481,7 +513,7 @@ def session_history(state_path: Path, since: float, now: float | None = None,
     budget = _Budget()
     deadline = time.monotonic() + READ_SECONDS
     for path in _history_files(state_path, since):
-        scan = _cached(path, 'sessions', lambda p: _scan_sessions(p, deadline))
+        scan = load_rollup(path) or _cached(path, 'sessions', lambda p: _scan_sessions(p, deadline))
         for key, entry in ((scan or {}).get('sessions') or {}).items():
             if entry['last_seen'] < since:
                 continue
@@ -502,3 +534,115 @@ def session_history(state_path: Path, since: float, now: float | None = None,
         rows.append(entry)
     rows.sort(key=lambda e: -e['last_seen'])
     return _check_result(rows)
+
+
+# ---- Daily rollups -------------------------------------------------------
+#
+# A finished day never changes, yet every 7-day or 14-day view re-parsed all of
+# its samples in a fresh worker process. The guard, the only writer, stores one
+# small aggregate per past day; readers use it when it still matches the raw
+# file and fall back to the raw file otherwise.
+#
+# Aggregating 5-minute buckets again gives the same answer as aggregating the
+# samples directly while a file is in time order. After a clock rollback, two
+# equally severe samples in one bucket may swap which reason text is shown.
+
+ROLLUP_VERSION = 1
+ROLLUP_SECONDS = 300
+MAX_ROLLUP_BYTES = 32 * 1024 * 1024
+_ROLLUPS_VERIFIED: dict[str, list] = {}
+_ROLLUPS_FAILED: set[str] = set()
+
+
+def rollup_path(history_path: Path) -> Path:
+    return history_path.with_name('rollup-' + history_path.stem.removeprefix('history-') + '.jsonl')
+
+
+def _source_stamp(history_path: Path) -> list:
+    info = history_path.stat()
+    return [info.st_size, info.st_mtime_ns]
+
+
+def _rollup_header(history_path: Path) -> dict:
+    return {'version': ROLLUP_VERSION, 'bucket_seconds': ROLLUP_SECONDS, 'source': _source_stamp(history_path)}
+
+
+def build_rollup(history_path: Path) -> dict:
+    """One pass over a day's samples: chart buckets, project attribution, session extremes."""
+    deadline = time.monotonic() + READ_SECONDS
+    attribution: dict[int, dict] = {}
+    sessions: dict[str, dict] = {}
+    budget, session_budget = _Budget(), _Budget()
+
+    def records():
+        for record in _iter_records(history_path, deadline=deadline):
+            usage = _project_usage(record)
+            _add_attribution(attribution, budget, int(record['timestamp'] // ROLLUP_SECONDS),
+                             record['timestamp'], 1, usage, usage)
+            _add_sessions(sessions, session_budget, record)
+            yield {k: record.get(k) for k in HISTORY_FIELDS}
+
+    buckets = downsample(records(), ROLLUP_SECONDS)
+    return {'buckets': buckets, 'attribution': [attribution[key] for key in sorted(attribution)],
+            'sessions': sessions}
+
+
+def load_rollup(history_path: Path) -> dict | None:
+    """The stored aggregate of a day, only while the raw file is exactly what it was built from."""
+    from .safe_read import read_text
+    try:
+        head, _, body = read_text(rollup_path(history_path), max_bytes=MAX_ROLLUP_BYTES).partition('\n')
+        if json.loads(head) != _rollup_header(history_path):
+            return None
+        data = json.loads(body)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(data, dict) or not isinstance(data.get('buckets'), list)
+            or not isinstance(data.get('attribution'), list) or not isinstance(data.get('sessions'), dict)):
+        return None
+    return data
+
+
+def maintain_rollups(state_path: Path, now: float, limit: int = 1) -> bool:
+    """Guard only: aggregate finished days. True while more remain to be built.
+
+    At most `limit` days per call, so a first run after an upgrade spreads the
+    parsing over several history ticks instead of stalling one sample.
+    """
+    from . import atomic
+    today = datetime.fromtimestamp(now).date()
+    raw = {path.name: path for path in _history_files(state_path, 0)}
+    for stale in state_path.glob('rollup-*.jsonl'):
+        if 'history-' + stale.name.removeprefix('rollup-') not in raw:
+            stale.unlink(missing_ok=True)   # its day was rotated away
+    built = 0
+    for path in raw.values():
+        if _file_date(path, 'history-') >= today:
+            continue
+        key = str(path)
+        try:
+            stamp = _source_stamp(path)
+        except OSError:
+            continue
+        if _ROLLUPS_VERIFIED.get(key) == stamp or key in _ROLLUPS_FAILED:
+            continue
+        try:
+            from .safe_read import read_text
+            head = read_text(rollup_path(path), max_bytes=MAX_ROLLUP_BYTES, tail=False).partition('\n')[0]
+            current = json.loads(head) == _rollup_header(path)
+        except (OSError, ValueError):
+            current = False
+        if not current:
+            if built >= limit:
+                return True
+            try:
+                data = build_rollup(path)
+                text = (json.dumps(_rollup_header(path), separators=(',', ':')) + '\n'
+                        + json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')))
+                atomic.write_text(rollup_path(path), text)
+            except (OSError, ValueError):
+                _ROLLUPS_FAILED.add(key)    # do not re-parse a bad day every minute
+                continue
+            built += 1
+        _ROLLUPS_VERIFIED[key] = stamp
+    return False
