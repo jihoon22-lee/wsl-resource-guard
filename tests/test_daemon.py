@@ -659,11 +659,72 @@ class SampleStateTests(unittest.TestCase):
                 held = run(1135.0 + index * 15, unreadable)
             self.assertEqual(held.severity, "warning")
             self.assertTrue(any("Windows 관측 재개 후" in line for line in held.pending_reasons))
+            # The query answers again but without the memory values: still not a recovery.
+            valueless = dict(good, memory={"total_bytes": None, "available_bytes": None,
+                                           "commit_used_bytes": None, "commit_limit_bytes": None})
+            for index in range(40, 80):
+                valueless["observed_at"] = 1135.0 + index * 15
+                held = run(1135.0 + index * 15, dict(valueless))
+            self.assertEqual(held.severity, "warning")
+            # Switching the limits off while nothing can be read releases the hold.
+            off = Settings(state_dir=directory, warning_host_available_gib=0, critical_host_available_gib=0)
+            with (patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0, timestamp=2400.0)),
+                  patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                  patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                  patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=unreadable)):
+                for stamp in range(2400, 2400 + 200, 15):
+                    with patch("wsl_resource_guard.daemon.read_system_metrics",
+                               return_value=metrics(8.0, timestamp=float(stamp))):
+                        released = sample(off, persist=False)[2]
+            self.assertFalse(any("Windows" in line for line in released.pending_reasons))
             readable = dict(good)
-            for index in range(40, 52):
+            for index in range(80, 92):
                 readable["observed_at"] = 1135.0 + index * 15
                 recovered = run(1135.0 + index * 15, dict(readable))
             self.assertEqual(recovered.severity, "normal")
+
+    def test_unreadable_host_reading_does_not_block_other_recoveries_or_keep_a_higher_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            def run(now, host, available=8.0):
+                with (patch("wsl_resource_guard.daemon.read_system_metrics",
+                            return_value=metrics(available, timestamp=now)),
+                      patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                      patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                      patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host)):
+                    return sample(settings)[2]
+            # One low Windows reading, then Windows stops answering, while WSL RAM is low.
+            low_once = self.host(1.5, observed=1000.0)
+            stuck = dict(low_once, status="timeout", error="응답 없음")
+            run(1000.0, low_once, available=3.0)
+            for index in range(1, 6):
+                result = run(1000.0 + index * 15, stuck, available=3.0)
+            self.assertEqual(result.severity, "warning")
+            self.assertTrue(any("가용 RAM 3.0 GiB" in reason for reason in result.reasons))
+            # WSL RAM recovers: the stale, never-sustained host reading must not hold it.
+            for index in range(6, 20):
+                result = run(1000.0 + index * 15, stuck, available=8.0)
+            self.assertEqual((result.severity, result.reasons), ("normal", []))
+            self.assertFalse(any("host_" in key for key in result.condition_since))
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            def run(now, host, available=8.0):
+                with (patch("wsl_resource_guard.daemon.read_system_metrics",
+                            return_value=metrics(available, timestamp=now)),
+                      patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                      patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                      patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host)):
+                    return sample(settings)[2]
+            # A sustained host warning goes stale; a WSL critical comes and goes.
+            for index in range(9):
+                run(1000.0 + index * 15, self.host(1.5, observed=1000.0 + (index // 4) * 60))
+            stale = dict(self.host(1.5, observed=1120.0), status="timeout", error="응답 없음")
+            run(1135.0, stale, available=1.0)
+            self.assertEqual(run(1150.0, stale, available=1.0).severity, "critical")
+            for index in range(1, 30):
+                result = run(1150.0 + index * 15, stale, available=8.0)
+            self.assertEqual(result.severity, "warning")          # the host reason's own level, not critical
 
     def test_state_from_the_previous_version_is_still_a_valid_previous_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

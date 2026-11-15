@@ -564,7 +564,7 @@ function renderOverview() {
     urgentDisks.length
       ? '<button class="button secondary" data-navigate="disks">Disk 상세 →</button>'
       : "",
-    warnings.some((r) => /RAM|압력|PSI/i.test(r))
+    warnings.some((r) => /RAM|압력|PSI/i.test(r) && !r.startsWith("Windows "))
       ? '<button class="button secondary" data-navigate="top">Top 보기 →</button>'
       : "",
   ]

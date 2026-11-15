@@ -506,48 +506,103 @@ class IncidentTests(unittest.TestCase):
         # With RAM readable and fine but commit unreadable, only RAM recovers.
         self.assertEqual(states['host_ram:host'], ('resolved', 2))
 
-    def test_stale_host_or_disk_incident_is_announced_once_not_reminded_forever(self):
+    def delivery_fixture(self, directory):
         from wsl_resource_guard.delivery import Delivery
+        root = Path(directory); shared = root / 'shared'; shared.mkdir()
+        settings = Settings(state_dir=str(root), secrets_path=root / 'secrets.json', windows_toast_enabled=False,
+                            discord_enabled=False, push_enabled=False, recovery_sustain_seconds=30)
+        settings.secrets_path.write_text(json.dumps(
+            {'gmail_to': 'one@example.com', 'gmail_user': 'fixture', 'gmail_app_password': 'fixture'}))
+        clock, sent = [1000], []
+        engine = Delivery(settings, shared, clock=lambda: clock[0])
+        def send(destination, row, notifier, origin):
+            sent.append((clock[0], row['state'], incident_message(row, '')[1]))
+            return NotificationResult('gmail', True, 'fixture')
+        def step(store, conditions, now, metric):
+            clock[0] = now
+            store = reconcile(store, conditions, self.snap, metric, settings, boot='b')
+            atomic_write(root / 'incidents.json', store)
+            engine.tick(send=send)
+            return store
+        return settings, sent, step
+
+    def test_unreadable_critical_value_is_reminded_at_the_slow_interval_with_its_age(self):
+        critical = dict(self.LOW, key='critical.host_ram', severity='critical')
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); shared = root / 'shared'; shared.mkdir()
-            settings = Settings(state_dir=str(root), secrets_path=root / 'secrets.json', windows_toast_enabled=False,
-                                discord_enabled=False, push_enabled=False, recovery_sustain_seconds=30)
-            settings.secrets_path.write_text(json.dumps(
-                {'gmail_to': 'one@example.com', 'gmail_user': 'fixture', 'gmail_app_password': 'fixture'}))
-            clock = [1000]
-            engine = Delivery(settings, shared, clock=lambda: clock[0])
-            sent = []
-            def send(destination, row, notifier, origin):
-                sent.append((clock[0], row['state'], incident_message(row, '')[1]))
-                return NotificationResult('gmail', True, 'fixture')
-            critical = dict(self.LOW, key='critical.host_ram', severity='critical')
-            store = reconcile({}, [critical], self.snap, self.host_metrics(1000, available_gib=0.8), settings, boot='b')
-            atomic_write(root / 'incidents.json', store); engine.tick(send=send)
+            settings, sent, step = self.delivery_fixture(directory)
+            store = step({}, [critical], 1000, self.host_metrics(1000, available_gib=0.8))
+            now = 1000
             for now in range(1015, 1000 + 8 * 3600, 15):      # Windows cannot be read for eight hours
-                clock[0] = now
                 stale = self.host_metrics(now, status='timeout', available_gib=0.8, observed=1000)
-                store = reconcile(store, [critical], self.snap, stale, settings, boot='b')
-                atomic_write(root / 'incidents.json', store); engine.tick(send=send)
+                store = step(store, [critical], now, stale)
             self.assertTrue(store['incidents'][0]['stale'])
-            self.assertEqual(len(sent), 1)                                   # was 32 reminders before
-            later = incident_message(store['incidents'][0], '')[1]
-            self.assertIn('Windows 값 확인 시각', later)
-            self.assertIn('조회하지 못했습니다', later)
-            # Readable again and still low: reminders resume.
-            for now in range(clock[0] + 15, clock[0] + 1900, 15):
-                clock[0] = now
-                store = reconcile(store, [critical], self.snap, self.host_metrics(now, available_gib=0.8), settings, boot='b')
-                atomic_write(root / 'incidents.json', store); engine.tick(send=send)
-            self.assertGreaterEqual(len(sent), 2)
+            # Not every 15 minutes (32 reminders), but still once per warning interval (6 h).
+            self.assertEqual([at for at, _, _ in sent], [1000, 1000 + settings.reminder_cooldown_seconds])
+            self.assertIn('Windows 값 확인 시각', sent[-1][2])
+            self.assertIn('조회하지 못했습니다', sent[-1][2])
+            # Readable again and still low: reminded at once, then at the critical interval.
+            before = len(sent)
+            for later in range(now + 15, now + 1900, 15):
+                store = step(store, [critical], later, self.host_metrics(later, available_gib=0.8))
+            times = [at for at, _, _ in sent[before:]]
+            self.assertEqual(times, [now + 15, now + 15 + settings.critical_reminder_seconds,
+                                     now + 15 + 2 * settings.critical_reminder_seconds])
             self.assertNotIn('Windows 값 확인 시각', sent[-1][2])
 
+    def test_unplugged_critical_drive_is_reminded_at_the_slow_interval(self):
+        critical = dict(DISK, key='critical.disk.E:', severity='critical')
+        with tempfile.TemporaryDirectory() as directory:
+            settings, sent, step = self.delivery_fixture(directory)
+            store = step({}, [critical], 1000, disk_metrics(1000, 5.0))
+            self.assertFalse(store['incidents'][0]['stale'])
+            for now in range(1015, 1000 + 24 * 3600, 15):
+                store = step(store, [critical], now, disk_metrics(now, 5.0, status='unmounted'))
+            self.assertTrue(store['incidents'][0]['stale'])
+            self.assertEqual(len(sent), 4)                    # first alert, then every 6 h; was 96 at 15 min
+            self.assertEqual({state for _, state, _ in sent}, {'active'})
+
+    def test_host_quiet_periods_count_observations_not_re_reads(self):
+        slow = Settings(recovery_sustain_seconds=30, host_memory_refresh_seconds=3600)
+        out = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000), slow, boot='b')
+        seen = {}
+        # Sampled every 15 s without a gap; Windows itself is read once an hour (1060, 4660, 8260).
+        for now in range(1060, 8260 + 60, 15):
+            observed = 1060 + ((now - 1060) // 3600) * 3600
+            out = reconcile(out, [], self.snap, self.host_metrics(now, available_gib=8, observed=observed), slow, boot='b')
+            row = out['incidents'][0]
+            seen.setdefault((row['state'], bool(row.get('recovery_pending')), row['revision']), now)
+        # One good reading re-read for an hour stays "resolving"; the second reading resolves it;
+        # the recovery is confirmed only by the third, not by half an hour of re-reading.
+        self.assertEqual(seen, {('resolving', False, 1): 1060, ('resolved', True, 1): 4660, ('resolved', False, 2): 8260})
+
+    def test_message_survives_an_absurd_timestamp(self):
+        row = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000, status='timeout', observed=1000),
+                        self.settings, boot='b')['incidents'][0]
+        row['evidence']['host']['observed_at'] = 2 ** 62
+        row['observed_at'] = 2 ** 62
+        text = incident_message(row, '')[1]
+        self.assertIn('관측 시각: 확인 불가', text)
+        self.assertNotIn('Windows 값 확인 시각', text)
+
     def test_host_limits_switched_off_close_the_incident_without_a_recovery_claim(self):
-        out = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
-        off = Settings(recovery_sustain_seconds=30, warning_host_available_gib=0, critical_host_available_gib=0)
-        for now in range(1015, 1015 + RECURRENCE_MERGE_SECONDS + 300, 15):
-            out = reconcile(out, [], self.snap, self.host_metrics(now), off, boot='boot-a')
-        row = out['incidents'][0]
-        self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')), ('resolved', 1, True))
+        cases = (('both off', dict(warning_host_available_gib=0, critical_host_available_gib=0), self.LOW),
+                 # Only the warning level is off: a warning-level incident is no longer judged.
+                 ('warning off', dict(warning_host_available_gib=0), self.LOW))
+        for name, changes, condition in cases:
+            with self.subTest(case=name):
+                out = reconcile({}, [condition], self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
+                off = Settings(recovery_sustain_seconds=30, **changes)
+                for now in range(1015, 1015 + RECURRENCE_MERGE_SECONDS + 300, 15):
+                    out = reconcile(out, [], self.snap, self.host_metrics(now), off, boot='boot-a')
+                row = out['incidents'][0]
+                self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')),
+                                 ('resolved', 1, True))
+        # A critical incident continues as a warning when only the critical level is switched off.
+        critical = dict(self.LOW, key='critical.host_ram', severity='critical')
+        out = reconcile({}, [critical], self.snap, self.host_metrics(1000, available_gib=0.8), self.settings, boot='b')
+        only_warning = Settings(recovery_sustain_seconds=30, critical_host_available_gib=0)
+        out = reconcile(out, [self.LOW], self.snap, self.host_metrics(1015, available_gib=0.8), only_warning, boot='b')
+        self.assertEqual([(r['state'], r['severity'], r['revision']) for r in out['incidents']], [('active', 'warning', 1)])
 
     def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')

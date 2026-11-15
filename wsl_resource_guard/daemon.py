@@ -69,6 +69,8 @@ class AlertCondition:
     # Sustain is then measured between observations: one reading that is merely
     # re-read on later samples never becomes "sustained".
     observed_at: float | None = None
+    # False while the source cannot be read now and the value is the last one seen.
+    current: bool = True
 
 
 def oom_kill_victims(since: float) -> list[str]:
@@ -108,11 +110,13 @@ def _host_conditions(metrics: SystemMetrics, settings: Settings, observations: l
     if not current:
         observations.append(f"Windows 호스트 조회 불가: {host.get('error') or '사유 미확인'}")
     memory = host.get("memory")
-    if type(host.get("observed_at")) not in (int, float) or not isinstance(memory, dict):
+    number = lambda value: type(value) in (int, float) and value == value and 0 <= value < 2**63
+    observed = host.get("observed_at")
+    # A time from the future or an absurd one is not an observation.
+    if not number(observed) or observed > metrics.timestamp + 60 or not isinstance(memory, dict):
         return []
     stale = "" if current else " (마지막 확인값 · 현재 조회 불가)"
-    number = lambda value: type(value) in (int, float) and value == value and 0 <= value < 2**63
-    observed = float(host["observed_at"])
+    observed = float(observed)
     sustain = settings.host_alert_sustain_seconds
     conditions: list[AlertCondition] = []
     available, total = memory.get("available_bytes"), memory.get("total_bytes")
@@ -123,7 +127,7 @@ def _host_conditions(metrics: SystemMetrics, settings: Settings, observations: l
         for level, limit in (("critical", settings.critical_host_available_gib),
                              ("warning", settings.warning_host_available_gib)):
             if limit > 0 and gib <= limit:
-                conditions.append(AlertCondition(f"{level}.host_ram", level, reason, sustain, observed))
+                conditions.append(AlertCondition(f"{level}.host_ram", level, reason, sustain, observed, current))
     used, limit_bytes = memory.get("commit_used_bytes"), memory.get("commit_limit_bytes")
     if number(used) and number(limit_bytes) and limit_bytes > 0:
         percent = used / limit_bytes * 100
@@ -131,7 +135,7 @@ def _host_conditions(metrics: SystemMetrics, settings: Settings, observations: l
         for level, limit in (("critical", settings.critical_host_commit_percent),
                              ("warning", settings.warning_host_commit_percent)):
             if limit > 0 and percent >= limit:
-                conditions.append(AlertCondition(f"{level}.host_commit", level, reason, sustain, observed))
+                conditions.append(AlertCondition(f"{level}.host_commit", level, reason, sustain, observed, current))
     return conditions
 
 
@@ -302,6 +306,11 @@ def evaluate(
         elapsed = max(0.0, reference - started_at)
         if elapsed >= condition.sustain_seconds:
             sustained.append(condition)
+            continue
+        if not condition.current:
+            # An old reading that cannot be refreshed makes no progress towards
+            # an alert. Left "pending", it would hold every other recovery.
+            del current_since[condition.key]
             continue
         remaining = max(1, math.ceil(condition.sustain_seconds - elapsed))
         wait = (f"{condition.severity}까지 {remaining}초" if condition.observed_at is None
@@ -823,14 +832,23 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         evaluation.pending_reasons.append('디스크 관측 재개 후 정상 확인 필요')
         normal_since = 0.0
     # Same rule for Windows itself: an alert whose value can no longer be read is
-    # held, not cleared by the absence of a fresh condition.
-    host_unobserved = (isinstance(metrics.host, dict) and bool(metrics.host.get("schema"))
-                       and metrics.host.get("status") != "ok")
-    missing_host_reasons = [reason for reason in recovery_from_reasons
-                            if reason.startswith("Windows ") and host_unobserved]
+    # held, not cleared by the absence of a fresh condition. "Read" is judged per
+    # value, as in the incident store, and never for a level that is switched off.
+    from .incidents import _host_limits_off, _unobserved
+    reason_severity = state.get("reason_severity") if isinstance(state.get("reason_severity"), dict) else {}
+    missing_host_reasons = []
+    for reason in recovery_from_reasons:
+        key = ("host_ram:host" if reason.startswith("Windows 가용 RAM")
+               else "host_commit:host" if reason.startswith("Windows 커밋") else "")
+        level = reason_severity.get(reason, recovery_from_severity)
+        if key and not _host_limits_off(key, settings, level) and _unobserved({"key": key}, metrics):
+            missing_host_reasons.append(reason)
     if missing_host_reasons and recovery_from_severity != 'normal':
-        if recovery_from_severity == 'critical' or evaluation.severity == 'normal':
-            evaluation.severity = recovery_from_severity
+        # Held at the level these reasons had, not at whatever else was active then.
+        held = "critical" if any(reason_severity.get(r, recovery_from_severity) == "critical"
+                                 for r in missing_host_reasons) else "warning"
+        if held == 'critical' or evaluation.severity == 'normal':
+            evaluation.severity = held
         evaluation.reasons.extend(r for r in missing_host_reasons if r not in evaluation.reasons)
         evaluation.pending_reasons.append('Windows 관측 재개 후 정상 확인 필요')
         normal_since = 0.0
@@ -968,6 +986,9 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         "notified_severity": old_notified_severity,
         "notified_reasons": notified_reasons,
         "reasons": evaluation.reasons,
+        # Level of each reason, so a held reason keeps its own severity later.
+        "reason_severity": {**{r: s for r, s in reason_severity.items() if r in evaluation.reasons},
+                            **{c["reason"]: c["severity"] for c in evaluation.conditions}},
         "observations": evaluation.observations,
         "pending_reasons": evaluation.pending_reasons,
         "condition_since": evaluation.condition_since,

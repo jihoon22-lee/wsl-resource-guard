@@ -262,12 +262,32 @@ def _plain_number(value) -> bool:
     return type(value) in (int, float) and value == value and 0 <= value < 2**63
 
 
-def _host_limits_off(key: str, settings) -> bool:
+def _host_limits_off(key: str, settings, severity: str = '') -> bool:
+    """True when nothing judges this host incident any more.
+
+    A warning-level incident ends with its warning limit; a critical one only
+    when the warning limit, which would continue it, is off as well.
+    """
     if key.startswith('host_ram'):
-        return settings.warning_host_available_gib <= 0 and settings.critical_host_available_gib <= 0
-    if key.startswith('host_commit'):
-        return settings.warning_host_commit_percent <= 0 and settings.critical_host_commit_percent <= 0
-    return False
+        warning, critical = settings.warning_host_available_gib, settings.critical_host_available_gib
+    elif key.startswith('host_commit'):
+        warning, critical = settings.warning_host_commit_percent, settings.critical_host_commit_percent
+    else:
+        return False
+    return warning <= 0 and (critical <= 0 or severity != 'critical')
+
+
+def _observation_clock(row: dict, metrics, now: float) -> float:
+    """Time base for quiet periods: for host values, when Windows was last read.
+
+    Re-reading one good value for half an hour is one observation, not thirty
+    minutes of quiet.
+    """
+    if row['key'].startswith('host_'):
+        observed = (metrics.host if isinstance(getattr(metrics, 'host', None), dict) else {}).get('observed_at')
+        if _plain_number(observed) and observed <= now:
+            return float(observed)
+    return now
 
 
 def _host_memory(metrics) -> dict:
@@ -432,14 +452,16 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         if key in seen or row is None or row['state'] not in ('active', 'resolving'):
             continue
         seen.add(key)
-        row.update(state='active', normal_since=None, observed_at=now)
+        row.update(state='active', normal_since=None, observed_at=now, stale=_unobserved(row, metrics))
     for row in rows:
+        unjudged = (_unmonitored_disk(row, metrics, settings)
+                    or _host_limits_off(row['key'], settings, row.get('severity', '')))
         if row['state'] == 'resolved' and row.get('recovery_pending'):
             checked = row.get('recovery_checked_at')
             continuous = (type(checked) in (int, float)
                           and 0 <= now - checked <= max(1, 2 * settings.interval_seconds))
             row['recovery_checked_at'] = now
-            if _unmonitored_disk(row, metrics, settings) or _host_limits_off(row['key'], settings):
+            if unjudged:
                 _drop_recovery(row)  # Nothing will ever observe the quiet window.
                 row['transitions'] = (row.get('transitions', []) + [
                     {'at': now, 'state': 'resolved', 'unmonitored': True}])[-16:]
@@ -447,18 +469,19 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             if _unobserved(row, metrics) or row['key'] in pending_keys:
                 row.update(recovery_since=None, recovery_paused=True)
                 continue
+            clock = _observation_clock(row, metrics, now)
             since = row.get('recovery_since')
-            if not continuous or type(since) not in (int, float) or not 0 <= since <= now:
-                since = now  # Includes old pending records and clock rollback.
+            if not continuous or type(since) not in (int, float) or not 0 <= since <= clock:
+                since = clock  # Includes old pending records and clock rollback.
             row.update(recovery_since=since, recovery_paused=False)
-            if now - since >= RECURRENCE_MERGE_SECONDS:
+            if clock - since >= RECURRENCE_MERGE_SECONDS:
                 row.pop('recovery_pending', None)
                 row.update(revision=row['revision'] + 1, recovery_confirmed_at=now)
             continue
         if row['key'] in seen or row['state'] == 'resolved':
             continue
-        if _unmonitored_disk(row, metrics, settings) or _host_limits_off(row['key'], settings):
-            # Removed from disk_drives, or its limits switched off: nothing
+        if unjudged:
+            # Removed from disk_drives, or its limit switched off: nothing
             # judges it any more, so it can neither stay open forever nor be
             # announced as recovered.
             row.update(state='resolved', resolved_at=now, recovery_unconfirmed=True, normal_since=None)
@@ -469,12 +492,13 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
         if gap or _unobserved(row, metrics):
             row.update(state='unknown', normal_since=None, observed_at=now)
             continue
+        clock = _observation_clock(row, metrics, now)
         since = row.get('normal_since')
-        since = now if since is None or since > now else since
+        since = clock if type(since) not in (int, float) or since > clock else since
         row.update(state='resolving', normal_since=since, observed_at=now)
-        if now - since >= settings.recovery_sustain_seconds:
+        if clock - since >= settings.recovery_sustain_seconds:
             row.update(state='resolved', resolved_at=now, recovery_pending=True,
-                       recovery_since=now, recovery_checked_at=now, recovery_paused=False)
+                       recovery_since=clock, recovery_checked_at=now, recovery_paused=False)
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'resolved'}])[-16:]
     cutoff = now - settings.retention_days * 86400
     rows = [r for r in rows if r['state'] != 'resolved' or r.get('resolved_at', now) >= cutoff]
@@ -486,6 +510,16 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
     return {'version': 1, 'updated_at': now, 'incidents': rows,
             'truncated': len(rows) < total, 'retention_days': settings.retention_days,
             'clock_adjusted': now < previous.get('updated_at', 0)}
+
+
+def _time_text(stamp) -> str:
+    """Local ISO time, or '' for a value that is not a usable timestamp."""
+    if not _plain_number(stamp):
+        return ''
+    try:
+        return datetime.fromtimestamp(stamp).astimezone().isoformat(timespec='seconds')
+    except (OverflowError, OSError, ValueError):
+        return ''
 
 
 def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
@@ -518,13 +552,12 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
     else:
         body += '\n' + row.get('guidance', '')
     observed = row.get('recovery_confirmed_at', row['observed_at']) if row['state'] == 'resolved' else row['observed_at']
-    body += '\n관측 시각: ' + datetime.fromtimestamp(observed).astimezone().isoformat(timespec='seconds')
+    body += '\n관측 시각: ' + (_time_text(observed) or '확인 불가')
     host_evidence = (row.get('evidence') or {}).get('host') if isinstance(row.get('evidence'), dict) else None
-    if (row['state'] != 'resolved' and isinstance(host_evidence, dict) and not host_evidence.get('current')
-            and _plain_number(host_evidence.get('observed_at'))):
-        body += ('\nWindows 값 확인 시각: '
-                 + datetime.fromtimestamp(host_evidence['observed_at']).astimezone().isoformat(timespec='seconds')
-                 + ' (이후 Windows를 조회하지 못했습니다)')
+    if row['state'] != 'resolved' and isinstance(host_evidence, dict) and not host_evidence.get('current'):
+        read_at = _time_text(host_evidence.get('observed_at'))
+        if read_at:
+            body += '\nWindows 값 확인 시각: ' + read_at + ' (이후 Windows를 조회하지 못했습니다)'
     body += '\nTailscale 연결 후 원인과 영향을 확인하세요.'
     plain = body + ('\n' + url if url else '\n웹 주소 미설정: Resource Guard 웹의 경보 화면에서 확인하세요.')
     link = f'<p><a href="{html.escape(url, quote=True)}">원인과 영향 확인</a></p>' if url else ''

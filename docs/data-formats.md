@@ -21,7 +21,7 @@
 | 필드 | 내용 |
 |---|---|
 | `version`, `updated_at`, `writer_pid`, `writer_start_ticks` | 형식 버전, 표본 시각, 기록한 프로세스의 신원 |
-| `severity`, `reasons`, `observations`, `pending_reasons` | 현재 판정과 그 근거, 관찰 항목, 판정 대기 사유 |
+| `severity`, `reasons`, `reason_severity`, `observations`, `pending_reasons` | 현재 판정과 그 근거, 근거별 위험도, 관찰 항목, 판정 대기 사유 |
 | `condition_since`, `normal_since`, `abnormal_since` | 조건별 지속 시작 시각, 정상·비정상 구간의 시작 |
 | `psi_alert`, `psi_normal_since` | PSI 경보의 독립 유지 상태 |
 | `metrics` | 아래 "자원 값" |
@@ -76,7 +76,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 | `recovery_pending`, `recovery_since`, `recovery_checked_at`, `recovery_paused`, `recovery_confirmed_at`, `recovery_unconfirmed` | 해소 뒤 회복 확정까지의 관찰 상태. `recovery_unconfirmed`는 관측으로 확정하지 못해 회복을 알리지 않기로 한 행이며 화면에 "감시 종료 · 회복 미확인"으로 표시합니다 |
 | `reason`, `initial_reason`, `guidance`, `evidence`, `measurement`, `initial_value` | 표시 문구와 관측 근거 |
 | `targets` | 관련 세션·도구의 요약(신원, 종류, 프로젝트, RSS, 종료 가능 여부) |
-| `transitions`, `recurrences`, `stale` | 최근 상태 전이 16개, 재발 횟수, 이 사건의 값을 지금 읽을 수 없는지 여부(참이면 정기 재알림을 보내지 않습니다) |
+| `transitions`, `recurrences`, `stale` | 최근 상태 전이 16개, 재발 횟수, 이 사건의 값을 지금 읽을 수 없는지 여부(참이면 Critical도 Warning 재알림 간격을 씁니다) |
 
 ### `delivery.json` — 사건별 전달 기록
 
@@ -85,7 +85,7 @@ Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일�
 | 필드 | 내용 |
 |---|---|
 | `version`, `updated_at` | 형식 버전, 마지막 기록 |
-| `events` | 사건 `id`별 항목: `revision`, `state`, `next_reminder_at`, `recovery_keys`, `destinations` |
+| `events` | 사건 `id`별 항목: `revision`, `state`, `alerted_at`, `next_reminder_at`, `recovery_keys`, `destinations` |
 
 수신처 항목(`destinations`의 값)의 필드:
 
