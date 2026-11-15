@@ -19,6 +19,8 @@ MAX_INCIDENTS = 256
 RECURRENCE_MERGE_SECONDS = 1800
 IDENTIFIER = re.compile(r'^[0-9a-f]{32}$')
 HOST_SCOPE = 'host'
+# Below this share of a drive's used space the WSL virtual disk is not called its cause.
+VHD_SHARE_MINIMUM = 0.3
 _LEGACY_DISK_KEY = re.compile(r'^(disk\.[A-Za-z]:):(.*)$')
 
 
@@ -136,10 +138,14 @@ def _unobserved(row: dict, metrics) -> bool:
     return False
 
 
-def _unmonitored_disk(row: dict, metrics) -> bool:
+def _unmonitored_disk(row: dict, metrics, settings) -> bool:
     """True when disks were collected and this incident's drive is not among them."""
     key = row['key']
     if not key.startswith('disk.') or not metrics.disks:
+        return False
+    if getattr(settings, 'load_warnings', None):
+        # The file was not read cleanly, so the drive list may be a fallback
+        # rather than the owner's choice. Leave the incident as it is.
         return False
     drive = key.split(':', 1)[0].split('.', 1)[1].rstrip(':')
     return not any(str(d.get('id', '')).rstrip(':') == drive for d in metrics.disks if isinstance(d, dict))
@@ -158,10 +164,16 @@ def _vhd_share(disk: dict | None, metrics) -> dict | None:
     number = lambda value: type(value) in (int, float) and value > 0
     if not disk or vhd.get('host_drive') != disk.get('id') or not number(size) or not number(drive_used):
         return None
+    # Say it only when the numbers are current and consistent, and the virtual
+    # disk really is a large part of what fills the drive.
+    if disk.get('status') != 'ok' or wsl.get('status') != 'ok' or vhd.get('status') != 'ok':
+        return None
+    if size > drive_used or size < drive_used * VHD_SHARE_MINIMUM:
+        return None
     unused = size - wsl['used_bytes'] if number(wsl.get('used_bytes')) else 0
     # Same rule as the disks view: only a large, clear gap is worth a clean-up.
     reclaim = round(unused / 2**30, 1) if unused > 5 * 2**30 and unused > size * 0.2 else None
-    return {'file_gib': round(size / 2**30, 1), 'share_percent': min(100, round(size / drive_used * 100)),
+    return {'file_gib': round(size / 2**30, 1), 'share_percent': round(size / drive_used * 100),
             'reclaim_gib': reclaim}
 
 
@@ -172,7 +184,7 @@ def _disk_guidance(vhd: dict | None) -> str:
     if vhd['reclaim_gib']:
         return (text + f" 그중 약 {vhd['reclaim_gib']:.0f} GiB는 WSL 안에서 더 이상 쓰지 않는 공간이라 정리하면 돌려받을 수 있습니다."
                 " 저장 공간 화면의 'VHDX 정리 방법'을 확인하세요.")
-    return text + ' WSL 안의 사용량을 줄여야 이 드라이브의 여유가 늘어납니다.'
+    return text + ' WSL 안의 사용량을 줄이면 이 드라이브의 여유가 늘어납니다.'
 
 
 def _measurement(condition, snapshot, metrics, settings):
@@ -182,9 +194,15 @@ def _measurement(condition, snapshot, metrics, settings):
         percent = (disk or {}).get('available_percent')
         if type(percent) not in (int, float):
             return {}
-        warning, critical, _, _ = disk_limits(settings, disk['id'])
-        return {'value': round(percent, 1), 'threshold': float(critical if condition['severity'] == 'critical' else warning),
-                'unit': '%', 'label': '디스크 여유 · 기준 미만'}
+        warning, critical, warning_gib, critical_gib = disk_limits(settings, disk['id'])
+        level = condition['severity'] == 'critical'
+        floor = critical_gib if level else warning_gib
+        label = '디스크 여유 · 기준 미만'
+        if floor > 0:
+            label += f' (여유 {floor:g} GiB 미만일 때만 경보)'
+        if disk.get('status') != 'ok':
+            label += ' · 마지막 확인값'
+        return {'value': round(percent, 1), 'threshold': float(critical if level else warning), 'unit': '%', 'label': label}
     if key.endswith('mcp_total'):
         return {'value': round(snapshot.mcp_rss_kib / 1048576, 2), 'threshold': settings.mcp_warning_rss_gib, 'unit': 'GiB', 'label': 'MCP RSS 합계'}
     if '.session.' in key:
@@ -253,7 +271,9 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             row['transitions'] = (row.get('transitions', []) + [{'at': now, 'state': 'active',
                                     'severity': condition['severity']}])[-16:]
         measurement = _measurement(condition, snapshot, metrics, settings)
-        if measurement and 'initial_value' not in row:
+        # Only a row opened now has a first observation; an older incident that
+        # gains a measurement later must not present today's value as its start.
+        if measurement and row['state'] == 'new':
             row['initial_value'] = measurement.get('value')
         if measurement.get('value') is not None and row.get('initial_value') is not None:
             measurement['change_since_open'] = round(measurement['value'] - row['initial_value'], 2)
@@ -285,6 +305,11 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             continuous = (type(checked) in (int, float)
                           and 0 <= now - checked <= max(1, 2 * settings.interval_seconds))
             row['recovery_checked_at'] = now
+            if _unmonitored_disk(row, metrics, settings):
+                _drop_recovery(row)  # Nothing will ever observe the quiet window.
+                row['transitions'] = (row.get('transitions', []) + [
+                    {'at': now, 'state': 'resolved', 'unmonitored': True}])[-16:]
+                continue
             if _unobserved(row, metrics) or row['key'] in pending_keys:
                 row.update(recovery_since=None, recovery_paused=True)
                 continue
@@ -298,7 +323,7 @@ def reconcile(previous: dict, conditions: list[dict], snapshot, metrics, setting
             continue
         if row['key'] in seen or row['state'] == 'resolved':
             continue
-        if _unmonitored_disk(row, metrics):
+        if _unmonitored_disk(row, metrics, settings):
             # Removed from disk_drives: nothing observes it any more, so it can
             # neither stay open forever nor be announced as recovered.
             row.update(state='resolved', resolved_at=now, recovery_unconfirmed=True, normal_since=None)
@@ -336,16 +361,21 @@ def incident_message(row: dict, origin: str) -> tuple[str, str, str]:
                     and not parsed.password and not parsed.query and not parsed.fragment
                     and parsed.path in ('', '/'))
     url = origin.rstrip('/') + '/#incident?id=' + row['id'] if valid_origin else ''
-    label = '회복 확인' if row['state'] == 'resolved' else '자원 압박' if row.get('priority') == 'pressure' else '점유 상태 확인'
+    # Closed without an observed recovery: never worded as recovered.
+    unconfirmed = row['state'] == 'resolved' and bool(row.get('recovery_unconfirmed'))
+    closed = '감시 종료' if unconfirmed else '회복 확인' if row['state'] == 'resolved' else ''
+    label = closed or ('자원 압박' if row.get('priority') == 'pressure' else '점유 상태 확인')
     names = list(dict.fromkeys(t.get('provider', '') for t in row.get('targets', [])))
     if str(row.get('key', '')).startswith('disk.'):
         # A drive is not an agent session: say what it is and which one.
-        label = '회복 확인' if row['state'] == 'resolved' else '디스크 여유 부족'
+        label = closed or '디스크 여유 부족'
         names = [row['key'].split(':', 1)[0].split('.', 1)[1] + ':']
     title = f"{label} · {' / '.join(names) or 'WSL'}"
     shared = any(t.get('kind') == 'shared_runtime' for t in row.get('targets', []))
     body = row['reason'] + ('\n여러 작업이 연결된 공용 실행기가 포함됩니다.' if shared else '')
-    if row['state'] == 'resolved':
+    if unconfirmed:
+        body = '회복을 관측으로 확인하지 못한 채 이 경보의 감시를 끝냈습니다.\n이전 원인: ' + body
+    elif row['state'] == 'resolved':
         body = '이 경보의 조건이 회복 기준 시간 동안 해소됐습니다.\n이전 원인: ' + body
     else:
         body += '\n' + row.get('guidance', '')

@@ -324,6 +324,16 @@ class DiskAlertTests(unittest.TestCase):
         self.assertEqual(severity(floors, row('E:', 1000, 49.9)).severity, 'warning')
         self.assertEqual(severity(floors, row('E:', 1000, 19.9)).severity, 'critical')
         self.assertEqual(severity(floors, row('E:', 1000, 50)).severity, 'normal')   # exactly the floor is not below it
+        # Only a warning floor: critical is held back by it too, never reported where warning is not.
+        warning_only = Settings(warning_disk_free_gib=50)
+        self.assertEqual(severity(warning_only, row('E:', 1000, 93)).severity, 'normal')
+        self.assertEqual(severity(warning_only, row('E:', 1000, 49)).severity, 'critical')   # under 10% and under 50 GiB
+        self.assertEqual(severity(warning_only, row('E:', 300, 49)).severity, 'warning')    # 16%: warning only
+        self.assertEqual(disks.disk_limits(warning_only, 'E:'), (20, 10, 50, 50))
+        # Only a critical floor: warning keeps the plain percent rule.
+        critical_only = Settings(critical_disk_free_gib=20)
+        self.assertEqual(severity(critical_only, row('E:', 1000, 93)).severity, 'warning')
+        self.assertEqual(severity(critical_only, row('E:', 1000, 19)).severity, 'critical')
         # A small drive never reaches the floor before the percent limit matters.
         self.assertEqual(severity(floors, row('C:', 100, 15)).severity, 'warning')
         # Per-drive values replace the global ones for that drive only.
@@ -355,6 +365,11 @@ class DiskAlertTests(unittest.TestCase):
         floored = disks.disk_insights([row], history, 20, 10, limits={'E:': (20, 10, 50, 20)})['E:']
         self.assertAlmostEqual(floored['days_to_warning'], 43, delta=1)   # 93 -> 50 GiB at 1 GiB/day
         self.assertAlmostEqual(floored['days_to_critical'], 73, delta=1)
+        # With only a warning floor the drive is normal now and both levels lie at that floor.
+        resolved = disks.disk_limits(Settings(warning_disk_free_gib=50), 'E:')
+        only = disks.disk_insights([row], history, 20, 10, limits={'E:': resolved})['E:']
+        self.assertAlmostEqual(only['days_to_warning'], 43, delta=1)
+        self.assertAlmostEqual(only['days_to_critical'], 43, delta=1)
 
     def test_wsl_internal_usage_is_display_only(self):
         m=metrics(8);m.disks=[disk(1,'wsl','wsl')]

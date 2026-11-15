@@ -349,6 +349,30 @@ class IncidentTests(unittest.TestCase):
         tight = row(file_gib=310)
         self.assertIsNone(tight['evidence']['vhd']['reclaim_gib'])
         self.assertNotIn('정리하면', tight['guidance'])
+        # A small or impossible share is not presented as the cause.
+        for kwargs in (dict(file_gib=30, wsl_used_gib=20), dict(file_gib=2, wsl_used_gib=1),
+                       dict(file_gib=900)):          # larger than everything stored on the drive
+            unrelated = row(**kwargs)
+            self.assertNotIn('vhd', unrelated['evidence'], kwargs)
+            self.assertNotIn('가상 디스크', unrelated['guidance'])
+        # Numbers that are not current are not combined into a claim either.
+        m = metrics(1000); m.disks = disks(); m.disks[0]['status'] = 'error'
+        stale = reconcile({}, [DISK], self.snap, m, self.settings, boot='boot-a')['incidents'][0]
+        self.assertNotIn('vhd', stale['evidence'])
+        self.assertIn('마지막 확인값', stale['measurement']['label'])
+        # A floor that decides the alert is named with the percent limit.
+        floored = Settings(recovery_sustain_seconds=30, warning_disk_free_gib=100)
+        m = metrics(1000); m.disks = disks()
+        self.assertIn('100 GiB 미만일 때만',
+                      reconcile({}, [DISK], self.snap, m, floored, boot='boot-a')['incidents'][0]['measurement']['label'])
+        # An incident opened before measurements existed does not invent a starting value.
+        old = {'version': 1, 'updated_at': 990, 'incidents': [
+            {'id': 'a' * 32, 'key': 'disk.E::host', 'state': 'active', 'severity': 'warning', 'revision': 1,
+             'opened_at': 500, 'observed_at': 990, 'reason': 'E:', 'transitions': []}]}
+        m = metrics(1000); m.disks = disks()
+        kept = reconcile(old, [DISK], self.snap, m, self.settings, boot='boot-a')['incidents'][0]
+        self.assertNotIn('initial_value', kept)
+        self.assertNotIn('change_since_open', kept['measurement'])
         # The VHDX lives elsewhere or its size is unknown: no claim about this drive.
         for other in (row(host='C:'), row(file_gib=0)):
             self.assertNotIn('vhd', other['evidence'])
@@ -367,6 +391,23 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')), ('resolved', 1, True))
         self.assertNotIn('recovery_pending', row)
         self.assertTrue(row['transitions'][-1]['unmonitored'])
+        title, plain, _ = incident_message(row, '')
+        self.assertTrue(title.startswith('감시 종료'))
+        self.assertNotIn('해소됐습니다', plain)
+        # A recovery that was still being confirmed is withdrawn too, not paused forever.
+        pending = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
+        for now in range(1015, 1100, 15):
+            pending = reconcile(pending, [], self.snap, disk_metrics(now, 50.0), self.settings, boot='boot-a')
+        self.assertTrue(pending['incidents'][0]['recovery_pending'])
+        gone = disk_metrics(1115); gone.disks = [{'id': 'wsl', 'kind': 'wsl', 'status': 'ok'}]
+        closed = reconcile(pending, [], self.snap, gone, self.settings, boot='boot-a')['incidents'][0]
+        self.assertEqual((closed['state'], closed['revision'], closed.get('recovery_unconfirmed')), ('resolved', 1, True))
+        self.assertNotIn('recovery_pending', closed)
+        # Settings that were not read cleanly may list fallback drives: nothing closes.
+        broken = Settings(recovery_sustain_seconds=30)
+        broken.load_warnings.append('disk_drives: 값의 형식 또는 범위가 올바르지 않습니다.')
+        out = reconcile({}, [DISK], self.snap, disk_metrics(1000), broken, boot='boot-a')
+        self.assertEqual(reconcile(out, [], self.snap, other, broken, boot='boot-a')['incidents'][0]['state'], 'unknown')
         # An empty disk list is a failed collection, not a configuration change.
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')
         empty = disk_metrics(1015); empty.disks = []

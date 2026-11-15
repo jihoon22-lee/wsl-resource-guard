@@ -71,10 +71,13 @@ def mount_table(path: Path = Path('/proc/self/mountinfo')) -> dict[str, tuple[st
 def disk_limits(settings, drive: str) -> tuple[float, float, float, float]:
     """(warning %, critical %, warning GiB floor, critical GiB floor) for one drive."""
     row = (getattr(settings, 'disk_thresholds', None) or {}).get(str(drive).rstrip(':').upper(), {})
+    warning_gib = row.get('warning_free_gib', settings.warning_disk_free_gib)
+    critical_gib = row.get('critical_free_gib', settings.critical_disk_free_gib)
+    # Critical is never reported where Warning would not be: with only a
+    # warning floor set, the critical level is held back by the same floor.
     return (row.get('warning_free_percent', settings.warning_disk_free_percent),
             row.get('critical_free_percent', settings.critical_disk_free_percent),
-            row.get('warning_free_gib', settings.warning_disk_free_gib),
-            row.get('critical_free_gib', settings.critical_disk_free_gib))
+            warning_gib, critical_gib if critical_gib > 0 else warning_gib)
 
 
 def alert_floor_bytes(total: float, percent: float, gib: float = 0) -> float:

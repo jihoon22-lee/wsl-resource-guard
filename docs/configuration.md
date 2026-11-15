@@ -88,8 +88,9 @@ heartbeat는 설정한 발송 분을 놓쳐도 알림 worker가 가장 최근 �
 | `weekly_report_weekday` | `0` | 0–6 | 주간 리포트 요일 (0=월 … 6=일) |
 | `weekly_report_hour` | `9` | 0–23 | 주간 리포트 발송 시각 (시) |
 
-디스크 경보는 여유 비율이 기준 미만일 때 발생합니다. 용량이 큰 드라이브는 비율만으로는 너무 일찍 경보가 나므로, 절대 용량 하한(`*_disk_free_gib`)을 설정하면 여유가 그 용량 미만일 때만 경보합니다. 예를 들어 Warning 20%·50 GiB이면 여유가 20% 미만이면서 50 GiB 미만일 때 Warning입니다.
-드라이브마다 다른 기준이 필요하면 `config.toml` 맨 끝에 드라이브별 표를 둡니다. 적지 않은 값은 공통 기준을 따르고, Warning이 Critical보다 크지 않은 표는 무시하고 사유를 `wrg config`에 표시합니다. 드라이브별 표는 웹에서 바꿀 수 없습니다.
+디스크 경보는 여유 비율이 기준 미만일 때 발생합니다. 용량이 큰 드라이브는 비율만으로는 너무 일찍 경보가 나므로, 절대 용량 하한(`*_disk_free_gib`)을 설정하면 여유가 그 용량 미만일 때만 경보합니다. 예를 들어 Warning 20%·50 GiB이면 여유가 20% 미만이면서 50 GiB 미만일 때 Warning입니다. Warning 하한만 설정하면 Critical에도 같은 하한이 적용되어, Warning이 나지 않는 상태에서 Critical이 나지 않습니다.
+드라이브마다 다른 기준이 필요하면 `config.toml` 맨 끝에 드라이브별 표를 둡니다. 적지 않은 값은 공통 기준을 따릅니다. 형식이 틀리거나 Warning이 Critical보다 크지 않은 표는 그 드라이브만 무시하고 사유를 `wrg config`에 표시합니다. 공통 기준을 바꿀 때 드라이브별 표와 맞지 않게 되는 값은 거부합니다. 드라이브별 표는 웹에서 바꿀 수 없습니다.
+표는 반드시 다른 모든 설정 아래에 두세요. TOML에서는 `[표]` 줄 뒤에 적은 키가 모두 그 표에 속하므로, 중간에 두면 뒤의 설정이 적용되지 않습니다.
 
 ```toml
 [disk_thresholds.E]
@@ -99,6 +100,6 @@ warning_free_gib = 50
 critical_free_gib = 20
 ```
 
-`disk_drives`에서 뺀 드라이브의 진행 중 경보는 회복 알림 없이 종료합니다.
+`disk_drives`에서 뺀 드라이브의 경보는 회복 알림 없이 "감시 종료 · 회복 미확인"으로 닫습니다. 설정 파일을 제대로 읽지 못한 상태에서는 닫지 않습니다.
 
 `project_roots`, `disk_drives`, `wsl_vhd_path`, `state_dir`, `toast_app_id`는 TOML에서 관리합니다. 기본 Windows 드라이브는 C·D·E, VHDX 경로를 비워 두면 Windows가 알려 준 현재 배포판 위치에서 `ext4.vhdx`를 찾아 사용하고, 그 파일이 없으면 미설정(`not-configured`)으로 표시합니다. `email_heartbeat_interval_seconds`는 구형 설정 호환용이며 새 설정은 발송 분을 사용합니다.
