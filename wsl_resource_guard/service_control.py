@@ -284,6 +284,9 @@ class Controller:
             check_relations(settings, key, typed)
         except ValueError as exc:
             raise ControlError(f'{key}: {exc}') from None
+        from .config import ZERO_DISABLES_ALERT
+        if key in ZERO_DISABLES_ALERT and typed == 0:
+            raise ControlError(f'{key}: 경보를 끄는 값은 PC 터미널의 wrg config set으로만 설정할 수 있습니다.')
         request = {'id': os.urandom(8).hex(), 'key': key, 'value': typed,
                    'actor': actor[:160], 'requested_at': time.time(),
                    'interval_seconds': settings.interval_seconds}

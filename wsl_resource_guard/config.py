@@ -76,6 +76,13 @@ CONFIG_RULES: dict[str, tuple[str, float, float, str]] = {
     "weekly_report_hour": ("int", 0, 23, "주간 리포트 발송 시각 (시)"),
 }
 
+# For these, 0 switches an alert level off. Like the channel switches, that
+# stays terminal-only so a web session cannot silence alerting.
+ZERO_DISABLES_ALERT = frozenset({
+    "warning_host_available_gib", "critical_host_available_gib",
+    "warning_host_commit_percent", "critical_host_commit_percent",
+})
+
 # Keys the dashboard may change (through the guard daemon): numeric
 # thresholds and intervals with fixed ranges. Channel switches and text
 # values stay terminal-only so a web session cannot silence alerting.
@@ -481,7 +488,7 @@ class Settings:
             if 0 < getattr(settings, bigger) <= getattr(settings, smaller):
                 for key in (bigger, smaller):
                     setattr(settings, key, getattr(defaults, key))
-                settings.load_warnings.append(f"{bigger}는 {smaller}보다 커야 합니다. 두 값 모두 사용하지 않습니다.")
+                settings.load_warnings.append(f"{bigger}는 {smaller}보다 커야 합니다. 두 값 모두 기본값을 사용합니다.")
         if "disk_thresholds" in raw:
             settings.disk_thresholds, problems = load_drive_table(raw["disk_thresholds"], settings.disk_drives)
             settings.load_warnings.extend(problems)

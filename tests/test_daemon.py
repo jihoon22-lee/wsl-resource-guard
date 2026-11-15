@@ -554,25 +554,58 @@ class SampleStateTests(unittest.TestCase):
         current.host = host
         return evaluate(current, snapshot(), settings or Settings(), None, since or {})
 
-    def test_host_memory_and_commit_alert_after_sustained_observations(self) -> None:
-        self.assertEqual(self.host_evaluation(self.host()).severity, "normal")
-        first = self.host_evaluation(self.host(available_gib=1.5))
-        self.assertEqual((first.severity, list(first.condition_since)), ("normal", ["warning.host_ram"]))
-        self.assertTrue(first.pending_reasons)
-        held = self.host_evaluation(self.host(available_gib=1.5), first.condition_since, timestamp=1120.0)
-        self.assertEqual(held.severity, "warning")
-        self.assertIn("Windows 가용 RAM 1.5 GiB", held.reasons[0])
-        critical = self.host_evaluation(self.host(available_gib=0.8), {"critical.host_ram": 900.0}, timestamp=1120.0)
-        self.assertEqual(critical.severity, "critical")
-        commit = self.host_evaluation(self.host(commit_percent=93.0), {"warning.host_commit": 800.0})
+    def series(self, readings, settings=None, refresh=60, start=1000.0):
+        """Feed (available_gib, commit_percent, status) readings, one per refresh, sampled every 15 s."""
+        since, out, last = {}, [], start
+        for index, (available, commit, status) in enumerate(readings):
+            if status == "ok":
+                last = start + index * refresh
+            host = self.host(available, commit, status, observed=last)
+            for step in range(0, refresh, 15):
+                result = self.host_evaluation(host, since, settings, timestamp=start + index * refresh + step)
+                since = result.condition_since
+                out.append((start + index * refresh + step, result))
+        return out
+
+    def test_host_alert_needs_sustained_observations_not_one_reading_re_read(self) -> None:
+        ok = lambda value, commit=40.0: (value, commit, "ok")
+        # One low reading re-read for a minute, then a normal one: nothing.
+        self.assertEqual({r.severity for _, r in self.series([ok(1.5), ok(8)])}, {"normal"})
+        # Three consecutive low readings (t, +60, +120): alerts at the third, not before.
+        run = self.series([ok(1.5), ok(1.5), ok(1.5)])
+        self.assertEqual([r.severity for at, r in run if at < 1120], ["normal"] * 8)
+        self.assertEqual({r.severity for at, r in run if at >= 1120}, {"warning"})
+        self.assertIn("Windows 가용 RAM 1.5 GiB", run[-1][1].reasons[0])
+        self.assertIn("다음 관측에서도 이어지면", run[0][1].pending_reasons[0])
+        # One low reading followed by failed refreshes is still one observation, however long it is re-read.
+        stuck = self.series([ok(1.5)] + [(1.5, 40.0, "timeout")] * 20)
+        self.assertEqual({r.severity for _, r in stuck}, {"normal"})
+        # A slower refresh still needs two observations.
+        slow = self.series([ok(1.5), ok(1.5)], refresh=300)
+        self.assertEqual({r.severity for at, r in slow if at < 1300}, {"normal"})
+        self.assertEqual({r.severity for at, r in slow if at >= 1300}, {"warning"})
+        # Commit works the same way, with its own keys.
+        commit = self.series([ok(8, 93.0)] * 3)[-1][1]
         self.assertEqual(commit.severity, "warning")
         self.assertIn("Windows 커밋 93%", commit.reasons[0])
-        full = self.host_evaluation(self.host(commit_percent=98.0), {"critical.host_commit": 800.0})
-        self.assertEqual(full.severity, "critical")
+        self.assertEqual(self.series([ok(8, 98.0)] * 3)[-1][1].severity, "critical")
         # Exactly at a limit: available alerts at or below, commit at or above.
-        self.assertEqual(list(self.host_evaluation(self.host(available_gib=2.0)).condition_since), ["warning.host_ram"])
-        self.assertEqual(list(self.host_evaluation(self.host(commit_percent=90.0)).condition_since),
-                         ["warning.host_commit"])
+        self.assertEqual(self.series([ok(2.0)] * 3)[-1][1].severity, "warning")
+        self.assertEqual(self.series([ok(8, 90.0)] * 3)[-1][1].severity, "warning")
+        self.assertEqual(self.series([ok(2.01, 89.99)] * 3)[-1][1].severity, "normal")
+
+    def test_host_value_crossing_between_levels_keeps_alerting_and_escalates(self) -> None:
+        ok = lambda value: (value, 40.0, "ok")
+        # Hovering around the critical limit stays a warning: the warning clock never restarts.
+        hover = self.series([ok(0.9), ok(1.1)] * 10)
+        self.assertEqual({r.severity for at, r in hover if at >= 1120}, {"warning"})
+        self.assertEqual({len(r.conditions) for at, r in hover if at >= 1120}, {1})
+        self.assertIn("0.9 GiB", hover[-5][1].reasons[0])        # the reason follows the latest reading
+        # Sustained below critical escalates, and reports one condition for the incident, not two.
+        low = self.series([ok(1.5)] * 3 + [ok(0.8)] * 3)
+        self.assertEqual(low[-1][1].severity, "critical")
+        self.assertEqual([c["key"] for c in low[-1][1].conditions], ["critical.host_ram"])
+        self.assertEqual({r.severity for at, r in low if 1120 <= at < 1300}, {"warning"})
 
     def test_host_alerts_can_be_switched_off_and_never_come_from_missing_values(self) -> None:
         off = Settings(warning_host_available_gib=0, critical_host_available_gib=0,
@@ -593,11 +626,44 @@ class SampleStateTests(unittest.TestCase):
         never = self.host_evaluation({"schema": 1, "status": "unavailable", "observed_at": None, "error": "interop 없음"})
         self.assertTrue(any("Windows 호스트 조회 불가" in line for line in never.observations))
 
-    def test_stale_host_value_keeps_the_alert_and_says_it_is_not_current(self) -> None:
-        stale = self.host_evaluation(self.host(available_gib=1.5, status="timeout"), {"warning.host_ram": 800.0})
-        self.assertEqual(stale.severity, "warning")
-        self.assertIn("마지막 확인값", stale.reasons[0])
-        self.assertTrue(any("Windows 호스트 조회 불가" in line for line in stale.observations))
+    def test_stale_host_value_keeps_an_open_alert_but_never_opens_one(self) -> None:
+        ok = lambda value: (value, 40.0, "ok")
+        failed = (1.5, 40.0, "timeout")
+        kept = self.series([ok(1.5)] * 3 + [failed] * 4)
+        self.assertEqual({r.severity for at, r in kept if at >= 1120}, {"warning"})
+        self.assertIn("마지막 확인값", kept[-1][1].reasons[0])
+        self.assertTrue(any("Windows 호스트 조회 불가" in line for line in kept[-1][1].observations))
+        # A value left over from before a long gap (clocks reset) cannot open an alert by itself.
+        old = self.host(1.5, status="timeout", observed=1000.0)
+        late = self.host_evaluation(old, {}, timestamp=1000.0 + 12 * 3600)
+        again = self.host_evaluation(old, late.condition_since, timestamp=1000.0 + 12 * 3600 + 600)
+        self.assertEqual((late.severity, again.severity), ("normal", "normal"))
+
+    def test_state_severity_is_held_while_windows_cannot_be_observed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(state_dir=directory)
+            def run(now, host):
+                with (patch("wsl_resource_guard.daemon.read_system_metrics", return_value=metrics(8.0, timestamp=now)),
+                      patch("wsl_resource_guard.daemon.read_disks", return_value=[]),
+                      patch("wsl_resource_guard.daemon.build_snapshot", return_value=snapshot()),
+                      patch("wsl_resource_guard.daemon.read_host_snapshot", return_value=host)):
+                    return sample(settings)[2]
+            now = 1000.0
+            for index in range(9):                         # three low observations, sampled every 15 s
+                result = run(now + index * 15, self.host(1.5, observed=1000.0 + (index // 4) * 60))
+            self.assertEqual(result.severity, "warning")
+            good = self.host(8.0, observed=1135.0)
+            self.assertEqual(run(1135.0, good).severity, "warning")           # one good reading is not a recovery
+            unreadable = dict(good, status="timeout", error="응답 없음")
+            for index in range(1, 40):                     # ten minutes without an observation
+                held = run(1135.0 + index * 15, unreadable)
+            self.assertEqual(held.severity, "warning")
+            self.assertTrue(any("Windows 관측 재개 후" in line for line in held.pending_reasons))
+            readable = dict(good)
+            for index in range(40, 52):
+                readable["observed_at"] = 1135.0 + index * 15
+                recovered = run(1135.0 + index * 15, dict(readable))
+            self.assertEqual(recovered.severity, "normal")
 
     def test_state_from_the_previous_version_is_still_a_valid_previous_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -450,33 +450,104 @@ class IncidentTests(unittest.TestCase):
         self.assertEqual(title, '디스크 여유 부족 · E:')
         self.assertIn('839 GiB', plain)
 
+    def host_metrics(self, now, status='ok', available_gib=1.5, observed=None, memory=None):
+        m = metrics(now)
+        m.host = {'schema': 1, 'status': status, 'observed_at': now if observed is None else observed,
+                  'attempted_at': now,
+                  'memory': memory if memory is not None else {
+                      'total_bytes': 32 * 2**30, 'available_bytes': int(available_gib * 2**30),
+                      'commit_used_bytes': 40 * 2**30, 'commit_limit_bytes': 100 * 2**30},
+                  'vmmem': {'working_set_bytes': 16 * 2**30, 'private_bytes': None}}
+        return m
+
+    LOW = {'key': 'warning.host_ram', 'severity': 'warning', 'reason': 'Windows 가용 RAM 1.5 GiB'}
+
     def test_host_incident_survives_reboot_and_is_unknown_while_windows_is_silent(self):
-        def host_metrics(now, status='ok', available_gib=1.5):
-            m = metrics(now)
-            m.host = {'schema': 1, 'status': status, 'observed_at': 1000.0, 'attempted_at': now,
-                      'memory': {'total_bytes': 32 * 2**30, 'available_bytes': int(available_gib * 2**30),
-                                 'commit_used_bytes': 40 * 2**30, 'commit_limit_bytes': 100 * 2**30},
-                      'vmmem': {'working_set_bytes': 16 * 2**30, 'private_bytes': None}}
-            return m
-        low = {'key': 'warning.host_ram', 'severity': 'warning', 'reason': 'Windows 가용 RAM 1.5 GiB'}
-        one = reconcile({}, [low], self.snap, host_metrics(1000), self.settings, boot='boot-a')
+        one = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
         row = one['incidents'][0]
-        self.assertEqual((row['key'], row['priority']), ('host_ram:host', 'pressure'))
+        self.assertEqual((row['key'], row['priority'], row['stale']), ('host_ram:host', 'pressure', False))
         self.assertEqual(row['measurement']['value'], 1.5)
         self.assertEqual(row['measurement']['threshold'], self.settings.warning_host_available_gib)
         self.assertIn('WSL VM', row['guidance']); self.assertIn('16', row['guidance'])
-        self.assertEqual(incident_message(row, '')[0].split(' · ')[0], 'Windows 메모리 부족')
-        two = reconcile(one, [low], self.snap, host_metrics(5000), self.settings, boot='boot-b')
+        # Windows is short of memory: no WSL session is offered as the thing to end.
+        self.assertEqual(row['targets'], [])
+        self.assertEqual(row['evidence']['host'], {'available_gib': 1.5, 'commit_percent': 40.0, 'vmmem_gib': 16.0,
+                                                   'observed_at': 1000, 'current': True})
+        self.assertEqual(incident_message(row, '')[0], 'Windows 메모리 부족 · 호스트')
+        two = reconcile(one, [self.LOW], self.snap, self.host_metrics(5000), self.settings, boot='boot-b')
         self.assertEqual([(r['id'], r['state'], r['revision']) for r in two['incidents']], [(row['id'], 'active', 1)])
         # The condition is gone but Windows cannot be observed: not a recovery.
         out = two
         for now in range(5015, 5015 + RECURRENCE_MERGE_SECONDS + 300, 15):
-            out = reconcile(out, [], self.snap, host_metrics(now, status='timeout'), self.settings, boot='boot-b')
+            out = reconcile(out, [], self.snap, self.host_metrics(now, status='timeout', observed=5000), self.settings,
+                            boot='boot-b')
         self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('unknown', 1)])
         # Observed again and fine: resolves, then confirms after the quiet window.
         for now in range(out['updated_at'] + 15, out['updated_at'] + RECURRENCE_MERGE_SECONDS + 300, 15):
-            out = reconcile(out, [], self.snap, host_metrics(now, available_gib=8), self.settings, boot='boot-b')
+            out = reconcile(out, [], self.snap, self.host_metrics(now, available_gib=8), self.settings, boot='boot-b')
         self.assertEqual([(r['state'], r['revision']) for r in out['incidents']], [('resolved', 2)])
+
+    def test_host_incident_does_not_recover_when_the_query_succeeds_without_the_value(self):
+        both = [self.LOW, {'key': 'warning.host_commit', 'severity': 'warning', 'reason': 'Windows 커밋 93%'}]
+        out = reconcile({}, both, self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
+        gaps = ({'total_bytes': None, 'available_bytes': None, 'commit_used_bytes': None, 'commit_limit_bytes': None},
+                {'total_bytes': 32 * 2**30, 'available_bytes': 8 * 2**30, 'commit_used_bytes': None,
+                 'commit_limit_bytes': None})
+        for memory, expected in zip(gaps, ({'host_ram:host': 'unknown', 'host_commit:host': 'unknown'},
+                                           {'host_commit:host': 'unknown'})):
+            with self.subTest(memory=memory):
+                run = out
+                for now in range(1015, 1015 + RECURRENCE_MERGE_SECONDS + 600, 15):
+                    run = reconcile(run, [], self.snap, self.host_metrics(now, memory=memory), self.settings,
+                                    boot='boot-a')
+                states = {r['key']: (r['state'], r['revision']) for r in run['incidents']}
+                for key, state in expected.items():
+                    self.assertEqual(states[key], (state, 1))
+        # With RAM readable and fine but commit unreadable, only RAM recovers.
+        self.assertEqual(states['host_ram:host'], ('resolved', 2))
+
+    def test_stale_host_or_disk_incident_is_announced_once_not_reminded_forever(self):
+        from wsl_resource_guard.delivery import Delivery
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); shared = root / 'shared'; shared.mkdir()
+            settings = Settings(state_dir=str(root), secrets_path=root / 'secrets.json', windows_toast_enabled=False,
+                                discord_enabled=False, push_enabled=False, recovery_sustain_seconds=30)
+            settings.secrets_path.write_text(json.dumps(
+                {'gmail_to': 'one@example.com', 'gmail_user': 'fixture', 'gmail_app_password': 'fixture'}))
+            clock = [1000]
+            engine = Delivery(settings, shared, clock=lambda: clock[0])
+            sent = []
+            def send(destination, row, notifier, origin):
+                sent.append((clock[0], row['state'], incident_message(row, '')[1]))
+                return NotificationResult('gmail', True, 'fixture')
+            critical = dict(self.LOW, key='critical.host_ram', severity='critical')
+            store = reconcile({}, [critical], self.snap, self.host_metrics(1000, available_gib=0.8), settings, boot='b')
+            atomic_write(root / 'incidents.json', store); engine.tick(send=send)
+            for now in range(1015, 1000 + 8 * 3600, 15):      # Windows cannot be read for eight hours
+                clock[0] = now
+                stale = self.host_metrics(now, status='timeout', available_gib=0.8, observed=1000)
+                store = reconcile(store, [critical], self.snap, stale, settings, boot='b')
+                atomic_write(root / 'incidents.json', store); engine.tick(send=send)
+            self.assertTrue(store['incidents'][0]['stale'])
+            self.assertEqual(len(sent), 1)                                   # was 32 reminders before
+            later = incident_message(store['incidents'][0], '')[1]
+            self.assertIn('Windows 값 확인 시각', later)
+            self.assertIn('조회하지 못했습니다', later)
+            # Readable again and still low: reminders resume.
+            for now in range(clock[0] + 15, clock[0] + 1900, 15):
+                clock[0] = now
+                store = reconcile(store, [critical], self.snap, self.host_metrics(now, available_gib=0.8), settings, boot='b')
+                atomic_write(root / 'incidents.json', store); engine.tick(send=send)
+            self.assertGreaterEqual(len(sent), 2)
+            self.assertNotIn('Windows 값 확인 시각', sent[-1][2])
+
+    def test_host_limits_switched_off_close_the_incident_without_a_recovery_claim(self):
+        out = reconcile({}, [self.LOW], self.snap, self.host_metrics(1000), self.settings, boot='boot-a')
+        off = Settings(recovery_sustain_seconds=30, warning_host_available_gib=0, critical_host_available_gib=0)
+        for now in range(1015, 1015 + RECURRENCE_MERGE_SECONDS + 300, 15):
+            out = reconcile(out, [], self.snap, self.host_metrics(now), off, boot='boot-a')
+        row = out['incidents'][0]
+        self.assertEqual((row['state'], row['revision'], row.get('recovery_unconfirmed')), ('resolved', 1, True))
 
     def test_incident_of_a_drive_no_longer_monitored_closes_without_a_recovery_claim(self):
         out = reconcile({}, [DISK], self.snap, disk_metrics(1000), self.settings, boot='boot-a')

@@ -184,8 +184,11 @@ class Delivery:
             changed = not entry or entry.get('revision') != row['revision']
             interval = self.settings.critical_reminder_seconds if row['severity'] == 'critical' else self.settings.reminder_cooldown_seconds
             quiet = row['severity'] == 'warning' and in_quiet_hours(now, self.settings.alert_quiet_hours)
+            # A value that cannot be read now (unplugged drive, Windows not
+            # answering) is announced once and on escalation; repeating the same
+            # old number every reminder interval says nothing new.
             repeat = bool(entry and now >= entry.get('next_reminder_at', 0) and row['state'] == 'active'
-                          and not deferred and not quiet and legacy_snooze <= now)
+                          and not deferred and not quiet and legacy_snooze <= now and not row.get('stale'))
             if changed or repeat:
                 recovery_keys = list(entry.get('destinations', {})) if entry and row['state'] == 'resolved' else []
                 entry = {'revision': row['revision'], 'next_reminder_at': now + interval,
