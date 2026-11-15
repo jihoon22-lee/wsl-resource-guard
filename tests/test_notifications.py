@@ -215,7 +215,9 @@ class NotificationTests(unittest.TestCase):
                 _PROBES["windows-toast"].join(3)
             path.return_value.exists.side_effect = None
             path.return_value.exists.return_value = True
-            self.assertTrue(notifier._send_windows_toast("t", "m").sent)
+            # The recovered send must not race the short stall limit on a slow machine.
+            with patch.object(notifications, "TOAST_TIMEOUT_SECONDS", 30):
+                self.assertTrue(notifier._send_windows_toast("t", "m").sent)
 
     def test_unconfigured_channels_are_skipped_not_failed(self) -> None:
         notifier = Notifier(Settings(windows_toast_enabled=False, webhook_enabled=True))
