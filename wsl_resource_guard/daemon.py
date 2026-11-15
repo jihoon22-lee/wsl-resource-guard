@@ -20,6 +20,7 @@ from .sdnotify import notify as notify_systemd
 from .config import (CONFIG_RULES, WEB_EDITABLE_KINDS, Settings, check_relations,
                      coerce_config_value, write_config_value)
 from .disks import disk_limits, disk_severity, read_disks
+from .gpu import read_gpu
 from .hostbridge import detected_vhd_path, read_host_snapshot
 from .metrics import KIB_PER_GIB, SystemMetrics, read_system_metrics
 from .notifications import SKIPPED_DETAILS, Notifier, NotificationResult
@@ -353,6 +354,10 @@ def _metrics_from_state(data: dict[str, object]) -> SystemMetrics | None:
         return None
     if not isinstance(metrics.host, dict) or metrics.host.get("schema") != 1:
         metrics.host = {}  # Unknown shape: collect again instead of trusting it.
+    if not isinstance(metrics.pressure, dict):
+        metrics.pressure = {}
+    if not isinstance(metrics.gpu, dict):
+        metrics.gpu = {}
     return metrics if isinstance(metrics.disks, list) else None
 
 
@@ -414,8 +419,8 @@ def _history_disks(disks: list) -> list:
 
 
 def _history_metrics(metrics: SystemMetrics) -> dict:
-    """The host snapshot (with Windows process names) stays out of history."""
-    data = {key: value for key, value in metrics.to_dict().items() if key != "host"}
+    """The host snapshot (with Windows process names) and the GPU readout stay out of history."""
+    data = {key: value for key, value in metrics.to_dict().items() if key not in ("host", "gpu")}
     data["disks"] = _history_disks(data.get("disks") or [])
     return data
 
@@ -644,6 +649,7 @@ def sample(settings: Settings, notify: bool = False, persist: bool = True,
         previous.disks if previous else None, interval=settings.disk_refresh_seconds,
     )
     metrics.host = read_host_snapshot(previous_host, interval=settings.host_memory_refresh_seconds)
+    metrics.gpu = read_gpu(previous.gpu if previous else None, interval=settings.host_memory_refresh_seconds)
     # The history chart keeps reading these three fields.
     vmmem = metrics.host.get("vmmem") if isinstance(metrics.host.get("vmmem"), dict) else None
     observed, attempted = metrics.host.get("observed_at"), metrics.host.get("attempted_at")

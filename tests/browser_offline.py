@@ -429,7 +429,12 @@ def check_windows_host_panels(page, overrides: dict) -> None:
         expect(page.locator('#refresh')).to_be_enabled()
         expect(page.locator('#overview-host')).to_have_count(0)
 
-        monitor['metrics'] = dict(monitor['metrics'], host=host_fixture())
+        monitor['metrics'] = dict(monitor['metrics'], host=host_fixture(),
+                                  pressure={'cpu': {'some_avg60': 0.39, 'full_avg60': 0.0, 'status': 'normal'},
+                                            'io': {'some_avg60': None, 'full_avg60': None, 'status': 'missing'}},
+                                  gpu={'status': 'ok', 'attempted_at': time.time(), 'observed_at': time.time(),
+                                       'devices': [{'name': 'Fixture GPU', 'memory_used_bytes': 2397 * 2**20,
+                                                    'memory_total_bytes': 8192 * 2**20, 'utilization_percent': None}]})
         overrides['/api/monitor'] = monitor
         page.reload()
         panel = page.locator('#overview-host')
@@ -442,6 +447,10 @@ def check_windows_host_panels(page, overrides: dict) -> None:
         expect(panel).to_contain_text('<img src=x onerror=alert(1)>')  # rendered as text
         expect(panel.locator('img')).to_have_count(0)
         expect(panel.locator('.pill.warn')).to_have_count(0)
+        pressure = page.locator('#overview-pressure')
+        expect(pressure).to_contain_text('일부 정체 0.39% · 전체 정체 0.00%')
+        expect(pressure).to_contain_text('커널이 제공하지 않습니다')
+        expect(pressure).to_contain_text('메모리 2.34 GiB / 8.00 GiB · 사용률 미제공')
 
         page.goto(ORIGIN + '/#disks')
         volumes = page.locator('#host-volumes')

@@ -39,6 +39,8 @@
 | `disks` | 드라이브별 행: `id`, `kind`(`windows`·`wsl`), `status`(`ok`·`unmounted`·`error`), `checked_at`, `observed_at`, 용량 필드. 조회 실패 시 마지막 관측값을 유지하고 `status`로 구분합니다. 이력 파일에는 VHDX 경로를 뺀 행을 씁니다 |
 | `vmmem_bytes`, `vmmem_observed_at`, `vmmem_attempted_at` | Windows가 본 WSL VM 작업 집합과 관측·시도 시각. `host`의 값에서 채웁니다 |
 | `host` | 아래 "Windows 호스트". 수집을 한 번도 시도하지 않았으면 빈 객체입니다 |
+| `pressure` | `cpu`와 `io` 각각 `some_avg60`, `full_avg60`(숫자 또는 null), `status`(`normal`·`missing`·`error`) |
+| `gpu` | `status`(`ok`·`missing`·`error`), `attempted_at`, `observed_at`, `devices`(장치별 `name`, `memory_used_bytes`, `memory_total_bytes`, `utilization_percent`). 이력 파일에는 기록하지 않습니다 |
 
 Windows 호스트(`metrics.host`)의 필드. `schema`는 1이고, 이력 파일에는 기록하지 않습니다.
 

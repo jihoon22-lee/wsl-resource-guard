@@ -109,6 +109,25 @@ def _host_lines(host: dict) -> list[str]:
     return lines
 
 
+def _pressure_lines(metrics) -> list[str]:
+    """CPU/IO pressure and GPU memory for `wrg status`; unreported values are named, not zero."""
+    lines = []
+    percent = lambda value: "미제공" if value is None else f"{value:.2f}%"
+    for key, label in (("cpu", "CPU PSI some/full"), ("io", "IO PSI some/full ")):
+        row = (metrics.pressure or {}).get(key)
+        if isinstance(row, dict):
+            text = (f"{percent(row.get('some_avg60'))} / {percent(row.get('full_avg60'))}"
+                    if row.get("status") == "normal" else {"missing": "미제공"}.get(row.get("status"), "수집 오류"))
+            lines.append(f"{label} {text}")
+    gpu = metrics.gpu if isinstance(metrics.gpu, dict) else {}
+    for device in gpu.get("devices") or []:
+        used, total = device.get("memory_used_bytes"), device.get("memory_total_bytes")
+        amount = lambda value: "미제공" if value is None else f"{value / 2**30:.2f} GiB"
+        stale = "" if gpu.get("status") == "ok" else " (마지막 확인값)"
+        lines.append(f"GPU 메모리        {amount(used)} / {amount(total)} · {device.get('name', '')}{stale}")
+    return lines
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     settings = _load_settings(args)
     metrics, snapshot, evaluation = sample(settings, notify=False, persist=False)
@@ -145,7 +164,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if metrics.vmmem_bytes is not None:
         observed = datetime.fromtimestamp(metrics.vmmem_observed_at).astimezone()
         print(f"호스트 vmmem      {metrics.vmmem_bytes / 2**30:.2f} GiB (관측 {observed:%H:%M:%S})")
-    for line in _host_lines(metrics.host):
+    for line in _host_lines(metrics.host) + _pressure_lines(metrics):
         print(line)
     print(f"LLM 세션          {len(snapshot.sessions)}개")
     print(

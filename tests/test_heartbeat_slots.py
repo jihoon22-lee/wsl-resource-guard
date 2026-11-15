@@ -14,6 +14,13 @@ from wsl_resource_guard.notifications import NotificationResult
 from test_daemon import metrics,snapshot
 
 
+def setUpModule() -> None:
+    # sample() must never run the real nvidia-smi from a unit test.
+    gpu = patch("wsl_resource_guard.gpu.nvidia_smi_path", return_value=None)
+    gpu.start()
+    unittest.addModuleCleanup(gpu.stop)
+
+
 class HeartbeatSlotTests(unittest.TestCase):
     def test_cli_distinguishes_failed_attempt_from_success(self):
         import io
